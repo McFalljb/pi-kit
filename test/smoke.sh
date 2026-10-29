@@ -246,5 +246,64 @@ check "wake_later: clamped to the minimum" "wakes this session in 60s (clamped f
 check "wake_later: fired with its prompt" "GOT SHELL: Wake-up wk2 after 1m00s: check the deploy page" "$T/p18.out"
 nocheck "wake_later: cancelled timer never fired" "Wake-up wk1" "$T/p18.log"
 
+# 19. secrets in output: redacted before lines are cut, key blocks dropped, in monitor lines and the exit tail
+cat > "$T/work/leak.sh" <<'SH'
+printf '%0290d ghp_abcdefghijklmnopqrstuvwxyz0123456789AB\n' 0
+printf '%0227d eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4ifQ.c2lnbmF0dXJlLXBhcnQtMTIzNDU2\n' 0
+echo "-----BEGIN RSA PRIVATE KEY-----"; echo MIIEfakefakefakeAAAAQQQQ1111; echo ZZZZfakebodyline2zzzzzzzzzzz; echo "-----END RSA PRIVATE KEY-----"
+echo leak-done
+SH
+run p19 "Steps:
+$(step monitor '{"command":"bash leak.sh"}'; step bash_bg '{"command":"bash leak.sh"}'; step bash '{"command":"sleep 1; echo waited"}')"
+check "leak: monitor delivered the output" 'Background shell sh1 exited with code 0[^"]*leak-done' "$T/p19.log"
+check "leak: exit tail delivered" 'Background shell sh2 exited with code 0[^"]*leak-done' "$T/p19.log"
+nocheck "leak: token cut at the line cap never sent" "ghp_abc" "$T/p19.log"
+nocheck "leak: JWT cut before its signature never sent" "eyJhbGci" "$T/p19.log"
+nocheck "leak: key block body never sent" "MIIEfake\|ZZZZfake" "$T/p19.log"
+check "leak: key block reported" '\[private key block redacted\]' "$T/p19.log"
+
+# 20. processes left in the group after bash exits are reported, listed and killed by shell_stop
+run p20 "Steps:
+$(step bash_bg '{"command":"sleep 30 & echo $! > lo.pid"}'; step bash '{"command":"sleep 1; kill -0 $(cat lo.pid) && echo lo-alive"}'; step shell_list '{}'; step shell_stop '{"id":"sh1"}'; step bash '{"command":"kill -0 $(cat lo.pid) 2>/dev/null && echo lo-still-alive || echo lo-dead"}')"
+check "leftover: background sleep ran" '"role":"tool","text":"lo-alive' "$T/p20.log"
+check "leftover: exit notice says it is still running" "1 process is still running in its group; shell_stop sh1 kills them" "$T/p20.log"
+check "leftover: shell_list shows it" "processes left in its group" "$T/p20.log"
+check "leftover: shell_stop killed it" "Killed the processes left in sh1's group" "$T/p20.log"
+check "leftover: sleep is dead" '"role":"tool","text":"lo-dead' "$T/p20.log"
+
+# 21. patterns: nested quantifiers rejected, a slow pattern ends the watch; one monitor per task;
+# shell_stop ends the watch first, so no monitor notice follows it (21b)
+run p21 "Steps:
+$(step monitor '{"command":"echo hi","pattern":"(\\w+\\s?)+$"}'; step monitor '{"command":"printf a%.0s $(seq 4096); echo; sleep 20","pattern":".*.*x"}'; step bash '{"command":"sleep 2; echo waited"}'; step bash_bg '{"command":"sleep 20"}'; step monitor '{"id":"sh2"}'; step monitor '{"id":"sh2"}'; step shell_stop '{"id":"sh2"}')"
+check "pattern: nested quantifier rejected" "repeats a group that itself repeats" "$T/p21.log"
+check "pattern: slow pattern ended the watch" "Monitor sh1 ended: pattern /.\*.\*x/ took over 1s" "$T/p21.log"
+check "pattern: slow pattern's command stopped" "Its command was stopped" "$T/p21.log"
+check "monitor: second watch on a task refused" "sh2 already has a monitor. End it first with shell_stop sh2 watch_only" "$T/p21.log"
+# The command ignores SIGTERM, so the stop waits 2 s for SIGKILL: longer than a monitor batch.
+run p21b "Steps:
+$(step monitor '{"command":"trap \"\" TERM; while true; do echo L; sleep 0.1; done"}'; step shell_stop '{"id":"sh1"}')"
+check "shell_stop: returned the undelivered lines" "Undelivered monitor lines" "$T/p21b.log"
+nocheck "shell_stop: no monitor notice after the stop" '"notices":\[[^]]*Monitor sh1' "$T/p21b.log"
+
+# 22. a watch that falls far behind skips ahead and says so; an output file past the cap kills the task
+run p22 "Steps:
+$(step monitor '{"command":"yes ERR | head -c 40000000","pattern":"ERR"}')"
+check "backlog: skipped bytes reported" "bytes skipped: output came faster than the monitor reads" "$T/p22.log"
+check "backlog: monitor still ended with the command" "Monitor total: " "$T/p22.log"
+PI_KIT_SHELL_LOG_CAP=1000000 run p22b "Steps:
+$(step bash_bg '{"command":"yes | head -c 3000000; sleep 20"}')"
+check "log cap: task killed with a clear notice" "Background shell sh1 killed: output file passed 1 MiB" "$T/p22b.log"
+
+# 23. no background shell in the agent dir; reading a shell output file redacts assignments;
+# headless wake_later is clamped to the drain window
+run p23 "Steps:
+$(step bash_bg "{\"command\":\"ls\",\"cwd\":\"$PI_CODING_AGENT_DIR\"}"; step bash_bg '{"command":"echo password=supersecretvalue123; echo done"}'; step bash '{"command":"sleep 1; echo waited"}'; step read '{"path":"$OUT"}'; step wake_later '{"seconds":7200,"prompt":"never"}'; step shell_stop '{"id":"wk2"}')"
+check "cwd: agent dir refused" "which holds credentials or pi's own state" "$T/p23.log"
+check "read of a shell log: assignment redacted" '"role":"tool","text":"password=\[REDACTED\]' "$T/p23.log"
+nocheck "read of a shell log: value never sent" '"role":"tool","text":"[^"]*supersecretvalue123' "$T/p23.log"
+check "headless wake_later clamped to the drain window" "wakes this session in 1800s (clamped from 7200)" "$T/p23.log"
+
+if ls -d "$TMPDIR"/pi-shell-* >/dev/null 2>&1; then echo "FAIL shell temp dirs left behind"; fail=1; else echo "PASS shell temp dirs removed at shutdown"; fi
+
 echo "artifacts: $T"
 exit $fail

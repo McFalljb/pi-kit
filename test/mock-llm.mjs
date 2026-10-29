@@ -3,7 +3,8 @@
 // tool calls (one per assistant turn); then the mock answers "FINAL: <last tool result>".
 // Each request is logged as one JSON line: model, every tool result so far, every shell notice so
 // far, the last message, the reply. Shell notices are answered "GOT SHELL: <first line>".
-// "$ID" in arguments is replaced by the last pi-subagents run id ("<agent> [<id>]") seen in tool results.
+// "$ID" in arguments is replaced by the last pi-subagents run id ("<agent> [<id>]") seen in tool results,
+// "$OUT" by the last shell output file ("Output: <path>.log").
 import http from "node:http";
 import fs from "node:fs";
 const port = Number(process.argv[2] || 18555);
@@ -26,8 +27,10 @@ function decide(messages) {
 	const toolTexts = messages.filter((m) => m.role === "tool").map((m) => textOf(m.content));
 	const ids = [...toolTexts.join("\n").matchAll(/(?:Async|Run): \S+ \[([0-9a-f-]{8,})\]/g)].map((m) => m[1]);
 	const id = ids.length ? ids[ids.length - 1] : "none";
+	const outs = [...toolTexts.join("\n").matchAll(/Output: (\S+\.log)/g)].map((m) => m[1]);
+	const out = outs.length ? outs[outs.length - 1] : "none";
 	if (done < steps.length) {
-		const s = JSON.parse(JSON.stringify(steps[done]).replaceAll("$ID", id));
+		const s = JSON.parse(JSON.stringify(steps[done]).replaceAll("$ID", id).replaceAll("$OUT", out));
 		return { tool: s };
 	}
 	return { text: `FINAL: ${(toolTexts[toolTexts.length - 1] || "no tools").slice(0, 600)}` };
