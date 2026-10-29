@@ -65,32 +65,45 @@ else
 fi
 
 # 3. AGENTS.md: copy if missing; otherwise back up and append each "## " section whose heading
-# is not already there. Re-running appends nothing.
+# is not already there. A section with the kit's heading but other text is reported and left
+# alone. Re-running appends nothing.
 GLOBAL="$AGENT_DIR/AGENTS.md"
 if [ ! -f "$GLOBAL" ]; then
 	echo "creating $GLOBAL"
 	run cp "$KIT/AGENTS.md" "$GLOBAL"
 else
-	MISSING="$(node - "$KIT/AGENTS.md" "$GLOBAL" <<'JS'
+	MISSING_FILE="$(mktemp "${TMPDIR:-/tmp}/pi-kit-agents.XXXXXX")"
+	trap 'rm -f "$MISSING_FILE"' EXIT
+	SKIPPED="$(node - "$KIT/AGENTS.md" "$GLOBAL" "$MISSING_FILE" <<'JS'
 const fs = require("fs");
-const [kit, global] = process.argv.slice(2).map((f) => fs.readFileSync(f, "utf8"));
-const have = new Set(global.split("\n").filter((l) => l.startsWith("## ")).map((l) => l.trim()));
+const [kit, global] = process.argv.slice(2, 4).map((f) => fs.readFileSync(f, "utf8"));
+const heading = (s) => s.split("\n")[0].trim();
+const have = new Map(global.split(/^(?=## )/m).filter((s) => s.startsWith("## ")).map((s) => [heading(s), s.trim()]));
 const sections = kit.split(/^(?=## )/m).slice(1);
-process.stdout.write(sections.filter((s) => !have.has(s.split("\n")[0].trim())).join(""));
+fs.writeFileSync(process.argv[4], sections.filter((s) => !have.has(heading(s))).join(""));
+for (const s of sections) if (have.has(heading(s)) && have.get(heading(s)) !== s.trim()) console.log(`skipped: existing section with the same heading: ${heading(s)}`);
 JS
 )"
+	MISSING="$(cat "$MISSING_FILE")"
+	if [ -n "$SKIPPED" ]; then echo "$SKIPPED"; fi
 	if [ -n "$MISSING" ]; then
 		BACKUP="$GLOBAL.bak.$(date +%Y%m%d%H%M%S)"
 		echo "appending $(grep -c '^## ' <<< "$MISSING") kit section(s) to $GLOBAL (backup: $BACKUP):"
 		grep '^## ' <<< "$MISSING" | sed 's/^/  /'
 		if [ "$DRY" = 0 ]; then cp "$GLOBAL" "$BACKUP"; printf '\n%s' "$MISSING" >> "$GLOBAL"; fi
-	else
+	elif [ -z "$SKIPPED" ]; then
 		echo "ok: $GLOBAL already has every kit section"
 	fi
 fi
 
 # 4. Reviewer model override (subagents.agentOverrides["kit.reviewer"].model)
+CURRENT=""
 if [ -n "$REVIEWER" ]; then
+	CURRENT="$(node -e 'try{const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(s.subagents?.agentOverrides?.["kit.reviewer"]?.model??"")}catch{}' "$AGENT_DIR/settings.json")"
+fi
+if [ -n "$REVIEWER" ] && [ "$CURRENT" = "$REVIEWER" ]; then
+	echo "ok: kit.reviewer already pinned to $REVIEWER"
+elif [ -n "$REVIEWER" ]; then
 	echo "pinning kit.reviewer to $REVIEWER"
 	if [ "$DRY" = 0 ]; then
 		cp "$AGENT_DIR/settings.json" "$AGENT_DIR/settings.json.bak.$(date +%Y%m%d%H%M%S)"
