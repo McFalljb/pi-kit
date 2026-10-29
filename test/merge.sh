@@ -56,6 +56,8 @@ has "own: safety overlap" 'safety        Safety (Everyone): likely overlap, head
 has "own: notes overlap" 'notes         Durable notes and handoffs (Parent): likely overlap, heading words match "## Durable notes (vault)"' "$T/own.out"
 has "own: suggested line" "suggested: scripts/install.sh --sections communication,background,delegation,review" "$T/own.out"
 install own -
+B="$(ls "$T/own/AGENTS.md.bak."* 2>/dev/null | head -1)"
+if [ -n "$B" ] && cmp -s "$B" "$KIT/test/fixtures/agents-own-rules.md"; then ok "own: backup matches the original"; else bad "own: backup missing or different"; fi
 has "own: overlaps skipped and said so" "skipped notes: likely overlap" "$T/own.out"
 for h in "## Communication" "## Background work" "## Delegation mechanics" "## Review and merge gate"; do has "own: appended $h" "^$h" "$(A own)"; done
 hasnt "own: no duplicate operating rules" "^## Operating rules (Everyone)" "$(A own)"
@@ -67,6 +69,28 @@ has "own: re-run appends nothing" "ok: nothing to append" "$T/own.out"
 printf '## House style\n\nThink before coding, and keep changes small.\n' > "$T/content.md"
 install content "$T/content.md" --dry-run
 has "content: overlap by key phrase" 'operating     Operating rules (Everyone): likely overlap, content has "think before coding"' "$T/content.out"
+
+# 4c. the kit minus one section: the kit's own text never counts as an overlap
+node -e 'const fs=require("fs");process.stdout.write(fs.readFileSync(process.argv[1],"utf8").replace(/^## Durable notes[\s\S]*$/m,""))' "$KIT/AGENTS.md" > "$T/minus.md"
+install minus "$T/minus.md" --dry-run
+has "minus: the missing section is new" "notes         Durable notes and handoffs (Parent): new" "$T/minus.out"
+has "minus: suggests only it" "suggested: scripts/install.sh --sections notes$" "$T/minus.out"
+
+# 4d. headings inside fenced code blocks are ignored; a one-word heading needs the same words
+printf '## Rules\n\nBe nice.\n\n```markdown\n## Parent session\n```\n' > "$T/fence.md"
+install fence "$T/fence.md" --dry-run
+has "fence: heading in a code block ignored" "parent        Parent session (Parent): new" "$T/fence.out"
+has "fence: one-word heading is not a partial match" "operating     Operating rules (Everyone): new" "$T/fence.out"
+printf '## Safety\n\nCareful.\n' > "$T/oneword.md"
+install oneword "$T/oneword.md" --dry-run
+has "oneword: same single word still matches" 'safety        Safety (Everyone): likely overlap, heading words match "## Safety"' "$T/oneword.out"
+
+# 4e. same heading, other text: says how to compare and re-add
+printf '## Communication (Everyone)\n\n- My own words.\n' > "$T/differs.md"
+install differs "$T/differs.md" --dry-run
+has "differs: reported" "communication Communication (Everyone): same heading, different text: left alone" "$T/differs.out"
+has "differs: hint to compare" "to compare: diff" "$T/differs.out"
+has "differs: hint to re-add" "remove your section, then --sections communication" "$T/differs.out"
 
 # 5. --sections: only the chosen ones, even an overlap; unknown keys refused before anything runs
 install pick "$KIT/test/fixtures/agents-own-rules.md" --sections communication,notes

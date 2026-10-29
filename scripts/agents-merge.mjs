@@ -15,7 +15,7 @@ const KEYS = {
 	delegation: { word: "delegation", phrases: ["subagents_enable", "action: \"steer\""] },
 	review: { word: "review", phrases: ["merge gate", "required checks are green"] },
 	child: { word: "child", phrases: ["assigned scope", "never report done on red"] },
-	notes: { word: "durable", phrases: ["durable notes", "session note", "write a handoff"] },
+	notes: { word: "durable", phrases: ["session note", "write a handoff"] },
 };
 const STOP = new Set(["and", "the", "of", "a", "an", "for", "to", "in", "on", "with", "kit"]);
 
@@ -29,6 +29,9 @@ const firstLine = (s) => s.split("\n")[0].trim();
 const words = (h) => new Set(h.replace(/^#+\s*/, "").replace(/\*?\([^)]*\)\*?/g, " ").toLowerCase().split(/[^a-z0-9]+/)
 	.filter((w) => w && !STOP.has(w)).map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w)));
 const subset = (a, b) => a.size > 0 && [...a].every((w) => b.has(w));
+const same = (a, b) => a.size === b.size && subset(a, b);
+// Code blocks hold examples, not rules: drop them before looking at headings and phrases.
+const prose = (text) => text.replace(/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, "");
 
 const sections = kit.split(/^(?=## )/m).slice(1).map((text) => {
 	const heading = firstLine(text);
@@ -37,9 +40,11 @@ const sections = kit.split(/^(?=## )/m).slice(1).map((text) => {
 	if (!key) throw new Error(`kit section without a key: ${heading}`);
 	return { key, heading, text };
 });
-const userHeadings = global.split("\n").filter((l) => /^#{1,6}\s/.test(l)).map((l) => l.trim());
+const userHeadings = prose(global).split("\n").filter((l) => /^#{1,6}\s/.test(l)).map((l) => l.trim());
 const userSections = new Map(global.split(/^(?=## )/m).filter((s) => s.startsWith("## ")).map((s) => [firstLine(s), s.trim()]));
-const lower = global.toLowerCase();
+// Key phrases are looked for only outside the sections the kit itself put there.
+const kitHeadings = new Set(sections.map((s) => s.heading));
+const lower = prose(global.split(/^(?=## )/m).filter((s) => !kitHeadings.has(firstLine(s))).join("")).toLowerCase();
 
 // Status per section: present (same heading and text), differs (same heading, other text),
 // overlap (heading words or key phrases), new.
@@ -49,7 +54,9 @@ for (const s of sections) {
 		continue;
 	}
 	const kw = words(s.heading);
-	const h = userHeadings.find((u) => subset(kw, words(u)) || subset(words(u), kw));
+	// A one-word user heading ("## Rules") must have the same words; longer ones may be a
+	// superset or subset ("### Safety and authority", "## Durable notes").
+	const h = userHeadings.find((u) => (words(u).size === 1 ? same(kw, words(u)) : subset(kw, words(u)) || subset(words(u), kw)));
 	const p = KEYS[s.key].phrases.find((x) => lower.includes(x.toLowerCase()));
 	if (h) Object.assign(s, { status: "overlap", why: `heading words match "${h}"` });
 	else if (p) Object.assign(s, { status: "overlap", why: `content has "${p}"` });
@@ -66,6 +73,10 @@ if (unknown.length) {
 const label = { present: "already there", differs: "same heading, different text: left alone", new: "new" };
 console.log(`AGENTS.md overlap report for ${globalPath}${exists ? "" : " (missing)"}:`);
 for (const s of sections) console.log(`  ${s.key.padEnd(14)}${s.heading.replace(/^## /, "")}: ${s.status === "overlap" ? `likely overlap, ${s.why}` : label[s.status]}`);
+for (const s of sections.filter((s) => s.status === "differs")) {
+	console.log(`  ${"".padEnd(14)}to compare: diff <(sed -n '/^${s.heading.replace(/[*()]/g, ".")}$/,/^## /p' ${globalPath}) <(sed -n '/^${s.heading.replace(/[*()]/g, ".")}$/,/^## /p' ${kitPath})`);
+	console.log(`  ${"".padEnd(14)}to take the kit's: remove your section, then --sections ${s.key}`);
+}
 const suggested = sections.filter((s) => s.status === "new").map((s) => s.key);
 console.log(`suggested: scripts/install.sh --sections ${suggested.join(",") || "<none>"}`);
 
