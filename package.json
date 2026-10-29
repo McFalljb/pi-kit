@@ -1,0 +1,30 @@
+{
+  "name": "pi-kit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orchestrator/worker workflow for pi on top of pi-subagents: kit agents, guardrails, delegation and review skills",
+  "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "./extensions/guardrails/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts/*.md"
+    ],
+    "subagents": {
+      "agents": [
+        "./agents"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

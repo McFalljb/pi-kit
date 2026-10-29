@@ -1,0 +1,51 @@
+// Scripted OpenAI-compatible chat-completions server for offline smoke tests.
+// A user message containing lines `@@ {"name":"tool","arguments":{...}}` is played as a sequence of
+// tool calls (one per assistant turn); then the mock answers "FINAL: <last tool result>".
+// Each request is logged as one JSON line: model, every tool result so far, the last message, the reply.
+// "$ID" in arguments is replaced by the last pi-subagents run id ("<agent> [<id>]") seen in tool results.
+import http from "node:http";
+import fs from "node:fs";
+const port = Number(process.argv[2] || 18555);
+const log = process.argv[3] || "/dev/null";
+const textOf = (c) => (typeof c === "string" ? c : (c || []).map((p) => p.text || "").join(""));
+
+function decide(messages) {
+	let lastUser = -1;
+	for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user") { lastUser = i; break; }
+	const userText = textOf(messages[lastUser]?.content);
+	if (/^Background task (?:completed|failed)/m.test(userText) && !/@@/.test(userText)) return { text: `GOT REPORT: ${userText.split("\n")[0]}` };
+	const steps = userText.split("\n").filter((l) => l.startsWith("@@ ")).map((l) => JSON.parse(l.slice(3)));
+	const after = messages.slice(lastUser + 1);
+	const done = after.filter((m) => m.role === "assistant").length;
+	const toolTexts = messages.filter((m) => m.role === "tool").map((m) => textOf(m.content));
+	const ids = [...toolTexts.join("\n").matchAll(/(?:Async|Run): \S+ \[([0-9a-f-]{8,})\]/g)].map((m) => m[1]);
+	const id = ids.length ? ids[ids.length - 1] : "none";
+	if (done < steps.length) {
+		const s = JSON.parse(JSON.stringify(steps[done]).replaceAll("$ID", id));
+		return { tool: s };
+	}
+	return { text: `FINAL: ${(toolTexts[toolTexts.length - 1] || "no tools").slice(0, 600)}` };
+}
+
+http.createServer((req, res) => {
+	let body = "";
+	req.on("data", (c) => (body += c));
+	req.on("end", () => {
+		const j = JSON.parse(body || "{}");
+		const msgs = j.messages || [];
+		const d = decide(msgs);
+		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
+		const base = { id: "mock", object: "chat.completion.chunk", created: 0, model: j.model };
+		const chunk = (delta, finish = null) => `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		if (d.tool) {
+			res.write(chunk({ role: "assistant", tool_calls: [{ index: 0, id: `call_${Date.now()}`, type: "function", function: { name: d.tool.name, arguments: JSON.stringify(d.tool.arguments) } }] }));
+			res.write(chunk({}, "tool_calls"));
+		} else {
+			res.write(chunk({ role: "assistant", content: d.text }));
+			res.write(chunk({}, "stop"));
+		}
+		res.write(`data: ${JSON.stringify({ ...base, choices: [], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } })}\n\n`);
+		res.end("data: [DONE]\n\n");
+	});
+}).listen(port, "127.0.0.1");
