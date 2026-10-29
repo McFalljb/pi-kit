@@ -177,3 +177,38 @@ export function duration(ms: number): string {
 	const s = Math.round(ms / 1000);
 	return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
 }
+
+/** A command or prompt as one short, redacted line for the widget and the /shells picker. */
+export function short(s: string, n = 48): string {
+	const one = clip(s).replace(/\s+/g, " ").trim();
+	return one.length > n ? `${one.slice(0, n - 1)}…` : one;
+}
+
+export interface PanelRow {
+	id: string; // "" for the "+N more" row
+	status: string;
+	label: string;
+	warn?: boolean;
+}
+
+type PanelTask = { id: string; command: string; started: number; ended?: number; leftover?: boolean; watch?: { re?: RegExp; matches: number } };
+const plural = (n: number, word: string, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
+
+/** Widget rows: running shells, finished shells with processes left in their group, pending timers. */
+export function panelRows(tasks: PanelTask[], wakes: { id: string; prompt: string; due: number }[], now: number, cap = 5): PanelRow[] {
+	const rows: PanelRow[] = [];
+	for (const t of tasks) {
+		if (t.ended !== undefined) continue;
+		const w = t.watch && (t.watch.re ? ` · watching /${short(t.watch.re.source, 24)}/ · ${plural(t.watch.matches, "match", "matches")}` : ` · watching all lines · ${plural(t.watch.matches, "line")}`);
+		rows.push({ id: t.id, status: duration(now - t.started) + (w || ""), label: short(t.command) });
+	}
+	for (const t of tasks) if (t.ended !== undefined && t.leftover) rows.push({ id: t.id, status: "exited, processes left in its group", label: short(t.command), warn: true });
+	for (const w of wakes) rows.push({ id: w.id, status: `wakes in ${duration(Math.max(0, w.due - now))}`, label: short(w.prompt) });
+	return rows.length > cap ? [...rows.slice(0, cap), { id: "", status: `+${rows.length - cap} more · /shells`, label: "" }] : rows;
+}
+
+/** Footer text, e.g. "2 shells · 1 monitor · 1 timer · /shells"; undefined when nothing is active. */
+export function footerText(n: { shells: number; monitors: number; timers: number; leftovers: number }): string | undefined {
+	const parts = [plural(n.shells, "shell"), plural(n.monitors, "monitor"), plural(n.timers, "timer"), plural(n.leftovers, "leftover")].filter((p) => !p.startsWith("0 "));
+	return parts.length ? `${parts.join(" · ")} · /shells` : undefined;
+}

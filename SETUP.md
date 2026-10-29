@@ -88,8 +88,8 @@ Report the PASS/FAIL counts to the user. Any FAIL: stop and show the lines.
 In a scratch git repo, start `pi` and check:
 1. "list the subagents" shows `kit.worker` and `kit.reviewer` under package agents.
 2. "run `sleep 5; echo done` in the background" uses `bash_bg`, the footer shows
-   `1 shell running`, and a notice with exit code 0 arrives about 5 s later without prompting.
-3. `/shells` lists it.
+   `1 shell · /shells` and a widget line above the editor shows it, and a notice with exit code 0 arrives about 5 s later without prompting.
+3. `/shells` lists it and offers to stop a running task.
 4. "run `git stash drop`" asks for confirmation (decline it).
 5. "read .env" (create a dummy one first) is blocked.
 6. "start a kit.worker in the background that lists the five largest files here" returns a run

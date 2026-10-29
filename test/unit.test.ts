@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { clip, compilePattern, evictable, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, splitLines } from "../extensions/shell/lines.ts";
+import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
 	assert.deepEqual(splitLines("", "a\nb\r\nc"), { lines: ["a", "b"], rest: "c" });
@@ -129,4 +129,42 @@ test("shell log reads get assignment redaction (P3-4)", () => {
 	assert.equal(isShellLog("sh1.log", dir), true);
 	assert.equal(isShellLog(path.join(dir, "notes.txt"), "/x"), false);
 	assert.equal(isShellLog("/repo/sh1.log", "/x"), false);
+});
+
+test("short: one redacted line, cut to n", () => {
+	assert.equal(short("npm run\n  dev"), "npm run dev");
+	assert.equal(short("x".repeat(60), 10), `${"x".repeat(9)}…`);
+	const s = short(`curl -H "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz0123456789AB" https://example.com/${"p".repeat(80)}`);
+	assert.ok(!s.includes("ghp_abc") && s.length <= 48, s);
+});
+
+test("panelRows: shells, monitors, leftovers, timers, cap", () => {
+	const now = 100_000;
+	const rows = panelRows(
+		[
+			{ id: "sh1", command: "sleep 30", started: now - 12_000, watch: { re: /READY/, matches: 1 } },
+			{ id: "sh2", command: "tail -f log", started: now - 75_000, watch: { matches: 3 } },
+			{ id: "sh3", command: "make", started: 0, ended: now },
+			{ id: "sh4", command: "serve &", started: 0, ended: now, leftover: true },
+		],
+		[{ id: "wk5", prompt: "check\nthe deploy", due: now + 90_000 }],
+		now,
+	);
+	assert.deepEqual(rows, [
+		{ id: "sh1", status: "12s · watching /READY/ · 1 match", label: "sleep 30" },
+		{ id: "sh2", status: "1m15s · watching all lines · 3 lines", label: "tail -f log" },
+		{ id: "sh4", status: "exited, processes left in its group", label: "serve &", warn: true },
+		{ id: "wk5", status: "wakes in 1m30s", label: "check the deploy" },
+	]);
+	const many = panelRows([], Array.from({ length: 8 }, (_, i) => ({ id: `wk${i}`, prompt: "p", due: now })), now);
+	assert.equal(many.length, 6);
+	assert.deepEqual(many[5], { id: "", status: "+3 more · /shells", label: "" });
+	assert.equal(panelRows([], Array.from({ length: 8 }, (_, i) => ({ id: `wk${i}`, prompt: "p", due: now })), now, Infinity).length, 8);
+	assert.deepEqual(panelRows([], [], now), []);
+});
+
+test("footerText counts each kind", () => {
+	assert.equal(footerText({ shells: 2, monitors: 1, timers: 1, leftovers: 0 }), "2 shells · 1 monitor · 1 timer · /shells");
+	assert.equal(footerText({ shells: 0, monitors: 0, timers: 0, leftovers: 1 }), "1 leftover · /shells");
+	assert.equal(footerText({ shells: 0, monitors: 0, timers: 0, leftovers: 0 }), undefined);
 });

@@ -72,7 +72,12 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
     1800 s, the drain window), that wakes the session with the prompt. For checks no shell
     command can observe.
   - `shell_list {}` and `/shells` list running and the last 20 finished tasks and pending
-    timers; the footer shows how many are running.
+    timers; in the TUI, `/shells` then offers a picker that stops the chosen task (the same
+    path as `shell_stop`). A widget above the editor shows one line per running shell (id,
+    running time, `watching /pattern/ · N matches` when monitored, command), finished shell
+    with processes left in its group, and pending timer (time left, prompt), at most 5 plus
+    `+N more · /shells`; it never shows output lines. The footer counts them, e.g.
+    `2 shells · 1 monitor · 1 timer · /shells`.
   - Every command goes through the guardrails' `checkCommand`, the same gate as `bash`
     (confirm with a UI, block without).
     Each output line is redacted like bash output before it is cut to length, so a cut cannot
