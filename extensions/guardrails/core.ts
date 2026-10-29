@@ -3,7 +3,7 @@
  *
  * - Confirms dangerous bash commands (destructive git, rm -rf, deploys, cluster/infra changes,
  *   alert silencing, SQL drops). Without a UI (print/json mode, subagent children) they are blocked.
- * - Blocks reading or writing secret files (.env, keys, credential stores) through tools and bash.
+ * - Blocks reading or writing .env files and private keys through tools and bash.
  * - In read-only sessions blocks file edits and mutating bash commands.
  * - Redacts secret-shaped strings from tool output before the model sees it.
  *
@@ -57,22 +57,16 @@ const MUTATING: RegExp[] = [
 	/\bsed\s+[^|;&]*-i\b/,
 ];
 
-// Secret files: matched against a path (tools) or anywhere in a bash command.
+// Secret files: matched against a path (tools) or anywhere in a bash command. Only .env files and
+// private keys: credential stores and CLI logins (aws sso, teleport, gcloud, kube) are left to the
+// tools that use them, and token-shaped output is still redacted.
 const SECRET_IN_TEXT: RegExp[] = [
 	/(?:^|[\s'"=/:])\.env(?:\.(?!example\b|sample\b|template\b|dist\b)[\w-]+)?(?=$|[\s'";|&)<>])/,
 	/\bid_(?:rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/,
 	/\.(?:pem|key|p12|pfx|keystore|jks)(?=$|[\s'";|&)])/,
-	/\.aws\/credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b|\.docker\/config\.json\b|\.kube\/config\b/,
-	/\.pi\/agent\/auth\.json\b|\bcredentials\.json\b|\bsecrets?\.(?:ya?ml|json|toml)\b/,
-	// auth.json or credentials files inside a dot-directory (~/.config/gcloud/credentials,
-	// ~/.codex/auth.json). The bare words are not matched: code and variable names use them.
-	/\/\.[\w.-]+(?:\/[\w.-]+)*\/(?:auth\.json|credentials)(?=$|[\s'";|&)<>])/,
 ];
 const SECRET_COMMANDS: RegExp[] = [
-	/\bsops\b[^|;&]*\s(?:-d|--decrypt|decrypt|exec-env|exec-file)\b/,
 	/(?:^|[;&|]\s*)(?:printenv|env|export\s+-p|set)\s*(?:$|[;&|])/,
-	/\bpi\s+auth\s+print-/,
-	/\b(?:security\s+find-(?:generic|internet)-password|op\s+read|vault\s+kv\s+get|gcloud\s+auth\s+print-)/,
 ];
 
 // Tools whose `path` input is checked against the secret-file patterns: pi's builtins plus the
@@ -81,12 +75,6 @@ const PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "ffgr
 
 function isSecretPath(p: string): boolean {
 	return SECRET_IN_TEXT.some((r) => r.test(` ${p}`));
-}
-
-/** The credential or pi agent directory `dir` lies in, if any (a background shell must not run there). */
-export function secretDir(dir: string, home = os.homedir(), agentDir = process.env.PI_CODING_AGENT_DIR || path.join(home, ".pi", "agent")): string | undefined {
-	const dirs = [path.resolve(agentDir), ...[".ssh", ".aws", ".kube", ".gnupg"].map((d) => path.join(home, d))];
-	return dirs.find((d) => dir === d || dir.startsWith(d + path.sep));
 }
 
 /** Whether `p` (relative to `cwd`) is a background shell output file (extensions/shell). */

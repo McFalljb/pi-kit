@@ -10,7 +10,7 @@
  *   shell_list and /shells: running and recent tasks. The footer shows the running count.
  *
  * Every command goes through the kit guardrails' checkCommand (confirm dangerous commands, block
- * secret access), and may not run in a credential or pi agent directory. Every delivered line is
+ * secret access). Every delivered line is
  * redacted like bash output before it is cut, and private key blocks are dropped. Not registered
  * in read-only sessions (PI_KIT_READONLY=1). Tasks belong to this pi process: they are killed
  * when the session ends or reloads and do not survive a restart. Processes left in a task's
@@ -25,7 +25,7 @@ import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { checkCommand, redact, secretDir } from "../guardrails/core.ts";
+import { checkCommand, redact } from "../guardrails/core.ts";
 import {
 	afterOpenKey,
 	clip,
@@ -339,8 +339,6 @@ export default function (pi: ExtensionAPI) {
 		if (blocked) throw new Error(blocked);
 		const cwd = path.resolve(ctx.cwd, cwdParam ?? ".");
 		if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`cwd ${cwd} is not a directory`);
-		const secret = secretDir(cwd) ?? secretDir(fs.realpathSync(cwd));
-		if (secret) throw new Error(`cwd ${cwd} is inside ${secret}, which holds credentials or pi's own state. Background shells do not run there.`);
 		dir ??= fs.mkdtempSync(path.join(os.tmpdir(), "pi-shell-"));
 		const id = `sh${++seq}`;
 		const out = path.join(dir, `${id}.log`);

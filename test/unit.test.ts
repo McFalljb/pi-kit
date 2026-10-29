@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { commandVerdict, isShellLog, redact, secretDir } from "../extensions/guardrails/core.ts";
+import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
 import { clip, compilePattern, evictable, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -119,23 +119,13 @@ test("evictable keeps tasks whose group may be alive (P1-2)", () => {
 	assert.deepEqual(evictable([{ id: 1, ended: 9, gone: true }, { id: 2, ended: 3, gone: true }], 1).map((t) => t.id), [2]);
 });
 
-test("secret files: auth.json and credentials in dot-directories (P2-4)", () => {
-	for (const c of ["less ~/.config/gcloud/credentials", "cat ~/.codex/auth.json", "cp /home/u/.aws/credentials /tmp/x", "cat '~/.config/x/auth.json'"]) {
-		assert.match(commandVerdict(c, false).block ?? "", /secret/, c);
-	}
-	for (const c of ["rg credentials", "grep -rn auth.json src", "cat credentials.example", "cat oauth.json", "go test ./credentials_test.go", "cat mycredentials", "cat docs/credentials.md", "ls credentials-helper", "rg -n 'loadCredentials|credentials'"]) {
+test("credential stores and CLI logins are not blocked; .env and private keys are", () => {
+	for (const c of ["rg credentials", "cat ~/.aws/credentials", "aws sso login --profile dev", "tsh login --proxy=tele.example", "cat ~/.config/gcloud/credentials", "TOKEN=$(gcloud auth print-access-token) curl -H x", "kubectl --kubeconfig ~/.kube/config get pods", "sops -d secrets.yaml", "cat ~/.codex/auth.json"]) {
 		assert.equal(commandVerdict(c, false).block, undefined, c);
 	}
-});
-
-test("secretDir rejects credential and agent directories as cwd (P2-4)", () => {
-	const home = "/home/u";
-	assert.equal(secretDir("/home/u/.ssh", home, "/home/u/.pi/agent"), "/home/u/.ssh");
-	assert.equal(secretDir("/home/u/.aws/sso", home, "/home/u/.pi/agent"), "/home/u/.aws");
-	assert.equal(secretDir("/home/u/.pi/agent/sessions", home, "/home/u/.pi/agent"), "/home/u/.pi/agent");
-	assert.equal(secretDir("/opt/agent", home, "/opt/agent"), "/opt/agent");
-	assert.equal(secretDir("/home/u/.sshx", home, "/home/u/.pi/agent"), undefined);
-	assert.equal(secretDir("/home/u/src", home, "/home/u/.pi/agent"), undefined);
+	for (const c of ["cat .env", "cat ~/.ssh/id_ed25519", "cat server.pem"]) {
+		assert.match(commandVerdict(c, false).block ?? "", /secret/, c);
+	}
 });
 
 test("shell log reads get assignment redaction (P3-4)", () => {

@@ -297,8 +297,7 @@ check "log cap: task killed with a clear notice" "Background shell sh1 killed: o
 # 23. no background shell in the agent dir; reading a shell output file redacts assignments;
 # headless wake_later is clamped to the drain window
 run p23 "Steps:
-$(step bash_bg "{\"command\":\"ls\",\"cwd\":\"$PI_CODING_AGENT_DIR\"}"; step bash_bg '{"command":"echo password=supersecretvalue123; echo done"}'; step bash '{"command":"sleep 1; echo waited"}'; step read '{"path":"$OUT"}'; step wake_later '{"seconds":7200,"prompt":"never"}'; step shell_stop '{"id":"wk2"}')"
-check "cwd: agent dir refused" "which holds credentials or pi's own state" "$T/p23.log"
+$(step bash_bg '{"command":"echo password=supersecretvalue123; echo done"}'; step bash '{"command":"sleep 1; echo waited"}'; step read '{"path":"$OUT"}'; step wake_later '{"seconds":7200,"prompt":"never"}'; step shell_stop '{"id":"wk2"}')"
 check "read of a shell log: assignment redacted" '"role":"tool","text":"password=\[REDACTED\]' "$T/p23.log"
 nocheck "read of a shell log: value never sent" '"role":"tool","text":"[^"]*supersecretvalue123' "$T/p23.log"
 check "headless wake_later clamped to the drain window" "wakes this session in 1800s (clamped from 7200)" "$T/p23.log"
