@@ -12,6 +12,9 @@ description: Get a fresh-context, read-only adversarial review (agent kit.review
 - Consequential (security, concurrency, data integrity, cross-component contracts) or the user
   asks for parallel review: **two** independent reviewers, launched together with distinct risk
   angles. At least one runs on a different provider. Neither sees the other's findings.
+- Several small PRs on one feature: one review of the combined change, not one per PR.
+- Before any review: the change's tests, lint and type checks pass (CI green, or the repo's local
+  checks). The reviewer looks for what tests can't catch, not for what a test run would show.
 
 ## 2. Pin the target
 ```bash
@@ -37,6 +40,7 @@ provider is configured, say so to the user instead of quietly using the author's
 ## Scope
 `git diff <BASE>..<HEAD>` in this worktree, plus these related files: <paths>.
 Angle: <e.g. correctness and edge cases | concurrency and data integrity | security>.
+Attack these first: <the 3-5 riskiest things about this change>. Don't audit untouched code.
 
 ## Validation evidence so far
 <tests the worker ran, with pass/fail; CI state if any>
@@ -64,10 +68,12 @@ the user: reviewed SHA, reviewer model(s), verdicts, confirmed findings, and wha
 and why.
 
 ## 7. Fix and re-review (cap: 2 rounds)
-- Send accepted fixes to the **original** worker:
+- Send accepted fixes to the **original** worker, with a failing test for each finding first:
   `subagent({ action: "resume", id: "<worker run id>", message: "<accepted findings and the fix to make>" })`.
 - Round 2 covers only the fix diff and the findings still open: a fresh `kit.reviewer` with the
   new HEAD, the round-1 findings and how each was resolved. To keep the same reviewer's context,
   `subagent({ action: "resume", id: "<reviewer run id>", message })` works too.
-- Stop after round 2. Take remaining disagreements to the user instead of looping on polish.
+- Stop after round 2; never run a third. If real issues remain after two rounds, treat it as a
+  sign the design is too complex: propose a simpler implementation to the user instead of
+  patching again. List leftover polish for the user; don't chase it.
 - Then wait for CI to go green before asking to merge.
