@@ -64,7 +64,8 @@ interface Watch {
 	pending: string[]; // at most MAX_BATCH lines; the rest are only counted
 	skipped: number;
 	skippedBytes: number; // output skipped because the reader fell behind
-	resync: boolean; // after a skip: the first line is partial and may start inside a key block
+	resync: boolean; // the next lines may start inside a key block (after a skip, or attached mid-file)
+	partial: boolean; // and the first of them is a partial line
 	inKey: boolean; // inside a private key block: lines are dropped until its END line
 	matches: number;
 	notices: number;
@@ -156,7 +157,7 @@ export default function (pi: ExtensionAPI) {
 		if (final && w.carry) lines.push(w.carry);
 		if (w.resync && lines.length) {
 			w.resync = false;
-			lines.splice(0, Math.max(1, afterOpenKey(lines)));
+			lines.splice(0, Math.max(w.partial ? 1 : 0, afterOpenKey(lines)));
 		}
 		const kept: string[] = [];
 		for (const line of lines) {
@@ -192,7 +193,7 @@ export default function (pi: ExtensionAPI) {
 					w.carry = "";
 					w.decoder = new StringDecoder("utf8");
 					w.inKey = false;
-					w.resync = true;
+					w.resync = w.partial = true;
 				}
 				do {
 					const n = Math.min(size - w.offset, READ_CAP);
@@ -258,6 +259,19 @@ export default function (pi: ExtensionAPI) {
 		return takePending(w);
 	}
 
+	function atLineStart(file: string, offset: number): boolean {
+		const b = Buffer.alloc(1);
+		let fd: number | undefined;
+		try {
+			fd = fs.openSync(file, "r");
+			return fs.readSync(fd, b, 0, 1, offset - 1) === 1 && b[0] === 10;
+		} catch {
+			return false;
+		} finally {
+			if (fd !== undefined) fs.closeSync(fd);
+		}
+	}
+
 	function watch(t: Task, re: RegExp | undefined, timeoutSec: number | undefined, ownsTask: boolean) {
 		// A command the monitor started is read from the start; an attached task from now on.
 		const offset = ownsTask ? 0 : (fs.statSync(t.out, { throwIfNoEntry: false })?.size ?? 0);
@@ -268,7 +282,8 @@ export default function (pi: ExtensionAPI) {
 			pending: [],
 			skipped: 0,
 			skippedBytes: 0,
-			resync: false,
+			resync: offset > 0, // an attached watch may start inside a key block
+			partial: offset > 0 && !atLineStart(t.out, offset),
 			inKey: false,
 			matches: 0,
 			notices: 0,
@@ -293,7 +308,6 @@ export default function (pi: ExtensionAPI) {
 		t.code = code;
 		t.signal = signal;
 		clearTimeout(t.timer);
-		clearInterval(t.cap);
 		let left: string[] = [];
 		let matched: number | undefined;
 		let failed: string | undefined;
@@ -305,15 +319,23 @@ export default function (pi: ExtensionAPI) {
 		}
 		// bash has exited, but what it started in the background may still run in its group.
 		const leftover = !groupGone(t);
-		if (leftover) t.reap = setInterval(() => groupGone(t) && clearInterval(t.reap), 1000).unref();
+		// Leftovers keep writing to the output file, so the log cap runs until the group is gone.
+		if (leftover) {
+			t.reap = setInterval(() => {
+				if (groupGone(t)) {
+					clearInterval(t.reap);
+					clearInterval(t.cap);
+				}
+			}, 1000).unref();
+		} else clearInterval(t.cap);
 		footer();
 		for (const old of evictable([...tasks.values()], KEEP_FINISHED)) tasks.delete(old.id);
 		if (t.quiet) return wake?.();
 		const status = t.reason ? `${t.reason} (${signal ?? `code ${code}`})` : signal ? `killed by ${signal}` : `exited with code ${code}`;
 		let text = `Background shell ${t.id} ${status} after ${duration(t.ended - t.started)}: \`${clip(t.command)}\`\nOutput: ${t.out}`;
 		if (leftover && !t.reason) {
-			const n = groupSize(t.pid);
-			text += `\n${n ? `${n} process${n === 1 ? " is" : "es are"}` : "Processes are"} still running in its group; shell_stop ${t.id} kills them.`;
+			const n = groupSize(t.pid); // 0: emptied since the check; undefined: no pgrep
+			if (n !== 0) text += `\n${n ? `${n} process${n === 1 ? " is" : "es are"}` : "Processes are"} still running in its group; shell_stop ${t.id} kills them.`;
 		}
 		if (failed) text += `\nMonitor ended early: ${failed}.`;
 		if (left.length) text += `\nUndelivered monitor lines:\n${left.join("\n")}`;

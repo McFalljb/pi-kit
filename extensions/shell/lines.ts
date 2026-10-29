@@ -119,6 +119,7 @@ export function lineMatcher(re: RegExp, budgetMs = MATCH_BUDGET_MS): { test(line
 	const done = new Int32Array(flag);
 	const { port1, port2 } = new MessageChannel();
 	const worker = new Worker(MATCHER_JS, { eval: true, workerData: { source: re.source, flags: re.flags, flag, port: port2 }, transferList: [port2] });
+	worker.on("error", () => {}); // an uncaught error in the worker must not take pi down; test() then times out
 	worker.unref();
 	port1.unref();
 	const close = () => {
@@ -145,8 +146,8 @@ export function groupAlive(pgid: number): boolean {
 	try {
 		process.kill(-pgid, 0);
 		return true;
-	} catch {
-		return false;
+	} catch (e) {
+		return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, but owned by another user
 	}
 }
 
