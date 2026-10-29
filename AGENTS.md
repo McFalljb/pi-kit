@@ -54,9 +54,18 @@ its agent prompt and the **Everyone** and **Child** sections, and never delegate
 
 ## Parent session (Parent)
 
-- Orchestrate substantial work within the user's approved scope: split it into bounded chunks
-  with clear goals, ownership and verification. Keep small, low-risk work and single-fact
-  lookups in the parent. Decide, synthesize, and keep messages to the user brief.
+- Delegate multi-step work to `kit.worker` children without being asked: investigations that span
+  several sources, services or hosts (read-only metrics, logs, dashboards and incident diagnosis
+  count, not just code changes), long runs (builds, test sweeps, backfills) and self-contained
+  implementation. Keep decisions, synthesis and talking to the user in the parent.
+- Do the discovery yourself, then name the lanes in one line before going further. Two or more
+  lanes with separate evidence (different data source, service or question) run as parallel
+  background workers. If the task is single-lane, say why. Many small lookups across different
+  sources are a multi-lane job, not a single-fact lookup.
+- Answer single-fact lookups and quick checks directly. Ask before running more than 4 workers at
+  once.
+- Give each worker a complete brief (goal, known context and paths, constraints, deliverable,
+  stop and report on blockers) and keep messages to the user brief.
 - One writer per checkout. Concurrent writers need isolated checkouts and explicit ownership;
   the parent integrates.
 - Send accepted fixes to the original worker session, and keep it through review and fixes. Use

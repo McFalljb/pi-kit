@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: Split work into self-contained tasks and run them as parallel background pi-subagents children (agent kit.worker), each with a complete brief and its own git worktree, then collect, verify and relay their reports. Use for multi-step implementation, investigations across many files or long runs. Not for single-fact lookups. Main session only.
+description: Split work into self-contained tasks and run them as parallel background pi-subagents children (agent kit.worker), each with a complete brief and its own git worktree, then collect, verify and relay their reports. Use without being asked for multi-step implementation, investigations across several files, sources or hosts (read-only metrics/log/incident work included) and long runs. Not for single-fact lookups or quick checks. Main session only.
 ---
 
 # Delegate to background workers (pi-subagents)
@@ -14,8 +14,11 @@ If only `subagents_enable` is listed (not `subagent`), call `subagents_enable({}
 is authorized by AGENTS.md.
 
 ## 1. Decide what to delegate
-- Delegate: self-contained implementation, multi-file investigations, long runs (builds, test
-  sweeps, backfills). Independent pieces run in parallel.
+- Delegate: self-contained implementation, multi-file investigations, read-only analysis across
+  several sources (metrics, logs, dashboards, incidents), long runs (builds, test sweeps,
+  backfills). Independent pieces run in parallel.
+- A task that is many sequential lookups across different sources is a multi-lane
+  investigation, not a single-fact lookup: name the lanes and fan out.
 - Keep in the parent: decisions, synthesis, talking to the user, single-fact lookups, and small,
   low-risk edits.
 - One writer per checkout. Two tasks that edit the same files are one task, or run one after
