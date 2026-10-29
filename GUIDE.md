@@ -243,6 +243,13 @@ bash, no background shells), which is handy for a look-only session.
 - **Read-only mode covers the kit's tools only.** `kit.reviewer` is safe because its `tools`
   list is an allowlist. A `PI_KIT_READONLY=1` session still has every other installed
   package's tools.
+- **A hanging `pi -p` run.** First run it against the mock model: `test/smoke.sh` step 4 does
+  `subagent list` in print mode with the kit and pi-subagents and must finish in seconds (it
+  also does with pi-intercom, pi-web-access, pi-claude-bridge and pi-cursor-sdk loaded). If the
+  mock run is fast, the hang is in the model provider, not the kit: provider extensions such as
+  `pi-claude-bridge` run their own agent process and hand each tool call across to pi. Retry with
+  a built-in provider to confirm, and use the provider's debug log (`CLAUDE_BRIDGE_DEBUG=1` for
+  the bridge) to see where it waits.
 - **No plan mode.** pi has none built in; ask for a plan before edits, or use read-only mode.
   `@plannotator/pi-extension` is optional (heavy, opens a browser and a local server).
 - **No CI-side enforcement.** The CI gate is an `AGENTS.md` rule the parent follows plus a guardrail that

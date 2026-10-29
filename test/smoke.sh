@@ -65,9 +65,10 @@ json() { node -e 'console.log(JSON.stringify(process.argv[1]))' "$1"; }
 # run <name> <prompt>: one headless parent turn (plus pi-subagents' auto-drain of background work).
 # The mock log lines of this run are copied to $T/<name>.log.
 run() {
-	local before; before="$(wc -l < "$T/mock.log")"
+	local before start; before="$(wc -l < "$T/mock.log")" start="$(date +%s)"
 	perl -e 'alarm shift; exec @ARGV' 240 pi -p --no-session "$2" > "$T/$1.out" 2> "$T/$1.err" < /dev/null
 	echo "$?" > "$T/$1.exit"
+	echo "$(( $(date +%s) - start ))" > "$T/$1.secs"
 	tail -n +"$((before + 1))" "$T/mock.log" > "$T/$1.log"
 }
 # sub <args-json>: one parent step that calls the subagent tool.
@@ -107,6 +108,7 @@ $(sub '{"action":"list"}')"
 check "kit.worker listed as package agent" "kit.worker (pi-kit" "$T/p4.out"
 check "kit.reviewer listed as package agent" "kit.reviewer (pi-kit" "$T/p4.out"
 nocheck "no agent load warnings" "kit\.\(worker\|reviewer\).*\(invalid\|error\|warn\)" "$T/p4.err"
+if [ "$(cat "$T/p4.exit")" = 0 ] && [ "$(cat "$T/p4.secs")" -lt 60 ]; then echo "PASS print-mode subagent list exits (code 0, $(cat "$T/p4.secs")s)"; else echo "FAIL print-mode subagent list: exit $(cat "$T/p4.exit") after $(cat "$T/p4.secs")s"; fail=1; fi
 
 # 5. foreground kit.worker: runs in cwd, guardrails apply inside the child
 TASK="$(json "Goal: smoke
