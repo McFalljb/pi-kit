@@ -215,5 +215,20 @@ $(sub "{\"agent\":\"kit.worker\",\"task\":$TASK,\"async\":false}")"
 check "worker ran bash_bg in its cwd" "worker-bg" "$T/work/worker-bg.txt"
 check "worker child got the exit notice" "GOT SHELL: Background shell sh1 exited with code 4" "$T/p16.log"
 
+# 17. monitor under a flood: notices stay capped at 20 lines and count the rest
+run p17 "Steps:
+$(step monitor '{"command":"for i in $(seq 1 50000); do echo ERR $i; done","pattern":"ERR"}')"
+check "flood: lines beyond the cap are counted" 'more matching lines (see the output file)' "$T/p17.log"
+check "flood: monitor still ends with the command" "Monitor total: 50000 matching lines" "$T/p17.log"
+
+# 18. wake_later: clamped to 60s, fires as a notice; a cancelled timer never fires
+run p18 "Steps:
+$(step wake_later '{"seconds":120,"prompt":"never"}'; step shell_list '{}'; step shell_stop '{"id":"wk1"}'; step wake_later '{"seconds":1,"prompt":"check the deploy page"}')"
+check "wake_later: listed while pending" '"role":"tool","text":"wk1  wakes in' "$T/p18.log"
+check "wake_later: cancelled" "Cancelled timer wk1" "$T/p18.log"
+check "wake_later: clamped to the minimum" "wakes this session in 60s (clamped from 1)" "$T/p18.log"
+check "wake_later: fired with its prompt" "GOT SHELL: Wake-up wk2 after 1m00s: check the deploy page" "$T/p18.out"
+nocheck "wake_later: cancelled timer never fired" "Wake-up wk1" "$T/p18.log"
+
 echo "artifacts: $T"
 exit $fail

@@ -1,7 +1,7 @@
-// Pure helpers for the background shell extension (unit-tested in test/shell-lines.test.ts).
+// Pure helpers for the background shell extension (unit-tested in test/unit.test.ts).
 
 export const MAX_LINE = 300; // characters kept per delivered line
-export const MAX_BATCH = 20; // lines per monitor notice; the rest are counted
+export const MAX_BATCH = 20; // lines kept per monitor notice; the rest are counted
 
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07/g;
 
@@ -22,13 +22,6 @@ export function clip(line: string): string {
 /** The last `n` non-empty lines of a text, clipped. */
 export function lastLines(text: string, n: number): string[] {
 	return text.split(/\r?\n/).filter((l) => l.trim() !== "").slice(-n).map(clip);
-}
-
-/** Lines for one notice: at most MAX_BATCH, plus a count of the ones left out. */
-export function batchText(lines: string[]): string {
-	const shown = lines.slice(0, MAX_BATCH);
-	const extra = lines.length - shown.length;
-	return shown.join("\n") + (extra > 0 ? `\n… ${extra} more matching line${extra === 1 ? "" : "s"} (see the output file)` : "");
 }
 
 /** Compile a monitor pattern; undefined means every line. Throws a readable error when invalid. */

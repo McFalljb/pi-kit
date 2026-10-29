@@ -8,8 +8,8 @@ import http from "node:http";
 import fs from "node:fs";
 const port = Number(process.argv[2] || 18555);
 const log = process.argv[3] || "/dev/null";
-// Notices from the kit's shell extension (bash_bg exits, monitor batches).
-const SHELL_NOTICE = /^(?:Background shell|Monitor) sh\d+/;
+// Notices from the kit's shell extension (bash_bg exits, monitor batches, wake_later timers).
+const SHELL_NOTICE = /^(?:(?:Background shell|Monitor) sh|Wake-up wk)\d+/;
 const textOf = (c) => (typeof c === "string" ? c : (c || []).map((p) => p.text || "").join(""));
 
 function decide(messages) {
@@ -38,7 +38,7 @@ http.createServer((req, res) => {
 		const j = JSON.parse(body || "{}");
 		const msgs = j.messages || [];
 		const d = decide(msgs);
-		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), notices: msgs.filter((m) => m.role === "user" && SHELL_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 400)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
+		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), notices: msgs.filter((m) => m.role === "user" && SHELL_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 2000)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
 		const base = { id: "mock", object: "chat.completion.chunk", created: 0, model: j.model };
 		const chunk = (delta, finish = null) => `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
 		res.writeHead(200, { "content-type": "text/event-stream" });

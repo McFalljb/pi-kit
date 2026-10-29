@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { commandVerdict, redact } from "../extensions/guardrails/core.ts";
-import { batchText, clip, compilePattern, lastLines, MAX_BATCH, MAX_LINE, splitLines } from "../extensions/shell/lines.ts";
+import { clip, compilePattern, lastLines, MAX_LINE, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
 	assert.deepEqual(splitLines("", "a\nb\r\nc"), { lines: ["a", "b"], rest: "c" });
@@ -19,14 +19,6 @@ test("clip strips escapes and redraws and caps length", () => {
 
 test("lastLines skips blank lines", () => {
 	assert.deepEqual(lastLines("a\n\nb\nc\n\n", 2), ["b", "c"]);
-});
-
-test("batchText caps lines per notice", () => {
-	const lines = Array.from({ length: MAX_BATCH + 3 }, (_, i) => `l${i}`);
-	const t = batchText(lines);
-	assert.equal(t.split("\n").length, MAX_BATCH + 1);
-	assert.match(t, /3 more matching lines/);
-	assert.equal(batchText(["one"]), "one");
 });
 
 test("compilePattern", () => {

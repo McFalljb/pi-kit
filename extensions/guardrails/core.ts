@@ -127,7 +127,7 @@ export async function checkCommand(cmd: string, readonly: boolean, ctx: Pick<Ext
 
 // The kit's background shell tools (extensions/shell). They gate their own commands with
 // checkCommand; here they are blocked outright in read-only sessions and get bash-level redaction.
-const SHELL_TOOLS = new Set(["bash_bg", "monitor", "shell_stop", "shell_list"]);
+const SHELL_TOOLS = new Set(["bash_bg", "monitor", "shell_stop", "shell_list", "wake_later"]);
 
 export function guardrails(readonly: boolean): (pi: ExtensionAPI) => void {
 	return (pi) => register(pi, readonly);
