@@ -300,11 +300,22 @@ check "read of a shell log: assignment redacted" '"role":"tool","text":"password
 nocheck "read of a shell log: value never sent" '"role":"tool","text":"[^"]*supersecretvalue123' "$T/p23.log"
 check "headless wake_later clamped to the drain window" "wakes this session in 1800s (clamped from 7200)" "$T/p23.log"
 
-# 24. notes reminder: past the threshold, one steer to update the session note, then none
+# 24. notes reminder: past the threshold, one reminder in the context, no extra turn, and the
+# planned steps still finish (print mode keeps the real answer); 0 disables it
 PI_KIT_NOTES_REMIND_PERCENT=0.0001 run p24 "Steps:
 $(step bash '{"command":"echo one"}'; step bash '{"command":"echo two"}')"
-N="$(grep -c '"last":\[{"role":"user","text":"Context is [0-9]*% full and will be compacted soon' "$T/p24.log")"
-if [ "$N" = 1 ]; then echo "PASS notes reminder sent once"; else echo "FAIL notes reminder sent $N times (want 1)"; fail=1; fi
+N="$(tail -1 "$T/p24.log" | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).reminders.length)')"
+if [ "$N" = 1 ]; then echo "PASS notes reminder sent once"; else echo "FAIL notes reminder: $N in the last request (want 1)"; fail=1; fi
+check "notes reminder shows a decimal percent" '"reminders":\["Context is [0-9]*\.[0-9]% full' "$T/p24.log"
+check "notes reminder: planned steps finished" "FINAL: two" "$T/p24.out"
+if [ "$(wc -l < "$T/p24.log")" -eq 3 ]; then echo "PASS notes reminder started no extra turn"; else echo "FAIL notes reminder: $(wc -l < "$T/p24.log") requests (want 3)"; fail=1; fi
+# A reminder due on a turn that ends the run must not start another turn (its text would
+# replace the answer in print mode).
+PI_KIT_NOTES_REMIND_PERCENT=0.0001 run p24c "hello"
+if [ "$(wc -l < "$T/p24c.log")" -eq 1 ] && [ "$(cat "$T/p24c.out")" = "FINAL: no tools" ]; then echo "PASS notes reminder on the final turn adds no turn"; else echo "FAIL notes reminder on the final turn: $(wc -l < "$T/p24c.log") requests, output $(head -c 80 "$T/p24c.out")"; fail=1; fi
+PI_KIT_NOTES_REMIND_PERCENT=0 run p24b "Steps:
+$(step bash '{"command":"echo one"}')"
+nocheck "notes reminder disabled by 0" "compacted soon" "$T/p24b.log"
 nocheck "no notes reminder below the threshold" "will be compacted soon" "$T/p1.log"
 
 if ls -d "$TMPDIR"/pi-shell-* >/dev/null 2>&1; then echo "FAIL shell temp dirs left behind"; fail=1; else echo "PASS shell temp dirs removed at shutdown"; fi

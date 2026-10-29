@@ -11,11 +11,13 @@ const port = Number(process.argv[2] || 18555);
 const log = process.argv[3] || "/dev/null";
 // Notices from the kit's shell extension (bash_bg exits, monitor batches, wake_later timers).
 const SHELL_NOTICE = /^(?:(?:Background shell|Monitor) sh|Wake-up wk)\d+/;
+// The kit's notes reminder: context, not a new request, so the mock keeps playing the user's steps.
+const REMINDER = /^Context is [\d.]+% full and will be compacted soon/;
 const textOf = (c) => (typeof c === "string" ? c : (c || []).map((p) => p.text || "").join(""));
 
 function decide(messages) {
 	let lastUser = -1;
-	for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user") { lastUser = i; break; }
+	for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user" && !REMINDER.test(textOf(messages[i].content))) { lastUser = i; break; }
 	const userText = textOf(messages[lastUser]?.content);
 	// pi-subagents 0.84 wraps the notice in a <pi_subagents_notice> envelope; quote the status line.
 	const report = userText.match(/^Background task (?:completed|failed).*$/m);
@@ -43,7 +45,7 @@ http.createServer((req, res) => {
 		const j = JSON.parse(body || "{}");
 		const msgs = j.messages || [];
 		const d = decide(msgs);
-		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), notices: msgs.filter((m) => m.role === "user" && SHELL_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 2000)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
+		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), notices: msgs.filter((m) => m.role === "user" && SHELL_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 2000)), reminders: msgs.filter((m) => m.role === "user" && REMINDER.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 60)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
 		const base = { id: "mock", object: "chat.completion.chunk", created: 0, model: j.model };
 		const chunk = (delta, finish = null) => `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
 		res.writeHead(200, { "content-type": "text/event-stream" });

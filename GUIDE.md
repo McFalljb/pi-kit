@@ -41,9 +41,11 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
   never to expose secret values. Token-shaped output is redacted.
   These are pattern matches, not a sandbox.
 - **Session notes have a compaction reminder** (`extensions/notes`). Skill `session-notes`
-  keeps a running note (status block plus timeline). When the context passes 75% of the window
-  (`PI_KIT_NOTES_REMIND_PERCENT`), the extension steers the session once to rewrite the status
-  block; it re-arms after each compaction. pi's `session_before_compact` hook fires too late for
+  keeps a running note (status block plus timeline). When the context passes 75% of the window,
+  the extension adds one line to the context asking the session to rewrite the status block, at
+  the end of a turn that ran tools, so the run's next request sees it. It never starts a turn and
+  never lands after a final answer. It re-arms after each compaction.
+  `PI_KIT_NOTES_REMIND_PERCENT` sets the threshold; `0` turns the reminder off. pi's `session_before_compact` hook fires too late for
   the model to write anything, hence the threshold. With a window under about 64k tokens pi's
   own compaction threshold can come first. Not loaded in pi-subagents children.
 - **Background shells are an extension** (`extensions/shell`), modelled on Claude Code's
