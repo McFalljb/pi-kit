@@ -300,6 +300,13 @@ check "read of a shell log: assignment redacted" '"role":"tool","text":"password
 nocheck "read of a shell log: value never sent" '"role":"tool","text":"[^"]*supersecretvalue123' "$T/p23.log"
 check "headless wake_later clamped to the drain window" "wakes this session in 1800s (clamped from 7200)" "$T/p23.log"
 
+# 24. notes reminder: past the threshold, one steer to update the session note, then none
+PI_KIT_NOTES_REMIND_PERCENT=0.0001 run p24 "Steps:
+$(step bash '{"command":"echo one"}'; step bash '{"command":"echo two"}')"
+N="$(grep -c '"last":\[{"role":"user","text":"Context is [0-9]*% full and will be compacted soon' "$T/p24.log")"
+if [ "$N" = 1 ]; then echo "PASS notes reminder sent once"; else echo "FAIL notes reminder sent $N times (want 1)"; fail=1; fi
+nocheck "no notes reminder below the threshold" "will be compacted soon" "$T/p1.log"
+
 if ls -d "$TMPDIR"/pi-shell-* >/dev/null 2>&1; then echo "FAIL shell temp dirs left behind"; fail=1; else echo "PASS shell temp dirs removed at shutdown"; fi
 
 echo "artifacts: $T"

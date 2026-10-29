@@ -11,7 +11,8 @@
   "pi": {
     "extensions": [
       "./extensions/guardrails/index.ts",
-      "./extensions/shell/index.ts"
+      "./extensions/shell/index.ts",
+      "./extensions/notes/index.ts"
     ],
     "skills": [
       "./skills"

@@ -7,7 +7,7 @@ different model; guardrails around dangerous shell commands; background shells a
 that wake the session instead of sleep-and-poll loops.
 
 It is a pi package: two agent definitions for [pi-subagents](https://github.com/nicobailon/pi-subagents),
-two extensions, five skills, two prompts, global `AGENTS.md` rules, and a vetted list of
+three extensions, five skills, two prompts, global `AGENTS.md` rules, and a vetted list of
 third-party packages with pinned versions.
 
 ## Quick start
@@ -29,6 +29,7 @@ instructions for an agent, including what to ask you and what never to touch.
 | `agents/worker.md`, `agents/reviewer.md` | `kit.worker` (writer, verifies before reporting) and `kit.reviewer` (read-only, adversarial) |
 | `extensions/guardrails` | Confirms dangerous commands, redacts secret-shaped output; read-only mode |
 | `extensions/shell` | `bash_bg`, `monitor`, `shell_stop`, `shell_list`, `wake_later`, `/shells` |
+| `extensions/notes` | Once the context is 75% full, reminds the session to update its session note before compaction |
 | `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff` |
 | `prompts/` | `/delegate`, `/review` |
 | `AGENTS.md` | Global rules, labelled by role (everyone / parent / child) because workers load it too |
