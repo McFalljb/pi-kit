@@ -35,17 +35,27 @@ git clone https://github.com/McFalljb/pi-kit ~/pi-kit    # or where the user pre
 ## 3. Install packages, the kit and the global rules
 ```bash
 ~/pi-kit/scripts/install.sh --dry-run     # shows what it would do; nothing changes
-~/pi-kit/scripts/install.sh               # does it
 ```
-The script is idempotent. It:
+The dry run ends with an **AGENTS.md overlap report**: one line per kit section with its key
+(`operating`, `communication`, `safety`, `background`, `parent`, `delegation`, `review`,
+`child`, `notes`) and whether `<agent-dir>/AGENTS.md` already has it, has a section with the same
+heading but other text, likely overlaps it (similar heading words at any heading level, or the
+same key phrases), or lacks it; then a suggested `--sections` line. **Show the user the report
+and ask which sections to add** before running for real:
+```bash
+~/pi-kit/scripts/install.sh --sections communication,background   # what the user picked
+```
+Without `--sections` the script appends only the sections reported as new and skips likely
+overlaps (it says which), so an unattended run never duplicates rules. The script is
+idempotent. It:
 1. checks node and pi;
 2. installs every **recommended** package in `packages.json` at its pinned version with
    `pi install` (a package already configured under the same name is left as it is and
    reported as "kept");
 3. installs the kit itself (`pi install ~/pi-kit`);
 4. merges the kit's `AGENTS.md` into `<agent-dir>/AGENTS.md`: copies it if there is none,
-   otherwise backs the file up to `AGENTS.md.bak.<timestamp>` and appends only the `## `
-   sections whose heading is not already there. Existing text is never changed.
+   otherwise backs the file up to `AGENTS.md.bak.<timestamp>` and appends the chosen (or new)
+   `## ` sections. Existing text is never changed.
 
 Then do these by hand, with the user:
 - **Optional packages.** Show the user the `optional` list in `packages.json` with each `why`,
@@ -56,13 +66,13 @@ Then do these by hand, with the user:
 - **"kept" packages.** If the script kept an older version, tell the user the tested version
   and let them decide. An older `pi-subagents` than 0.84.0 has a known sandbox-escape advisory
   (GHSA-6v8j-6w28-2w8r): recommend upgrading.
-- **AGENTS.md overlap.** If the user's file already had sections with different headings that
-  cover the same ground (their own safety or delegation rules), the kit's were appended
-  alongside. Show the user the appended headings and offer to remove duplicates; do not remove
-  them on your own.
+- **AGENTS.md overlap.** The report catches likely overlaps, not every one. After the merge,
+  show the user the appended headings and offer to remove duplicates; do not remove them on
+  your own. If they skipped `notes` because they have their own notes rules, the kit's skills
+  follow those rules (see skill `session-notes`).
 - **Notes folder.** Ask where durable notes should live and replace `<notes-folder>` in
   `<agent-dir>/AGENTS.md` (section "Durable notes and handoffs"), or leave it for the project
-  AGENTS.md to set.
+  AGENTS.md or `PI_KIT_NOTES_DIR` to set.
 - **Reviewer model.** `kit.reviewer` should run on a different model, ideally another provider,
   than the main session. Ask the user which, then
   `install.sh --reviewer-model <provider>/<model-id>` (backs up `settings.json`, then sets

@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Tests the AGENTS.md merge in scripts/install.sh with fixture files, a stub `pi` and a temp agent
+# dir. No network, no real pi config. Usage: test/merge.sh
+set -uo pipefail
+KIT="$(cd "$(dirname "$0")/.." && pwd)"
+T="$(mktemp -d "${TMPDIR:-/tmp}/pi-kit-merge.XXXXXX")"
+trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/bin"
+# Stub pi: a version, and `pi install` does nothing (every package is already configured below).
+printf '#!/bin/sh\n[ "$1" = --version ] && echo 1.2.0\nexit 0\n' > "$T/bin/pi"; chmod +x "$T/bin/pi"
+PKGS="$(node -p 'const m=require(process.argv[1]);JSON.stringify([...m.recommended.map(p=>p.spec),process.argv[2]])' "$KIT/packages.json" "$KIT")"
+fail=0 n=0
+ok() { n=$((n + 1)); echo "PASS $1"; }
+bad() { n=$((n + 1)); echo "FAIL $1"; fail=1; }
+has() { if grep -q -- "$2" "$3"; then ok "$1"; else bad "$1 (no '$2' in $3)"; fi; }
+hasnt() { if grep -q -- "$2" "$3"; then bad "$1 (found '$2' in $3)"; else ok "$1"; fi; }
+heads() { grep -c '^## ' "$1"; }
+# install <case> <fixture or -> [args...]: fresh agent dir with the fixture as AGENTS.md, run install.sh.
+install() {
+	local c="$1" f="$2"; shift 2
+	export PI_CODING_AGENT_DIR="$T/$c"
+	mkdir -p "$PI_CODING_AGENT_DIR"
+	[ -f "$PI_CODING_AGENT_DIR/settings.json" ] || echo "{\"packages\":$PKGS}" > "$PI_CODING_AGENT_DIR/settings.json"
+	[ "$f" = - ] || [ -f "$PI_CODING_AGENT_DIR/AGENTS.md" ] || cp "$f" "$PI_CODING_AGENT_DIR/AGENTS.md"
+	PATH="$T/bin:$PATH" "$KIT/scripts/install.sh" "$@" > "$T/$c.out" 2>&1
+	echo $? > "$T/$c.exit"
+}
+A() { echo "$T/$1/AGENTS.md"; }
+
+# 1. no file: the kit's file is created whole
+install none -
+has "none: created" "created" "$T/none.out"
+if cmp -s "$(A none)" "$KIT/AGENTS.md"; then ok "none: identical to the kit's"; else bad "none: differs from the kit's"; fi
+
+# 2. empty file: every section is new and appended
+: > "$T/empty.md"
+install empty "$T/empty.md" --dry-run
+has "empty dry-run: suggests all sections" "suggested: scripts/install.sh --sections operating,communication,safety,background,parent,delegation,review,child,notes" "$T/empty.out"
+if [ ! -s "$(A empty)" ]; then ok "empty dry-run: file unchanged"; else bad "empty dry-run: file changed"; fi
+install empty "$T/empty.md"
+if [ "$(heads "$(A empty)")" = 9 ]; then ok "empty: 9 sections appended"; else bad "empty: $(heads "$(A empty)") sections"; fi
+if ls "$T/empty/AGENTS.md.bak."* >/dev/null 2>&1; then ok "empty: backup written"; else bad "empty: no backup"; fi
+
+# 3. kit-identical file: nothing to append, re-run is a no-op
+install same "$KIT/AGENTS.md"
+has "same: every section already there" "operating     Operating rules (Everyone): already there" "$T/same.out"
+has "same: nothing appended" "ok: nothing to append" "$T/same.out"
+if cmp -s "$(A same)" "$KIT/AGENTS.md"; then ok "same: unchanged"; else bad "same: changed"; fi
+
+# 4. a file with its own rules: overlaps reported and skipped, only new sections appended
+install own "$KIT/test/fixtures/agents-own-rules.md" --dry-run
+has "own: operating overlap by heading words" 'operating     Operating rules (Everyone): likely overlap, heading words match "## Operating Rules"' "$T/own.out"
+has "own: parent overlap at any heading level" 'parent        Parent session (Parent): likely overlap, heading words match "### Parent session"' "$T/own.out"
+has "own: child overlap" 'child         Child sessions (Child): likely overlap' "$T/own.out"
+has "own: safety overlap" 'safety        Safety (Everyone): likely overlap, heading words match "### Safety and authority"' "$T/own.out"
+has "own: notes overlap" 'notes         Durable notes and handoffs (Parent): likely overlap, heading words match "## Durable notes (vault)"' "$T/own.out"
+has "own: suggested line" "suggested: scripts/install.sh --sections communication,background,delegation,review" "$T/own.out"
+install own -
+has "own: overlaps skipped and said so" "skipped notes: likely overlap" "$T/own.out"
+for h in "## Communication" "## Background work" "## Delegation mechanics" "## Review and merge gate"; do has "own: appended $h" "^$h" "$(A own)"; done
+hasnt "own: no duplicate operating rules" "^## Operating rules (Everyone)" "$(A own)"
+hasnt "own: no generic notes section" "<notes-folder>" "$(A own)"
+install own -
+has "own: re-run appends nothing" "ok: nothing to append" "$T/own.out"
+
+# 4b. content overlap: a differently named section that says the same thing
+printf '## House style\n\nThink before coding, and keep changes small.\n' > "$T/content.md"
+install content "$T/content.md" --dry-run
+has "content: overlap by key phrase" 'operating     Operating rules (Everyone): likely overlap, content has "think before coding"' "$T/content.out"
+
+# 5. --sections: only the chosen ones, even an overlap; unknown keys refused before anything runs
+install pick "$KIT/test/fixtures/agents-own-rules.md" --sections communication,notes
+if [ "$(heads "$(A pick)")" = 5 ]; then ok "pick: 2 sections appended"; else bad "pick: $(grep '^## ' "$(A pick)" | tr '\n' '|')"; fi
+has "pick: chosen overlap appended" "^## Durable notes and handoffs" "$(A pick)"
+hasnt "pick: others not appended" "^## Background work" "$(A pick)"
+install bad - --sections communication,bogus
+if [ "$(cat "$T/bad.exit")" = 2 ]; then ok "unknown key: exit 2"; else bad "unknown key: exit $(cat "$T/bad.exit")"; fi
+has "unknown key: named" "unknown --sections key: bogus" "$T/bad.out"
+if [ ! -e "$(A bad)" ]; then ok "unknown key: nothing written"; else bad "unknown key: file written"; fi
+
+echo "merge tests: $n run, fail=$fail"
+exit $fail

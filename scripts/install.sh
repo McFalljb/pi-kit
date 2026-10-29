@@ -1,21 +1,28 @@
 #!/usr/bin/env bash
 # Idempotent pi-kit install: checks prerequisites, installs the pinned packages from packages.json
 # and the kit itself with `pi install`, merges the kit's AGENTS.md into the global one (backup
-# first, append missing sections only) and optionally pins the reviewer model.
+# first, append new sections only, skip likely overlaps) and optionally pins the reviewer model.
 # Never reads credential files and never runs /login. See SETUP.md.
 #
-# Usage: scripts/install.sh [--optional name,name] [--reviewer-model provider/id] [--dry-run]
+# Usage: scripts/install.sh [--optional name,name] [--reviewer-model provider/id] [--sections key,key] [--dry-run]
+#   --sections  append only these kit AGENTS.md sections (keys: operating, communication, safety,
+#               background, parent, delegation, review, child, notes); --dry-run shows the report
 set -euo pipefail
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-OPTIONAL="" REVIEWER="" DRY=0
+OPTIONAL="" REVIEWER="" SECTIONS="" DRY=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--optional) OPTIONAL="$2"; shift 2 ;;
 		--reviewer-model) REVIEWER="$2"; shift 2 ;;
+		--sections) SECTIONS="$2"; shift 2 ;;
 		--dry-run) DRY=1; shift ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
+done
+for k in ${SECTIONS//,/ }; do
+	case "$k" in operating|communication|safety|background|parent|delegation|review|child|notes) ;;
+		*) echo "unknown --sections key: $k (see the usage line in $0)" >&2; exit 2 ;; esac
 done
 run() { if [ "$DRY" = 1 ]; then echo "would run: $*"; else "$@"; fi; }
 
@@ -64,37 +71,10 @@ else
 	run pi install "$KIT"
 fi
 
-# 3. AGENTS.md: copy if missing; otherwise back up and append each "## " section whose heading
-# is not already there. A section with the kit's heading but other text is reported and left
-# alone. Re-running appends nothing.
-GLOBAL="$AGENT_DIR/AGENTS.md"
-if [ ! -f "$GLOBAL" ]; then
-	echo "creating $GLOBAL"
-	run cp "$KIT/AGENTS.md" "$GLOBAL"
-else
-	MISSING_FILE="$(mktemp "${TMPDIR:-/tmp}/pi-kit-agents.XXXXXX")"
-	trap 'rm -f "$MISSING_FILE"' EXIT
-	SKIPPED="$(node - "$KIT/AGENTS.md" "$GLOBAL" "$MISSING_FILE" <<'JS'
-const fs = require("fs");
-const [kit, global] = process.argv.slice(2, 4).map((f) => fs.readFileSync(f, "utf8"));
-const heading = (s) => s.split("\n")[0].trim();
-const have = new Map(global.split(/^(?=## )/m).filter((s) => s.startsWith("## ")).map((s) => [heading(s), s.trim()]));
-const sections = kit.split(/^(?=## )/m).slice(1);
-fs.writeFileSync(process.argv[4], sections.filter((s) => !have.has(heading(s))).join(""));
-for (const s of sections) if (have.has(heading(s)) && have.get(heading(s)) !== s.trim()) console.log(`skipped: existing section with the same heading: ${heading(s)}`);
-JS
-)"
-	MISSING="$(cat "$MISSING_FILE")"
-	if [ -n "$SKIPPED" ]; then echo "$SKIPPED"; fi
-	if [ -n "$MISSING" ]; then
-		BACKUP="$GLOBAL.bak.$(date +%Y%m%d%H%M%S)"
-		echo "appending $(grep -c '^## ' <<< "$MISSING") kit section(s) to $GLOBAL (backup: $BACKUP):"
-		grep '^## ' <<< "$MISSING" | sed 's/^/  /'
-		if [ "$DRY" = 0 ]; then cp "$GLOBAL" "$BACKUP"; printf '\n%s' "$MISSING" >> "$GLOBAL"; fi
-	elif [ -z "$SKIPPED" ]; then
-		echo "ok: $GLOBAL already has every kit section"
-	fi
-fi
+# 3. AGENTS.md: report how each kit section overlaps the global file, then append the chosen
+# sections (--sections), or every section that is neither there nor a likely overlap. Backs the
+# file up first; existing text is never changed. Re-running appends nothing.
+node "$KIT/scripts/agents-merge.mjs" "$KIT/AGENTS.md" "$AGENT_DIR/AGENTS.md" "$SECTIONS" "$DRY"
 
 # 4. Reviewer model override (subagents.agentOverrides["kit.reviewer"].model)
 CURRENT=""
