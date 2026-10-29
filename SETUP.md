@@ -87,6 +87,7 @@ Check: `pi list` shows the recommended packages and the kit.
 These use a temporary agent dir and a scripted mock model: no credentials, no model calls.
 ```bash
 ~/pi-kit/test/typecheck.sh                     # "typecheck OK against <pi version>"
+~/pi-kit/test/merge.sh                         # AGENTS.md merge; ends "fail=0"
 ~/pi-kit/test/smoke.sh                         # ends with no FAIL lines; exit code 0
 PI_KIT_RECOMMENDED=1 ~/pi-kit/test/smoke.sh    # same, with the recommended set loaded
 ```
