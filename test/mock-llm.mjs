@@ -1,12 +1,15 @@
 // Scripted OpenAI-compatible chat-completions server for offline smoke tests.
 // A user message containing lines `@@ {"name":"tool","arguments":{...}}` is played as a sequence of
 // tool calls (one per assistant turn); then the mock answers "FINAL: <last tool result>".
-// Each request is logged as one JSON line: model, every tool result so far, the last message, the reply.
+// Each request is logged as one JSON line: model, every tool result so far, every shell notice so
+// far, the last message, the reply. Shell notices are answered "GOT SHELL: <first line>".
 // "$ID" in arguments is replaced by the last pi-subagents run id ("<agent> [<id>]") seen in tool results.
 import http from "node:http";
 import fs from "node:fs";
 const port = Number(process.argv[2] || 18555);
 const log = process.argv[3] || "/dev/null";
+// Notices from the kit's shell extension (bash_bg exits, monitor batches).
+const SHELL_NOTICE = /^(?:Background shell|Monitor) sh\d+/;
 const textOf = (c) => (typeof c === "string" ? c : (c || []).map((p) => p.text || "").join(""));
 
 function decide(messages) {
@@ -14,6 +17,7 @@ function decide(messages) {
 	for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user") { lastUser = i; break; }
 	const userText = textOf(messages[lastUser]?.content);
 	if (/^Background task (?:completed|failed)/m.test(userText) && !/@@/.test(userText)) return { text: `GOT REPORT: ${userText.split("\n")[0]}` };
+	if (SHELL_NOTICE.test(userText) && !/@@/.test(userText)) return { text: `GOT SHELL: ${userText.split("\n")[0]}` };
 	const steps = userText.split("\n").filter((l) => l.startsWith("@@ ")).map((l) => JSON.parse(l.slice(3)));
 	const after = messages.slice(lastUser + 1);
 	const done = after.filter((m) => m.role === "assistant").length;
@@ -34,7 +38,7 @@ http.createServer((req, res) => {
 		const j = JSON.parse(body || "{}");
 		const msgs = j.messages || [];
 		const d = decide(msgs);
-		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
+		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), notices: msgs.filter((m) => m.role === "user" && SHELL_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 400)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
 		const base = { id: "mock", object: "chat.completion.chunk", created: 0, model: j.model };
 		const chunk = (delta, finish = null) => `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
 		res.writeHead(200, { "content-type": "text/event-stream" });

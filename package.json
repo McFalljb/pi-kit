@@ -10,7 +10,8 @@
   "license": "MIT",
   "pi": {
     "extensions": [
-      "./extensions/guardrails/index.ts"
+      "./extensions/guardrails/index.ts",
+      "./extensions/shell/index.ts"
     ],
     "skills": [
       "./skills"

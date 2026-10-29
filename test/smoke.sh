@@ -44,6 +44,7 @@ sleep 0.5
 touch "$T/mock.log"
 cd "$T/work"
 fail=0
+if node --test "$KIT/test/unit.test.ts" > "$T/unit.out" 2>&1; then echo "PASS unit tests ($(grep -c '^✔' "$T/unit.out"))"; else echo "FAIL unit tests (see $T/unit.out)"; fail=1; fi
 check() { if grep -q -- "$2" "$3"; then echo "PASS $1"; else echo "FAIL $1 (no '$2' in $3)"; fail=1; fi; }
 nocheck() { if grep -q -- "$2" "$3"; then echo "FAIL $1 (found '$2' in $3)"; fail=1; else echo "PASS $1"; fi; }
 exists() { if [ -e "$2" ]; then echo "PASS $1"; else echo "FAIL $1 ($2 missing)"; fail=1; fi; }
@@ -154,6 +155,65 @@ $(step bash '{"command":"echo steered-ok"}')")"
 run p10 "Steps:
 $(sub "{\"agent\":\"kit.worker\",\"task\":$TASK,\"async\":true}"; step bash '{"command":"sleep 3; echo parent-waited"}'; sub "{\"action\":\"steer\",\"id\":\"\$ID\",\"message\":$MSG}")"
 check "steered child ran the new instruction" '"role":"tool","text":"steered-ok' "$T/p10.log"
+
+# 11. bash_bg: returns at once; the exit notice (code, last lines) wakes the parent
+run p11 "Steps:
+$(step bash_bg '{"command":"echo bg-start; sleep 2; echo bg-last-line; exit 3"}')"
+check "bash_bg returned an id and output file" '"role":"tool","text":"Started sh1' "$T/p11.log"
+check "exit notice woke the parent" "GOT SHELL: Background shell sh1 exited with code 3" "$T/p11.out"
+check "exit notice has the last lines" 'bg-last-line' "$T/p11.log"
+
+# 12. monitor: one notice per matching line over time, non-matching lines dropped, ends on exit
+run p12 "Steps:
+$(step monitor '{"command":"for i in 1 2 3; do echo ERR $i; echo ok $i; sleep 1.5; done","pattern":"^ERR"}')"
+N="$(tail -1 "$T/p12.log" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(d.notices.filter(n=>n.startsWith("Monitor sh1")).length)')"
+if [ "$N" -ge 3 ]; then echo "PASS monitor sent $N separate notices"; else echo "FAIL monitor sent $N notices (want >= 3)"; fail=1; fi
+check "monitor delivered the last match" 'ERR 3' "$T/p12.log"
+nocheck "monitor dropped non-matching lines" '"notices":\[[^]]*ok 2' "$T/p12.log"
+check "monitor ended with the command" "Monitor total: 3 matching lines" "$T/p12.log"
+
+# 13. shell_stop kills the whole process group, grandchildren included; shell_list shows tasks
+run p13 "Steps:
+$(step bash_bg '{"command":"bash -c '"'"'sleep 300 & echo $! > gc.pid; wait'"'"' & wait"}'; step bash '{"command":"sleep 1; kill -0 $(cat gc.pid) && echo gc-alive-before"}'; step shell_list '{}'; step shell_stop '{"id":"sh1"}'; step bash '{"command":"sleep 0.5; kill -0 $(cat gc.pid) 2>/dev/null && echo gc-still-alive || echo gc-dead"}')"
+check "grandchild ran" "gc-alive-before" "$T/p13.log"
+check "shell_list shows the running task" '"role":"tool","text":"sh1  running' "$T/p13.log"
+check "shell_stop killed the grandchild" '"role":"tool","text":"gc-dead' "$T/p13.log"
+nocheck "stopped task sends no exit notice" "GOT SHELL" "$T/p13.out"
+
+# 14. guardrails apply to the background tools: dangerous blocked headless, secrets blocked, notices redacted
+run p14 "Steps:
+$(step bash_bg '{"command":"git stash drop"}'; step monitor '{"command":"cat .env"}'; step bash_bg '{"command":"echo token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB password=supersecretvalue123"}')"
+check "bash_bg: dangerous command blocked" "Needs user approval (drops or pops a stash)" "$T/p14.log"
+check "monitor: secret read blocked" "touches a secret" "$T/p14.log"
+nocheck "notice: token never sent" '"notices":\[[^]]*ghp_abcdef' "$T/p14.log"
+nocheck "tool results: token never sent" '"role":"tool","text":"[^"]*ghp_abcdef' "$T/p14.log"
+check "notice: assignment redacted" 'password=\[REDACTED\]' "$T/p14.log"
+BEFORE="$(wc -l < "$T/mock.log")"
+node "$KIT/test/rpc-confirm.mjs" "Steps:
+$(step bash_bg '{"command":"git stash drop"}')" > "$T/p14b.out" 2> "$T/p14b.err"
+tail -n +"$((BEFORE + 1))" "$T/mock.log" > "$T/p14b.log"
+check "bash_bg: confirm asked with a UI" "git stash drop => false" "$T/p14b.out"
+check "bash_bg: declined command blocked" "User declined: drops or pops a stash" "$T/p14b.log"
+
+# 15. read-only: no background tools for the reviewer or a PI_KIT_READONLY session
+TASK="$(json "Review: smoke
+$(step bash_bg '{"command":"touch reviewer-bg-was-here"}'; step monitor '{"command":"touch reviewer-mon-was-here"}')")"
+run p15 "Steps:
+$(sub "{\"agent\":\"kit.reviewer\",\"task\":$TASK,\"async\":false}")"
+check "reviewer: bash_bg unavailable" "Tool bash_bg not found\|background shell tools are not allowed" "$T/p15.log"
+absent "reviewer: no file from bash_bg" "$T/work/reviewer-bg-was-here"
+absent "reviewer: no file from monitor" "$T/work/reviewer-mon-was-here"
+PI_KIT_READONLY=1 run p15b "Steps:
+$(step bash_bg '{"command":"touch ro-bg-was-here"}')"
+absent "PI_KIT_READONLY session: bash_bg did not run" "$T/work/ro-bg-was-here"
+
+# 16. kit.worker has the tools; the notice wakes the child itself
+TASK="$(json "Goal: smoke
+$(step bash_bg '{"command":"echo worker-bg > worker-bg.txt; exit 4"}')")"
+run p16 "Steps:
+$(sub "{\"agent\":\"kit.worker\",\"task\":$TASK,\"async\":false}")"
+check "worker ran bash_bg in its cwd" "worker-bg" "$T/work/worker-bg.txt"
+check "worker child got the exit notice" "GOT SHELL: Background shell sh1 exited with code 4" "$T/p16.log"
 
 echo "artifacts: $T"
 exit $fail

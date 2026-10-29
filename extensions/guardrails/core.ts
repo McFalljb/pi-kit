@@ -7,15 +7,18 @@
  * - In read-only sessions blocks file edits and mutating bash commands.
  * - Redacts secret-shaped strings from tool output before the model sees it.
  *
+ * checkCommand() is the one command gate; extensions/shell calls it for its background tools.
+ *
  * Entry points: index.ts (normal; read-only when PI_KIT_READONLY=1) and readonly.ts (always
  * read-only, loaded by the kit's reviewer agent through its `extensions` frontmatter).
  *
  * Pattern matching on shell text is bypassable (aliases, scripts, eval, base64). For a real
- * boundary run pi in a container or VM; see docs/security.md and docs/containerization.md.
+ * boundary run pi in a container or VM; see pi's docs/security.md and docs/containerization.md.
  * Commands the user types with `!` go through user_bash, not tool_call, and are not gated.
  */
 
-import { type ExtensionAPI, isToolCallEventType } from "@earendil-works/pi-coding-agent";
+// Type-only import, so the pure functions here load under plain node for test/unit.test.ts.
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 // [pattern, why] — matched against the whole bash command.
 const DANGEROUS: [RegExp, string][] = [
@@ -90,12 +93,41 @@ const ASSIGNMENT: [RegExp, string] = [
 	"$1[REDACTED]",
 ];
 
-function redact(s: string, assignments: boolean): string {
+export function redact(s: string, assignments: boolean): string {
 	let out = s;
 	for (const [r, rep] of TOKEN_PATTERNS) out = out.replace(r, rep);
 	if (assignments) out = out.replace(ASSIGNMENT[0], ASSIGNMENT[1]);
 	return out;
 }
+
+/** Pure verdict for one shell command: a block reason, or the reasons it needs confirmation. */
+export function commandVerdict(cmd: string, readonly: boolean): { block?: string; confirm: string[] } {
+	if (SECRET_IN_TEXT.some((r) => r.test(` ${cmd}`)) || SECRET_COMMANDS.some((r) => r.test(cmd))) {
+		return { block: "Command touches a secret/credential file or prints secrets. Not allowed; ask the user to run it with `!` if truly needed.", confirm: [] };
+	}
+	if (readonly && MUTATING.some((r) => r.test(cmd))) {
+		return { block: "Read-only session: mutating commands are not allowed.", confirm: [] };
+	}
+	return { confirm: DANGEROUS.filter(([r]) => r.test(cmd)).map(([, why]) => why) };
+}
+
+/**
+ * The gate every shell command goes through (the `bash` tool here, and the kit's background shell
+ * tools in extensions/shell). Returns a block reason, or undefined when the command may run.
+ */
+export async function checkCommand(cmd: string, readonly: boolean, ctx: Pick<ExtensionContext, "hasUI" | "ui">): Promise<string | undefined> {
+	const v = commandVerdict(cmd, readonly);
+	if (v.block) return v.block;
+	if (v.confirm.length === 0) return undefined;
+	const why = v.confirm.join("; ");
+	if (!ctx.hasUI) return `Needs user approval (${why}), and no UI is available. Report it to the orchestrator instead.`;
+	const ok = await ctx.ui.confirm("Allow this command?", `${cmd}\n\nReason: ${why}`);
+	return ok ? undefined : `User declined: ${why}`;
+}
+
+// The kit's background shell tools (extensions/shell). They gate their own commands with
+// checkCommand; here they are blocked outright in read-only sessions and get bash-level redaction.
+const SHELL_TOOLS = new Set(["bash_bg", "monitor", "shell_stop", "shell_list"]);
 
 export function guardrails(readonly: boolean): (pi: ExtensionAPI) => void {
 	return (pi) => register(pi, readonly);
@@ -106,6 +138,9 @@ function register(pi: ExtensionAPI, readonly: boolean): void {
 		if (readonly && (event.toolName === "edit" || event.toolName === "write")) {
 			return { block: true, reason: "This is a read-only session; file changes are not allowed." };
 		}
+		if (readonly && SHELL_TOOLS.has(event.toolName)) {
+			return { block: true, reason: "This is a read-only session; background shell tools are not allowed." };
+		}
 
 		if (PATH_TOOLS.has(event.toolName)) {
 			const p = (event.input as { path?: unknown }).path;
@@ -115,27 +150,13 @@ function register(pi: ExtensionAPI, readonly: boolean): void {
 			return undefined;
 		}
 
-		if (!isToolCallEventType("bash", event)) return undefined;
-		const cmd = event.input.command;
-
-		if (SECRET_IN_TEXT.some((r) => r.test(` ${cmd}`)) || SECRET_COMMANDS.some((r) => r.test(cmd))) {
-			return { block: true, reason: "Command touches a secret/credential file or prints secrets. Not allowed; ask the user to run it with `!` if truly needed." };
-		}
-		if (readonly && MUTATING.some((r) => r.test(cmd))) {
-			return { block: true, reason: "Read-only session: mutating commands are not allowed." };
-		}
-
-		const hits = DANGEROUS.filter(([r]) => r.test(cmd)).map(([, why]) => why);
-		if (hits.length === 0) return undefined;
-		if (!ctx.hasUI) {
-			return { block: true, reason: `Needs user approval (${hits.join("; ")}), and no UI is available. Report it to the orchestrator instead.` };
-		}
-		const ok = await ctx.ui.confirm("Allow this command?", `${cmd}\n\nReason: ${hits.join("; ")}`);
-		return ok ? undefined : { block: true, reason: `User declined: ${hits.join("; ")}` };
+		if (event.toolName !== "bash") return undefined;
+		const reason = await checkCommand(String((event.input as { command?: unknown }).command ?? ""), readonly, ctx);
+		return reason ? { block: true, reason } : undefined;
 	});
 
 	pi.on("tool_result", async (event) => {
-		const assignments = event.toolName === "bash";
+		const assignments = event.toolName === "bash" || SHELL_TOOLS.has(event.toolName);
 		let changed = false;
 		const content = event.content.map((part) => {
 			if (part.type !== "text") return part;
