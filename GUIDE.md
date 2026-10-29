@@ -36,33 +36,52 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
 - **Guardrails are an extension** (`extensions/guardrails`). In the TUI, dangerous commands ask
   for confirmation. Without a UI (headless runs, background children) they are blocked and the
   child reports them. Whether a foreground child inside the TUI gets the dialog or a block is
-  untested. Reads of secret files are blocked and secret-shaped output is redacted.
+  untested. Reads of secret files (`.env`, keys, `auth.json`, `credentials` and other credential
+  stores) are blocked and secret-shaped output is redacted.
   These are pattern matches, not a sandbox.
 - **Background shells are an extension** (`extensions/shell`), modelled on Claude Code's
   background Bash, Monitor, TaskStop and ScheduleWakeup:
   - `bash_bg { command, cwd?, timeout? }` starts the command with `bash -c` in its own process
     group, writes stdout and stderr to `<tmpdir>/pi-shell-*/shN.log` (mode 0600) and returns
     the id and path at once. On exit a notice (exit code or signal, duration, last 10 lines,
-    path) wakes the session.
+    path) wakes the session. If processes it started are still running in its group (`sleep 30 &`,
+    a server started with `&`), the notice says how many; `shell_stop <id>` kills them, and the
+    task stays listed until they are gone. A task whose output file passes 1 GiB is killed with
+    a notice saying so. `cwd` may not be inside the pi agent dir (`PI_CODING_AGENT_DIR`, default
+    `~/.pi/agent`), `~/.ssh`, `~/.aws`, `~/.kube` or `~/.gnupg`.
   - `monitor { command | id, pattern?, cwd?, timeout? }` runs a command, or attaches to a
     running `bash_bg` task, and sends a notice for new lines matching `pattern` (a JavaScript
     regex; every line if omitted). Notices are batched about once a second, hold at most 20
     lines of at most 300 characters (the rest are counted), and stop after 50 notices. It ends
     when the command exits (one final notice with the total), on `shell_stop`, or at `timeout`
     (which kills a command the monitor started, and only ends the watch on an attached task).
-  - `shell_stop { id, watch_only? }` kills the whole process group (SIGTERM, SIGKILL after 2 s)
-    and sends no exit notice; `watch_only` ends only the monitor. It also cancels a timer.
-  - `wake_later { seconds, prompt }`: a one-shot timer, clamped to 60-3600 s, that wakes the
-    session with the prompt. For checks no shell command can observe.
+    A task has at most one monitor; end it with `shell_stop <id> watch_only` to start another.
+    Patterns that repeat a group which itself repeats (`(a+)+`, `(\w+\s?)+$`) are rejected.
+    Matching runs in a worker thread with a 1 s budget per batch of lines, since any regex can
+    backtrack for minutes on one line (`.*.*x` takes over 10 s on 4 KB): a pattern that runs out
+    ends the watch with a notice (and stops a command the monitor started). Only the first
+    4096 characters of a line are matched. When the unread output passes 8 MB the monitor skips
+    to the newest output and reports how many bytes it skipped.
+  - `shell_stop { id, watch_only? }` ends the monitor first (its undelivered lines come back in
+    the result), then kills the whole process group (SIGTERM, SIGKILL after 2 s) and sends no
+    exit notice; `watch_only` ends only the monitor. On a task that has exited it kills the
+    processes left in its group. It also cancels a timer. A group known to be empty is never
+    signalled again, since its id may by then belong to an unrelated process.
+  - `wake_later { seconds, prompt }`: a one-shot timer, clamped to 60-3600 s (headless: at most
+    1800 s, the drain window), that wakes the session with the prompt. For checks no shell
+    command can observe.
   - `shell_list {}` and `/shells` list running and the last 20 finished tasks and pending
     timers; the footer shows how many are running.
   - Every command goes through the guardrails' `checkCommand`, the same gate as `bash`
     (confirm with a UI, block without; secret files and secret-printing commands blocked).
-    Notices are redacted like bash output. Read-only sessions do not register the tools, and
-    the read-only guardrails block them by name.
-  - All process groups are killed when the session ends or reloads. Headless runs (`pi -p`,
-    subagent children) wait at the end of a turn for the next notice or until every task and
-    timer is done, up to 30 minutes, then kill what is left.
+    Each output line is redacted like bash output before it is cut to length, so a cut cannot
+    leave a token too short to be recognised; the lines of a private key block are dropped and
+    reported once as `[private key block redacted]`. Read-only sessions do not register the
+    tools, and the read-only guardrails block them by name.
+  - All process groups, leftovers included, are killed and the `pi-shell-*` directory is removed
+    when the session ends or reloads. Headless runs (`pi -p`, subagent children) wait at the
+    end of a turn for the next notice or until every task and timer is done, up to 30 minutes,
+    then kill what is left and send one notice listing it.
   - `kit.worker` has the tools; `kit.reviewer` does not.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
@@ -204,9 +223,10 @@ bash, no background shells), which is handy for a look-only session.
   upgrading; frontmatter or tool parameters may change.
 - **Background shells do not survive pi.** They belong to the pi process and are killed when
   the session ends, reloads or switches. A process that leaves its process group (`setsid`, a
-  daemonizing server) escapes `shell_stop` and the cleanup. Output files stay in the temp dir.
-  An output file may hold secrets the command printed: `bash` reading it gets full redaction,
-  the `read` tool only token-shape redaction.
+  daemonizing server) escapes `shell_stop` and the cleanup. Output files are removed when the
+  session ends; read what you need before then. An output file may hold secrets the command
+  printed: reading it with `bash`, or with `read` at its path under the temp dir, gets the same
+  redaction as bash output, but a copy elsewhere gets only token-shape redaction.
 - **Other packages' tools bypass the guardrails.** The guardrails gate `bash`, the kit's shell
   tools and the `path` of pi's file tools and pi-fff's search tools. Optional packages run
   commands or read files through their own tools: `pi-web-access` (`fetch_content` takes local

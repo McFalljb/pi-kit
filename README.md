@@ -55,6 +55,8 @@ instructions for an agent, including what to ask you and what never to touch.
 
 ## Limits
 The guardrails match shell text: they are a seatbelt, not a sandbox. Run pi in a container or
-VM for real isolation. Background shells belong to the pi process and do not survive a restart.
+VM for real isolation. Background shells belong to the pi process and do not survive a restart:
+they, any processes they left running in their group, and their output files go when the session
+ends. See GUIDE.md for their limits (log cap, rejected regex shapes, monitor backlog).
 
 MIT licensed.
