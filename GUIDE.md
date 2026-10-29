@@ -251,7 +251,9 @@ bash, no background shells), which is handy for a look-only session.
 - **Read-only mode covers the kit's tools only.** `kit.reviewer` is safe because its `tools`
   list is an allowlist. A `PI_KIT_READONLY=1` session still has every other installed
   package's tools.
-- **A hanging `pi -p` run.** First run it against the mock model: `test/smoke.sh` step 4 does
+- **A hanging `pi -p` run.** In print mode pi reads piped stdin until it closes and prepends it
+  to the prompt. Run from another agent or a script whose stdin is an open pipe, it waits
+  forever without calling the model. Give it `< /dev/null`. Otherwise run it against the mock model: `test/smoke.sh` step 4 does
   `subagent list` in print mode with the kit and pi-subagents and must finish in seconds (it
   also does with pi-intercom, pi-web-access, pi-claude-bridge and pi-cursor-sdk loaded). If the
   mock run is fast, the hang is in the model provider, not the kit: provider extensions such as
