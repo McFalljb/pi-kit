@@ -122,11 +122,13 @@ its agent prompt and the **Everyone** and **Child** sections, and never delegate
 
 ## Durable notes and handoffs (Parent)
 
-- Keep durable notes (session, decision, incident, research, runbook) in the notes folder the
-  project's AGENTS.md names, or `<notes-folder>` set here; ask the user if neither is set. Follow
-  skill `session-notes`.
-- Update notes at milestones: a task or commit lands, a decision is made, an incident is
-  diagnosed, a result arrives, the topic changes, or the user says "save notes". Do it then, not
-  at the end.
-- Near a usage or context limit, or when the user asks, write a handoff (skill `handoff`). A new
-  session picking up work reads the handoff first and confirms with the user before acting.
+- Keep a running session note (skill `session-notes`) in the notes folder: `PI_KIT_NOTES_DIR`,
+  the project's AGENTS.md, or `<notes-folder>` set here; ask the user if none is set. The
+  folder's own rules (frontmatter, index) win.
+- The note has a short status block (goal, in flight, waiting on the user, next step),
+  rewritten when it changes, and an append-only UTC timeline: one line per decision, approval,
+  worker launch or result, merge, deploy, incident or topic change, with ids as evidence. Write
+  at the moment it happens, not at the end; keep it short.
+- Near a usage or context limit, or when the user asks, hand over through the same note (skill
+  `handoff`). A session picking up reads its status block first, the timeline for the
+  reasoning, and confirms with the user before acting.

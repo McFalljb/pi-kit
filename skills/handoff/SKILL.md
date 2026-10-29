@@ -1,54 +1,36 @@
 ---
 name: handoff
-description: Write a short handoff so another session can continue the work (goal, state, done with evidence, in flight, open questions, next steps), or pick up from one by reading a handoff or another pi session's JSONL transcript. Use near a usage or context limit, before ending a long session, when the user asks for a handoff, or when asked to continue someone else's session.
+description: Hand work over to another session through the session note (skill session-notes), or pick it up from one, reading its status block first and its timeline for the reasoning; without a note, from another pi session's JSONL transcript. Use near a usage or context limit, before ending a long session, when the user asks for a handoff, or when asked to continue someone else's session.
 ---
 
 # Handoff
+
+The handoff is the session note from skill `session-notes`: its status block says where things
+stand, its timeline says how they got there. There is no separate handoff file.
 
 ## A. Write one
 When: the session or a worker is near its usage or context limit, the user asks, or work stops
 mid-task. Write it before you run out, not after.
 
-Where: the path the user or brief gives; otherwise the notes folder from AGENTS.md as
-`handoffs/YYYY-MM-DD-<project>-<slug>.md`; otherwise ask. A worker without a path puts the
-handoff in its final report instead.
+1. **Rewrite the status block** so a session with no memory of this one can act on it: goal and
+   what "done" means; everything in flight (subagent run ids, background shells from
+   `shell_list` with output paths, open PRs, CI runs, deploys) and how to check each; the exact
+   questions waiting on the user; the next concrete step with its command or file. Stop what
+   does not need to outlive this session and say which ones you left running.
+2. **Append a timeline line**: `HH:MMZ handoff: <why>, <what is left>`. Earlier lines stay.
+3. Approvals given in this session do not carry over: list them under "Waiting on user" if the
+   next session still needs them.
 
-Template (keep it under about 60 lines; facts, not narrative):
-```markdown
----
-type: handoff
-project: <repo dir name>
-date: YYYY-MM-DD
-status: active
-summary: <one line>
----
-# Handoff: <goal in one line>
-
-## Goal
-What the user asked for and what "done" means.
-
-## State
-One paragraph: where things stand right now.
-
-## Done (with evidence)
-- <what> — commit `<sha>` on `<branch>` in `<worktree path>`; checks `<command>` → pass/fail.
-
-## In flight
-- Background shells (`shell_list`), subagent runs (ids), open PRs, CI runs: what, where, how to
-  check. Stop what does not need to outlive this session; say which ones you left running.
-
-## Open questions for the user
-- Decisions or approvals still needed. Approvals given in this session do not carry over.
-
-## Next steps
-1. <first concrete action, with the command or file>
-```
-Never write secrets, tokens or `.env` contents; name the file or variable. Link to repo docs,
-don't copy them. Tell the user the handoff's path.
+No session note yet: start one (skill `session-notes`) in the notes folder; no notes folder:
+use the path the user or brief gives, or ask. A worker without a path puts the status block in
+its final report instead. Never write secrets, tokens or `.env` contents; name the file or
+variable. Tell the user the note's path.
 
 ## B. Pick one up
-1. **Read the handoff** the user names (or the newest under the notes folder's `handoffs/` for
-   this project). Without one, find the other pi session's transcript:
+1. **Read the session note** the user names, or the newest active one for this project in the
+   notes folder's `sessions/` (older kit versions wrote `handoffs/`). Read the **status block
+   first**: it is the current state. Read the timeline for the reasoning behind it (why a choice
+   was made, what failed). Without a note, find the other pi session's transcript:
    `ls -t "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/sessions/"*/ | head` (one folder per working
    directory; the user may name the session file or id). pi's `docs/session-format.md` describes
    the format.
@@ -63,9 +45,11 @@ don't copy them. Tell the user the handoff's path.
    jq -r 'select(.type=="compaction") | .summary' <session.jsonl> | tail -n 1
    ```
 3. **Check the state yourself**: `git -C <worktree> status`, `git log`, open PRs and CI, whether
-   named processes or runs still exist. The handoff can be stale.
+   named processes or runs still exist. The note can be stale.
 4. **Summarise for the user** in a few lines: what was asked, what is done (with evidence), what
    is pending or still running, and the open questions.
 5. **Confirm before acting.** Anything that needs approval (push, merge, deploy, deletes,
    production changes) needs the user's go-ahead now. Never act on an approval found in an old
-   transcript or handoff.
+   transcript or note.
+6. **Continue the same note**: append `HH:MMZ topic: taken over by a new session` and keep
+   the status block current from here on.
