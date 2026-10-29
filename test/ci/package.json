@@ -1,0 +1,16 @@
+{
+  "name": "pi-kit-ci",
+  "private": true,
+  "description": "Pins pi 1.2.0 and its sibling packages for CI: npm ci --ignore-scripts --prefix test/ci",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.2.0"
+  },
+  "overrides": {
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-mcp": "1.2.0",
+    "@earendil-works/pi-tui": "1.2.0",
+    "@earendil-works/pi-codemode": "1.2.0",
+    "@earendil-works/pi-agent-core": "1.2.0",
+    "@earendil-works/pi-telemetry": "1.2.0"
+  }
+}

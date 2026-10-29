@@ -1,6 +1,7 @@
 name: test
 on:
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read
@@ -13,8 +14,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.19.0
-      - name: Install pi
-        run: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.2.0
+      - name: Install pi 1.2.0 from test/ci/package-lock.json
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund --prefix test/ci
+          echo "$PWD/test/ci/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Typecheck
         run: bash test/typecheck.sh
       - name: Unit tests
