@@ -73,7 +73,7 @@ and why.
 - Round 2 covers only the fix diff and the findings still open: a fresh `kit.reviewer` with the
   new HEAD, the round-1 findings and how each was resolved. To keep the same reviewer's context,
   `subagent({ action: "resume", id: "<reviewer run id>", message })` works too.
-- Stop after round 2; never run a third. If real issues remain after two rounds, treat it as a
-  sign the design is too complex: propose a simpler implementation to the user instead of
-  patching again. List leftover polish for the user; don't chase it.
+- Usually stop after round 2, and list leftover polish for the user instead of chasing it. If
+  real issues keep coming after two rounds, consider whether a simpler implementation would
+  remove them, and raise that with the user alongside the fixes.
 - Then wait for CI to go green before asking to merge.
