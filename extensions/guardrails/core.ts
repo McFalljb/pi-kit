@@ -17,6 +17,8 @@
  * Commands the user types with `!` go through user_bash, not tool_call, and are not gated.
  */
 
+import os from "node:os";
+import path from "node:path";
 // Type-only import, so the pure functions here load under plain node for test/unit.test.ts.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -62,6 +64,8 @@ const SECRET_IN_TEXT: RegExp[] = [
 	/\.(?:pem|key|p12|pfx|keystore|jks)(?=$|[\s'";|&)])/,
 	/\.aws\/credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b|\.docker\/config\.json\b|\.kube\/config\b/,
 	/\.pi\/agent\/auth\.json\b|\bcredentials\.json\b|\bsecrets?\.(?:ya?ml|json|toml)\b/,
+	// Bare names, as a whole path component: auth.json (pi, gh and others), credentials (aws, gcloud).
+	/(?:^|[\s'"=/:])(?:auth\.json|credentials)(?=$|[\s'";|&)<>])/,
 ];
 const SECRET_COMMANDS: RegExp[] = [
 	/\bsops\b[^|;&]*\s(?:-d|--decrypt|decrypt|exec-env|exec-file)\b/,
@@ -76,6 +80,18 @@ const PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "ffgr
 
 function isSecretPath(p: string): boolean {
 	return SECRET_IN_TEXT.some((r) => r.test(` ${p}`));
+}
+
+/** The credential or pi agent directory `dir` lies in, if any (a background shell must not run there). */
+export function secretDir(dir: string, home = os.homedir(), agentDir = process.env.PI_CODING_AGENT_DIR || path.join(home, ".pi", "agent")): string | undefined {
+	const dirs = [path.resolve(agentDir), ...[".ssh", ".aws", ".kube", ".gnupg"].map((d) => path.join(home, d))];
+	return dirs.find((d) => dir === d || dir.startsWith(d + path.sep));
+}
+
+/** Whether `p` (relative to `cwd`) is a background shell output file (extensions/shell). */
+export function isShellLog(p: string, cwd: string): boolean {
+	const rel = path.relative(os.tmpdir(), path.resolve(cwd, p));
+	return /^pi-shell-[^/\\]+[/\\][^/\\]+\.log$/.test(rel);
 }
 
 // High-confidence token shapes, applied to every tool result.
@@ -157,8 +173,10 @@ function register(pi: ExtensionAPI, readonly: boolean): void {
 		return reason ? { block: true, reason } : undefined;
 	});
 
-	pi.on("tool_result", async (event) => {
-		const assignments = event.toolName === "bash" || SHELL_TOOLS.has(event.toolName);
+	pi.on("tool_result", async (event, ctx) => {
+		// Shell output files hold raw command output, so reading one is redacted like bash output.
+		const p = (event.input as { path?: unknown }).path;
+		const assignments = event.toolName === "bash" || SHELL_TOOLS.has(event.toolName) || (event.toolName === "read" && typeof p === "string" && isShellLog(p, ctx.cwd));
 		let changed = false;
 		const content = event.content.map((part) => {
 			if (part.type !== "text") return part;

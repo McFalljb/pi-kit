@@ -1,7 +1,9 @@
 // Unit tests for pure logic: node --test test/unit.test.ts (Node 22.18+ strips the types).
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
-import { commandVerdict, redact } from "../extensions/guardrails/core.ts";
+import { commandVerdict, isShellLog, redact, secretDir } from "../extensions/guardrails/core.ts";
 import { clip, compilePattern, lastLines, MAX_LINE, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -41,4 +43,31 @@ test("redact", () => {
 	assert.equal(redact("t ghp_abcdefghijklmnopqrstuvwxyz0123456789AB", false), "t [REDACTED]");
 	assert.equal(redact("password=supersecretvalue123", true), "password=[REDACTED]");
 	assert.equal(redact("password=supersecretvalue123", false), "password=supersecretvalue123");
+});
+
+test("secret files: bare auth.json and credentials (P2-4)", () => {
+	for (const c of ["cat auth.json", "cat ./auth.json", "cp credentials /tmp/x", "less ~/.config/gcloud/credentials", "cat 'credentials'"]) {
+		assert.match(commandVerdict(c, false).block ?? "", /secret/, c);
+	}
+	for (const c of ["cat credentials.example", "cat oauth.json", "go test ./credentials_test.go", "cat mycredentials", "cat docs/credentials.md", "ls credentials-helper"]) {
+		assert.equal(commandVerdict(c, false).block, undefined, c);
+	}
+});
+
+test("secretDir rejects credential and agent directories as cwd (P2-4)", () => {
+	const home = "/home/u";
+	assert.equal(secretDir("/home/u/.ssh", home, "/home/u/.pi/agent"), "/home/u/.ssh");
+	assert.equal(secretDir("/home/u/.aws/sso", home, "/home/u/.pi/agent"), "/home/u/.aws");
+	assert.equal(secretDir("/home/u/.pi/agent/sessions", home, "/home/u/.pi/agent"), "/home/u/.pi/agent");
+	assert.equal(secretDir("/opt/agent", home, "/opt/agent"), "/opt/agent");
+	assert.equal(secretDir("/home/u/.sshx", home, "/home/u/.pi/agent"), undefined);
+	assert.equal(secretDir("/home/u/src", home, "/home/u/.pi/agent"), undefined);
+});
+
+test("shell log reads get assignment redaction (P3-4)", () => {
+	const dir = path.join(os.tmpdir(), "pi-shell-abc123");
+	assert.equal(isShellLog(path.join(dir, "sh1.log"), "/x"), true);
+	assert.equal(isShellLog("sh1.log", dir), true);
+	assert.equal(isShellLog(path.join(dir, "notes.txt"), "/x"), false);
+	assert.equal(isShellLog("/repo/sh1.log", "/x"), false);
 });
