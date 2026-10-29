@@ -9,9 +9,8 @@
  * - shell_stop: kill a task's whole process group (or end only its watch, or cancel a timer).
  *   shell_list and /shells: running and recent tasks. The footer shows the running count.
  *
- * Every command goes through the kit guardrails' checkCommand (confirm dangerous commands, block
- * secret access). Every delivered line is
- * redacted like bash output before it is cut, and private key blocks are dropped. Not registered
+ * Every command goes through the kit guardrails' checkCommand (confirm dangerous commands). Every
+ * delivered line is redacted like bash output before it is cut, and private key blocks are dropped. Not registered
  * in read-only sessions (PI_KIT_READONLY=1). Tasks belong to this pi process: they are killed
  * when the session ends or reloads and do not survive a restart. Processes left in a task's
  * group after bash exits are reported and stay killable; a process that leaves its group

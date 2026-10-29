@@ -36,9 +36,9 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
 - **Guardrails are an extension** (`extensions/guardrails`). In the TUI, dangerous commands ask
   for confirmation. Without a UI (headless runs, background children) they are blocked and the
   child reports them. Whether a foreground child inside the TUI gets the dialog or a block is
-  untested. Reads of `.env` files and private keys are blocked, and token-shaped output is redacted.
-  Credential stores and CLI logins (aws sso, teleport, gcloud, kubectl) are not blocked, so
-  agents can use them.
+  untested. Secret files and credential commands (`.env`, sops, aws sso, teleport, gcloud,
+  kubectl) are not blocked: agents use them when a task needs them and follow the AGENTS.md rule
+  never to expose secret values. Token-shaped output is redacted.
   These are pattern matches, not a sandbox.
 - **Background shells are an extension** (`extensions/shell`), modelled on Claude Code's
   background Bash, Monitor, TaskStop and ScheduleWakeup:
@@ -74,7 +74,7 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
   - `shell_list {}` and `/shells` list running and the last 20 finished tasks and pending
     timers; the footer shows how many are running.
   - Every command goes through the guardrails' `checkCommand`, the same gate as `bash`
-    (confirm with a UI, block without; secret files and secret-printing commands blocked).
+    (confirm with a UI, block without).
     Each output line is redacted like bash output before it is cut to length, so a cut cannot
     leave a token too short to be recognised; the lines of a private key block are dropped and
     reported once as `[private key block redacted]`. Read-only sessions do not register the
@@ -233,9 +233,8 @@ bash, no background shells), which is handy for a look-only session.
   commands or read files through their own tools: `pi-web-access` (`fetch_content` takes local
   paths; it runs git, gh, ffmpeg, yt-dlp), `pi-mcp-adapter` (every MCP call),
   `pi-autoresearch` (`run_experiment.command`, and `log_experiment` discards uncommitted work),
-  `@plannotator/pi-extension` (`plannotator` annotate paths). A content search over a directory
-  can still show a secret file's lines if the search tool indexes it. Token-shaped output is
-  redacted for every tool.
+  `@plannotator/pi-extension` (`plannotator` annotate paths). Token-shaped output is redacted for
+  every tool.
 - **Read-only mode covers the kit's tools only.** `kit.reviewer` is safe because its `tools`
   list is an allowlist. A `PI_KIT_READONLY=1` session still has every other installed
   package's tools.

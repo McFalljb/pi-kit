@@ -31,9 +31,7 @@ test("compilePattern", () => {
 	assert.throws(() => compilePattern("("), /Invalid pattern/);
 });
 
-test("commandVerdict: secrets block, dangerous asks, read-only blocks mutation", () => {
-	assert.match(commandVerdict("cat .env", false).block!, /secret/);
-	assert.match(commandVerdict("sleep 1; printenv", false).block!, /secret/);
+test("commandVerdict: dangerous asks, read-only blocks mutation", () => {
 	assert.deepEqual(commandVerdict("git stash drop", false).confirm, ["drops or pops a stash"]);
 	assert.deepEqual(commandVerdict("npm run dev", false), { confirm: [] });
 	assert.match(commandVerdict("touch x", true).block!, /Read-only/);
@@ -119,12 +117,9 @@ test("evictable keeps tasks whose group may be alive (P1-2)", () => {
 	assert.deepEqual(evictable([{ id: 1, ended: 9, gone: true }, { id: 2, ended: 3, gone: true }], 1).map((t) => t.id), [2]);
 });
 
-test("credential stores and CLI logins are not blocked; .env and private keys are", () => {
-	for (const c of ["rg credentials", "cat ~/.aws/credentials", "aws sso login --profile dev", "tsh login --proxy=tele.example", "cat ~/.config/gcloud/credentials", "TOKEN=$(gcloud auth print-access-token) curl -H x", "kubectl --kubeconfig ~/.kube/config get pods", "sops -d secrets.yaml", "cat ~/.codex/auth.json"]) {
+test("secret files and credential commands are not blocked (agents use judgement)", () => {
+	for (const c of ["rg credentials", "cat ~/.aws/credentials", "aws sso login --profile dev", "tsh login --proxy=tele.example", "sops -d secrets.sops.yaml", "TOKEN=$(gcloud auth print-access-token) curl -H x", "cat .env", "printenv", "cat ~/.ssh/id_ed25519"]) {
 		assert.equal(commandVerdict(c, false).block, undefined, c);
-	}
-	for (const c of ["cat .env", "cat ~/.ssh/id_ed25519", "cat server.pem"]) {
-		assert.match(commandVerdict(c, false).block ?? "", /secret/, c);
 	}
 });
 

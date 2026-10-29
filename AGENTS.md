@@ -25,8 +25,9 @@ its agent prompt and the **Everyone** and **Child** sections, and never delegate
 
 ## Safety (Everyone)
 
-- Never print, copy or write secrets: `.env` files, keys, tokens, passwords, credential stores,
-  connection strings. Name the file or variable instead, in notes, commits and reports too.
+- Use secrets and credential tools (`.env` files, sops, cloud and SSO logins) when a task needs
+  them, but never expose the values: keep them in variables or pipes, never in chat, notes,
+  commits, PRs, logs or anything posted. Name the file or variable instead.
 - Never send the user's personal information (name, email, phone, address, account IDs) to an
   external service, API or website unless the task truly needs it and the user approved it. Use a
   generic value or ask.

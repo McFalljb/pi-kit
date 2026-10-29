@@ -3,7 +3,6 @@
  *
  * - Confirms dangerous bash commands (destructive git, rm -rf, deploys, cluster/infra changes,
  *   alert silencing, SQL drops). Without a UI (print/json mode, subagent children) they are blocked.
- * - Blocks reading or writing .env files and private keys through tools and bash.
  * - In read-only sessions blocks file edits and mutating bash commands.
  * - Redacts secret-shaped strings from tool output before the model sees it.
  *
@@ -57,26 +56,6 @@ const MUTATING: RegExp[] = [
 	/\bsed\s+[^|;&]*-i\b/,
 ];
 
-// Secret files: matched against a path (tools) or anywhere in a bash command. Only .env files and
-// private keys: credential stores and CLI logins (aws sso, teleport, gcloud, kube) are left to the
-// tools that use them, and token-shaped output is still redacted.
-const SECRET_IN_TEXT: RegExp[] = [
-	/(?:^|[\s'"=/:])\.env(?:\.(?!example\b|sample\b|template\b|dist\b)[\w-]+)?(?=$|[\s'";|&)<>])/,
-	/\bid_(?:rsa|ed25519|ecdsa|dsa)\b(?!\.pub)/,
-	/\.(?:pem|key|p12|pfx|keystore|jks)(?=$|[\s'";|&)])/,
-];
-const SECRET_COMMANDS: RegExp[] = [
-	/(?:^|[;&|]\s*)(?:printenv|env|export\s+-p|set)\s*(?:$|[;&|])/,
-];
-
-// Tools whose `path` input is checked against the secret-file patterns: pi's builtins plus the
-// search tools of @ff-labs/pi-fff (default and override mode names).
-const PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "ffgrep", "fffind", "fff-multi-grep", "multi_grep"]);
-
-function isSecretPath(p: string): boolean {
-	return SECRET_IN_TEXT.some((r) => r.test(` ${p}`));
-}
-
 /** Whether `p` (relative to `cwd`) is a background shell output file (extensions/shell). */
 export function isShellLog(p: string, cwd: string): boolean {
 	const rel = path.relative(os.tmpdir(), path.resolve(cwd, p));
@@ -109,9 +88,6 @@ export function redact(s: string, assignments: boolean): string {
 
 /** Pure verdict for one shell command: a block reason, or the reasons it needs confirmation. */
 export function commandVerdict(cmd: string, readonly: boolean): { block?: string; confirm: string[] } {
-	if (SECRET_IN_TEXT.some((r) => r.test(` ${cmd}`)) || SECRET_COMMANDS.some((r) => r.test(cmd))) {
-		return { block: "Command touches a secret/credential file or prints secrets. Not allowed; ask the user to run it with `!` if truly needed.", confirm: [] };
-	}
 	if (readonly && MUTATING.some((r) => r.test(cmd))) {
 		return { block: "Read-only session: mutating commands are not allowed.", confirm: [] };
 	}
@@ -147,14 +123,6 @@ function register(pi: ExtensionAPI, readonly: boolean): void {
 		}
 		if (readonly && SHELL_TOOLS.has(event.toolName)) {
 			return { block: true, reason: "This is a read-only session; background shell tools are not allowed." };
-		}
-
-		if (PATH_TOOLS.has(event.toolName)) {
-			const p = (event.input as { path?: unknown }).path;
-			if (typeof p === "string" && isSecretPath(p)) {
-				return { block: true, reason: `"${p}" looks like a secret or credential file. Do not read or write it; name the file or variable instead.` };
-			}
-			return undefined;
 		}
 
 		if (event.toolName !== "bash") return undefined;

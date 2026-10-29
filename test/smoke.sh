@@ -75,12 +75,10 @@ sub() { step subagent "$1"; }
 
 # 1. guardrails in a headless (no-UI) parent
 run p1 "Steps:
-$(step bash '{"command":"git stash drop"}'; step bash '{"command":"rm -rf build"}'; step bash '{"command":"kubectl delete pod x"}'; step read '{"path":".env"}'; step bash '{"command":"cat .env"}'; step bash '{"command":"echo token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB password=supersecretvalue123"}'; step bash '{"command":"echo hello-safe"}')"
+$(step bash '{"command":"git stash drop"}'; step bash '{"command":"rm -rf build"}'; step bash '{"command":"kubectl delete pod x"}'; step bash '{"command":"echo token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB password=supersecretvalue123"}'; step bash '{"command":"echo hello-safe"}')"
 check "stash drop blocked" "Needs user approval (drops or pops a stash)" "$T/p1.log"
 check "rm -rf blocked" "recursive force delete" "$T/p1.log"
 check "kubectl delete blocked" "changes a cluster" "$T/p1.log"
-check ".env read blocked" "looks like a secret or credential file" "$T/p1.log"
-check "cat .env blocked" "touches a secret" "$T/p1.log"
 nocheck ".env content never sent" "do-not-read" "$T/mock.log"
 nocheck "github token redacted" '"role":"tool","text":"[^"]*ghp_abcdef' "$T/p1.log"
 check "token replaced in tool output" '"role":"tool","text":"token \[REDACTED\]' "$T/p1.log"
@@ -112,12 +110,11 @@ nocheck "no agent load warnings" "kit\.\(worker\|reviewer\).*\(invalid\|error\|w
 
 # 5. foreground kit.worker: runs in cwd, guardrails apply inside the child
 TASK="$(json "Goal: smoke
-$(step bash '{"command":"echo fg-child-ran > fg.txt && cat fg.txt"}'; step bash '{"command":"git stash drop"}'; step bash '{"command":"cat .env"}')")"
+$(step bash '{"command":"echo fg-child-ran > fg.txt && cat fg.txt"}'; step bash '{"command":"git stash drop"}')")"
 run p5 "Steps:
 $(sub "{\"agent\":\"kit.worker\",\"task\":$TASK,\"async\":false}")"
 check "fg worker wrote in its cwd" "fg-child-ran" "$T/work/fg.txt"
 check "fg worker: dangerous command blocked" "Needs user approval (drops or pops a stash)" "$T/p5.log"
-check "fg worker: secret read blocked" "touches a secret" "$T/p5.log"
 
 # 6. foreground kit.reviewer: read-only, and the settings agentOverrides model pin applies
 TASK="$(json "Review: smoke
@@ -196,11 +193,10 @@ check "shell_list shows the running task" '"role":"tool","text":"sh1  running' "
 check "shell_stop killed the grandchild" '"role":"tool","text":"gc-dead' "$T/p13.log"
 nocheck "stopped task sends no exit notice" "GOT SHELL" "$T/p13.out"
 
-# 14. guardrails apply to the background tools: dangerous blocked headless, secrets blocked, notices redacted
+# 14. guardrails apply to the background tools: dangerous blocked headless, notices redacted
 run p14 "Steps:
-$(step bash_bg '{"command":"git stash drop"}'; step monitor '{"command":"cat .env"}'; step bash_bg '{"command":"echo token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB password=supersecretvalue123"}')"
+$(step bash_bg '{"command":"git stash drop"}'; step bash_bg '{"command":"echo token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB password=supersecretvalue123"}')"
 check "bash_bg: dangerous command blocked" "Needs user approval (drops or pops a stash)" "$T/p14.log"
-check "monitor: secret read blocked" "touches a secret" "$T/p14.log"
 nocheck "notice: token never sent" '"notices":\[[^]]*ghp_abcdef' "$T/p14.log"
 nocheck "tool results: token never sent" '"role":"tool","text":"[^"]*ghp_abcdef' "$T/p14.log"
 check "notice: assignment redacted" 'password=\[REDACTED\]' "$T/p14.log"

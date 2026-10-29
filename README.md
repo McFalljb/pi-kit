@@ -3,7 +3,7 @@
 An orchestrator-plus-workers setup for the [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent),
 modelled on how Claude Code is used day to day: one main session that plans, delegates and
 talks to you; background workers in their own git worktrees; a read-only reviewer on a
-different model; guardrails around shell commands and secrets; background shells and monitors
+different model; guardrails around dangerous shell commands; background shells and monitors
 that wake the session instead of sleep-and-poll loops.
 
 It is a pi package: two agent definitions for [pi-subagents](https://github.com/nicobailon/pi-subagents),
@@ -27,7 +27,7 @@ instructions for an agent, including what to ask you and what never to touch.
 | Path | What |
 |---|---|
 | `agents/worker.md`, `agents/reviewer.md` | `kit.worker` (writer, verifies before reporting) and `kit.reviewer` (read-only, adversarial) |
-| `extensions/guardrails` | Confirms dangerous commands, blocks secret files, redacts secret-shaped output; read-only mode |
+| `extensions/guardrails` | Confirms dangerous commands, redacts secret-shaped output; read-only mode |
 | `extensions/shell` | `bash_bg`, `monitor`, `shell_stop`, `shell_list`, `wake_later`, `/shells` |
 | `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff` |
 | `prompts/` | `/delegate`, `/review` |
