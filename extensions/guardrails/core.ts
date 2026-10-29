@@ -64,8 +64,9 @@ const SECRET_IN_TEXT: RegExp[] = [
 	/\.(?:pem|key|p12|pfx|keystore|jks)(?=$|[\s'";|&)])/,
 	/\.aws\/credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b|\.docker\/config\.json\b|\.kube\/config\b/,
 	/\.pi\/agent\/auth\.json\b|\bcredentials\.json\b|\bsecrets?\.(?:ya?ml|json|toml)\b/,
-	// Bare names, as a whole path component: auth.json (pi, gh and others), credentials (aws, gcloud).
-	/(?:^|[\s'"=/:])(?:auth\.json|credentials)(?=$|[\s'";|&)<>])/,
+	// auth.json or credentials files inside a dot-directory (~/.config/gcloud/credentials,
+	// ~/.codex/auth.json). The bare words are not matched: code and variable names use them.
+	/\/\.[\w.-]+(?:\/[\w.-]+)*\/(?:auth\.json|credentials)(?=$|[\s'";|&)<>])/,
 ];
 const SECRET_COMMANDS: RegExp[] = [
 	/\bsops\b[^|;&]*\s(?:-d|--decrypt|decrypt|exec-env|exec-file)\b/,

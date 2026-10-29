@@ -36,8 +36,8 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
 - **Guardrails are an extension** (`extensions/guardrails`). In the TUI, dangerous commands ask
   for confirmation. Without a UI (headless runs, background children) they are blocked and the
   child reports them. Whether a foreground child inside the TUI gets the dialog or a block is
-  untested. Reads of secret files (`.env`, keys, `auth.json`, `credentials` and other credential
-  stores) are blocked and secret-shaped output is redacted.
+  untested. Reads of secret files (`.env`, keys, `auth.json` or `credentials` files in dot-directories and other
+  credential stores; the bare words are fine in searches and code) are blocked and secret-shaped output is redacted.
   These are pattern matches, not a sandbox.
 - **Background shells are an extension** (`extensions/shell`), modelled on Claude Code's
   background Bash, Monitor, TaskStop and ScheduleWakeup:

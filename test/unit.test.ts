@@ -119,11 +119,11 @@ test("evictable keeps tasks whose group may be alive (P1-2)", () => {
 	assert.deepEqual(evictable([{ id: 1, ended: 9, gone: true }, { id: 2, ended: 3, gone: true }], 1).map((t) => t.id), [2]);
 });
 
-test("secret files: bare auth.json and credentials (P2-4)", () => {
-	for (const c of ["cat auth.json", "cat ./auth.json", "cp credentials /tmp/x", "less ~/.config/gcloud/credentials", "cat 'credentials'"]) {
+test("secret files: auth.json and credentials in dot-directories (P2-4)", () => {
+	for (const c of ["less ~/.config/gcloud/credentials", "cat ~/.codex/auth.json", "cp /home/u/.aws/credentials /tmp/x", "cat '~/.config/x/auth.json'"]) {
 		assert.match(commandVerdict(c, false).block ?? "", /secret/, c);
 	}
-	for (const c of ["cat credentials.example", "cat oauth.json", "go test ./credentials_test.go", "cat mycredentials", "cat docs/credentials.md", "ls credentials-helper"]) {
+	for (const c of ["rg credentials", "grep -rn auth.json src", "cat credentials.example", "cat oauth.json", "go test ./credentials_test.go", "cat mycredentials", "cat docs/credentials.md", "ls credentials-helper", "rg -n 'loadCredentials|credentials'"]) {
 		assert.equal(commandVerdict(c, false).block, undefined, c);
 	}
 });
