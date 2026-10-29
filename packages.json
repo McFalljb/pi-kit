@@ -1,0 +1,27 @@
+{
+  "tested": { "pi": "1.2.0", "vetted": "2026-10-29" },
+  "recommended": [
+    { "name": "pi-subagents", "spec": "npm:pi-subagents@0.84.0", "why": "Background workers and reviewers; the kit's agents run on it. 0.84.0 fixes GHSA-6v8j-6w28-2w8r (workflow-script sandbox escape in 0.41.0-0.83.x)." },
+    { "name": "pi-ask-user", "spec": "npm:pi-ask-user@0.17.0", "why": "Structured questions to the user (choices, free text). Local only, no dependencies." },
+    { "name": "@ff-labs/pi-fff", "spec": "npm:@ff-labs/pi-fff@0.11.0", "why": "Fast fuzzy file and content search (ffgrep, fffind). Local only; prebuilt native binary." },
+    { "name": "@juicesharp/rpiv-todo", "spec": "npm:@juicesharp/rpiv-todo@2.15.0", "why": "Live todo list (tool todo, /todos) kept in session entries, so it survives compaction. Local only." }
+  ],
+  "optional": [
+    { "name": "pi-web-access", "spec": "npm:pi-web-access@0.46.0", "why": "Web search and fetch. Sends queries to third parties (Exa by default), runs git/gh/ffmpeg/yt-dlp, and fetch_content also reads local paths outside the guardrails." },
+    { "name": "pi-mcp-adapter", "spec": "npm:pi-mcp-adapter@7.0.0", "why": "Lazy-started MCP servers (e.g. a docs server such as Context7). Replaces pi's built-in MCP; MCP calls bypass the guardrails." },
+    { "name": "pi-intercom", "spec": "npm:pi-intercom@0.18.1", "why": "Messages between pi sessions; cooperates with pi-subagents. Spawns a local broker; dependencies have install scripts." },
+    { "name": "pi-autoresearch", "spec": "npm:pi-autoresearch@1.9.0", "why": "Experiment loop for experts. Its log_experiment runs git checkout -- . and git clean -fd, and run_experiment runs bash outside the guardrails." },
+    { "name": "@plannotator/pi-extension", "spec": "npm:@plannotator/pi-extension@0.28.37", "why": "Plan mode with a browser review UI. 52 MB, node-pty install script, local server (0.0.0.0 over SSH), contacts GitHub and other services." }
+  ],
+  "skills": [
+    { "name": "mattpocock/skills", "spec": "git:github.com/mattpocock/skills@v1.3.2", "filter": { "skills": ["skills/engineering/*"] }, "why": "Optional. Well-used engineering skills (MIT); load only skills/engineering to skip deprecated and in-progress ones." },
+    { "name": "badlogic/pi-skills", "spec": "git:github.com/badlogic/pi-skills@90bb51cae365", "why": "Optional. CLI-tool skills from pi's author (search, browser tools, transcription); several need API keys or Google OAuth." }
+  ],
+  "excluded": [
+    { "name": "pi-claude-bridge", "why": "Registers Claude Code as a model provider: changes model routing and auth and bridges to another vendor." },
+    { "name": "pi-cursor-sdk", "why": "Provider backed by Cursor's agents: bridges to another vendor." },
+    { "name": "@injaneity/pi-computer-use", "why": "Drives desktop apps and a browser (computer use); postinstall native helper." },
+    { "name": "pi-background-tasks", "why": "Overrides the built-in bash and overlaps the kit's background shell tools." },
+    { "name": "@gotgenes/pi-permission-system, cc-safety-net", "why": "Overlap the kit's guardrails; two gates on the same calls are confusing." }
+  ]
+}

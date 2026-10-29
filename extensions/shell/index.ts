@@ -118,34 +118,38 @@ export default function (pi: ExtensionAPI) {
 		setTimeout(() => killGroup(t, "SIGKILL"), 2000).unref();
 	}
 
-	function readNew(t: Task, w: Watch, final: boolean) {
-		let chunk = "";
-		try {
-			const size = fs.statSync(t.out).size;
-			if (size > w.offset) {
-				const buf = Buffer.alloc(final ? Math.min(size - w.offset, 4 * READ_CAP) : Math.min(size - w.offset, READ_CAP));
-				const fd = fs.openSync(t.out, "r");
-				try {
-					fs.readSync(fd, buf, 0, buf.length, w.offset);
-				} finally {
-					fs.closeSync(fd);
-				}
-				w.offset += buf.length;
-				chunk = w.decoder.write(buf);
-			}
-		} catch {
-			return;
-		}
-		const { lines, rest } = splitLines(w.carry, chunk + (final ? w.decoder.end() : ""));
+	function scan(w: Watch, chunk: string, final: boolean) {
+		const { lines, rest } = splitLines(w.carry, chunk);
 		w.carry = rest.length > 65536 ? rest.slice(-65536) : rest; // a huge unterminated line
-		if (final && rest) lines.push(rest);
+		if (final && w.carry) lines.push(w.carry);
 		for (const line of lines) {
 			if (w.re && !w.re.test(line.slice(0, MATCH_CAP))) continue;
 			w.matches++;
 			if (w.pending.length < MAX_BATCH) w.pending.push(clip(line));
 			else w.skipped++;
 		}
-		if (!final && w.pending.length && !w.flush) w.flush = setTimeout(() => flush(t), BATCH_MS);
+	}
+
+	/** Read new output in READ_CAP chunks: one per poll, or all of it when final. */
+	function readNew(t: Task, w: Watch, final: boolean) {
+		try {
+			const fd = fs.openSync(t.out, "r");
+			try {
+				const size = fs.fstatSync(fd).size;
+				do {
+					const n = Math.min(size - w.offset, READ_CAP);
+					if (n <= 0) break;
+					const buf = Buffer.alloc(n);
+					fs.readSync(fd, buf, 0, n, w.offset);
+					w.offset += n;
+					scan(w, w.decoder.write(buf), false);
+				} while (final);
+			} finally {
+				fs.closeSync(fd);
+			}
+		} catch {}
+		if (final) scan(w, w.decoder.end(), true);
+		else if (w.pending.length && !w.flush) w.flush = setTimeout(() => flush(t), BATCH_MS);
 	}
 
 	function flush(t: Task) {
@@ -184,7 +188,9 @@ export default function (pi: ExtensionAPI) {
 
 	function watch(t: Task, re: RegExp | undefined, timeoutSec: number | undefined, ownsTask: boolean) {
 		endWatch(t);
-		const w: Watch = { re, pending: [], skipped: 0, matches: 0, notices: 0, offset: 0, carry: "", decoder: new StringDecoder("utf8"), poll: setInterval(() => readNew(t, w, false), POLL_MS) };
+		// A command the monitor started is read from the start; an attached task from now on.
+		const offset = ownsTask ? 0 : (fs.statSync(t.out, { throwIfNoEntry: false })?.size ?? 0);
+		const w: Watch = { re, pending: [], skipped: 0, matches: 0, notices: 0, offset, carry: "", decoder: new StringDecoder("utf8"), poll: setInterval(() => readNew(t, w, false), POLL_MS) };
 		t.watch = w;
 		if (timeoutSec) {
 			w.until = setTimeout(() => {
@@ -247,11 +253,11 @@ export default function (pi: ExtensionAPI) {
 		} finally {
 			fs.closeSync(fd);
 		}
+		child.on("error", (e) => fs.appendFileSync(out, `\n[pi-kit] ${e.message}\n`)); // before any throw: an unhandled error would crash pi
 		if (child.pid === undefined) throw new Error(`could not start bash for ${id}`);
 		const t: Task = { id, command, cwd, out, child, pid: child.pid, started: Date.now() };
 		tasks.set(id, t);
 		child.on("exit", (code, signal) => onExit(t, code, signal));
-		child.on("error", (e) => fs.appendFileSync(out, `\n[pi-kit] ${e.message}\n`));
 		if (timeoutSec) t.timer = setTimeout(() => stop(t, `timed out after ${timeoutSec}s`), timeoutSec * 1000);
 		footer();
 		return t;

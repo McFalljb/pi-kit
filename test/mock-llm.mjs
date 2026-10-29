@@ -16,7 +16,9 @@ function decide(messages) {
 	let lastUser = -1;
 	for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user") { lastUser = i; break; }
 	const userText = textOf(messages[lastUser]?.content);
-	if (/^Background task (?:completed|failed)/m.test(userText) && !/@@/.test(userText)) return { text: `GOT REPORT: ${userText.split("\n")[0]}` };
+	// pi-subagents 0.84 wraps the notice in a <pi_subagents_notice> envelope; quote the status line.
+	const report = userText.match(/^Background task (?:completed|failed).*$/m);
+	if (report && !/@@/.test(userText)) return { text: `GOT REPORT: ${report[0]}` };
 	if (SHELL_NOTICE.test(userText) && !/@@/.test(userText)) return { text: `GOT SHELL: ${userText.split("\n")[0]}` };
 	const steps = userText.split("\n").filter((l) => l.startsWith("@@ ")).map((l) => JSON.parse(l.slice(3)));
 	const after = messages.slice(lastUser + 1);

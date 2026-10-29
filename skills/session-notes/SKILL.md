@@ -18,6 +18,7 @@ conventions win over this skill. Never touch files outside that folder.
 - `incidents/YYYY-MM-DD-<slug>.md`: timeline, root cause, fix commit, follow-ups.
 - `research/YYYY-MM-DD-<slug>.md`: question, setup, result, verdict, evidence path.
 - `runbooks/<slug>.md`: how to do a recurring operation.
+- `handoffs/YYYY-MM-DD-<project>-<slug>.md`: see skill `handoff`.
 - `projects/<project>.md`: current status, updated in place, under 80 lines; links the notes above.
 
 ## Frontmatter (required on every note)

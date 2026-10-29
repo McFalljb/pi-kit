@@ -50,7 +50,11 @@ Known facts, file paths, relevant commits, prior findings, data locations, relat
   (or: "push to origin <branch> allowed", never main).
 - No ssh or production changes unless stated here: <exact allowed action or "none">.
 - Never read or print secrets. Follow the repo's AGENTS.md.
-- Tests: <narrowest target while iterating; anything to run before finishing>.
+- Checks: <narrowest test while iterating>; before reporting done, run <the repo's lint, type
+  and test commands for what changed> and report each exact command with its result. Never
+  report done on red or unrun checks; say what could not run and why.
+- Background work: dev servers and long runs in `bash_bg`/`monitor`, no sleep loops; stop every
+  task you started before the report.
 
 ## Deliverable
 The report format from your agent prompt, with commit SHAs and commands run with pass/fail.
@@ -87,8 +91,9 @@ subagent({ agent: "kit.worker", task: "<brief>", cwd: "<worktree>", async: true 
 ## 6. Collect and verify
 For each report:
 - Check its claims yourself: `git -C <wt> log --oneline origin/main..`,
-  `git -C <wt> diff --stat origin/main..`, and rerun the narrowest relevant test if anything
-  looks off.
+  `git -C <wt> diff --stat origin/main..`. A report without the exact check commands and their
+  results is not done: send it back with `resume`. Rerun the narrowest relevant test yourself if
+  anything looks off; nothing merges on checks nobody ran.
 - Relay to the user briefly: what changed, the commits, the test evidence, and risks.
 - Follow-ups, accepted review fixes and CI fixes go to the **same** worker:
   `subagent({ action: "resume", id: "<worker run id>", message: "<follow-up brief>" })`. This

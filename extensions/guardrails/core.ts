@@ -70,7 +70,9 @@ const SECRET_COMMANDS: RegExp[] = [
 	/\b(?:security\s+find-(?:generic|internet)-password|op\s+read|vault\s+kv\s+get|gcloud\s+auth\s+print-)/,
 ];
 
-const PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls"]);
+// Tools whose `path` input is checked against the secret-file patterns: pi's builtins plus the
+// search tools of @ff-labs/pi-fff (default and override mode names).
+const PATH_TOOLS = new Set(["read", "write", "edit", "grep", "find", "ls", "ffgrep", "fffind", "fff-multi-grep", "multi_grep"]);
 
 function isSecretPath(p: string): boolean {
 	return SECRET_IN_TEXT.some((r) => r.test(` ${p}`));

@@ -6,8 +6,8 @@ runs on the third-party extension **pi-subagents** (npm `pi-subagents`,
 github.com/nicobailon/pi-subagents). The kit adds two agent definitions, guardrails, the process
 skills and two prompts on top of it.
 
-Tested offline (mock model) against pi **1.2.0** and pi-subagents **0.78.0**. npm's latest
-pi-subagents on 2026-10-29 is 0.84.0; it has not been tested with the kit.
+Tested offline (mock model) against pi **1.2.0** and pi-subagents **0.84.0**, alone and with the
+recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.md).
 
 ## 1. Architecture
 
@@ -38,8 +38,35 @@ pi-subagents on 2026-10-29 is 0.84.0; it has not been tested with the kit.
   child reports them. Whether a foreground child inside the TUI gets the dialog or a block is
   untested. Reads of secret files are blocked and secret-shaped output is redacted.
   These are pattern matches, not a sandbox.
+- **Background shells are an extension** (`extensions/shell`), modelled on Claude Code's
+  background Bash, Monitor, TaskStop and ScheduleWakeup:
+  - `bash_bg { command, cwd?, timeout? }` starts the command with `bash -c` in its own process
+    group, writes stdout and stderr to `<tmpdir>/pi-shell-*/shN.log` (mode 0600) and returns
+    the id and path at once. On exit a notice (exit code or signal, duration, last 10 lines,
+    path) wakes the session.
+  - `monitor { command | id, pattern?, cwd?, timeout? }` runs a command, or attaches to a
+    running `bash_bg` task, and sends a notice for new lines matching `pattern` (a JavaScript
+    regex; every line if omitted). Notices are batched about once a second, hold at most 20
+    lines of at most 300 characters (the rest are counted), and stop after 50 notices. It ends
+    when the command exits (one final notice with the total), on `shell_stop`, or at `timeout`
+    (which kills a command the monitor started, and only ends the watch on an attached task).
+  - `shell_stop { id, watch_only? }` kills the whole process group (SIGTERM, SIGKILL after 2 s)
+    and sends no exit notice; `watch_only` ends only the monitor. It also cancels a timer.
+  - `wake_later { seconds, prompt }`: a one-shot timer, clamped to 60-3600 s, that wakes the
+    session with the prompt. For checks no shell command can observe.
+  - `shell_list {}` and `/shells` list running and the last 20 finished tasks and pending
+    timers; the footer shows how many are running.
+  - Every command goes through the guardrails' `checkCommand`, the same gate as `bash`
+    (confirm with a UI, block without; secret files and secret-printing commands blocked).
+    Notices are redacted like bash output. Read-only sessions do not register the tools, and
+    the read-only guardrails block them by name.
+  - All process groups are killed when the session ends or reloads. Headless runs (`pi -p`,
+    subagent children) wait at the end of a turn for the next notice or until every task and
+    timer is done, up to 30 minutes, then kill what is left.
+  - `kit.worker` has the tools; `kit.reviewer` does not.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
-  `worktree-discipline` and `session-notes`. Prompts `/delegate` and `/review` start the first two.
+  `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
+  the first two.
 - **CI is the merge gate** (one rule in `AGENTS.md`): required checks green on the PR's latest
   commit, red checks fixed through the original worker, then the user approves the merge.
 
@@ -52,6 +79,13 @@ pi-subagents on 2026-10-29 is 0.84.0; it has not been tested with the kit.
 | Agent tool | pi-subagents `subagent` tool (`agent`, `task`, `cwd`, `model`, `async`) | `kit.worker`, `kit.reviewer` |
 | `.claude/agents/*.md` | Agent Markdown with frontmatter: package (`pi.subagents.agents`), `~/.pi/agent/agents/`, `.pi/agents/` | `agents/*.md`; a user or project agent of the same runtime name wins |
 | Background agent + completion notice | `async: true`; completion message wakes the parent | Used for all workers and reviewers |
+| Background Bash (`run_in_background`) | No built-in equivalent | `bash_bg` (kit `extensions/shell`) |
+| Monitor | No built-in equivalent | `monitor` |
+| TaskStop | No built-in equivalent | `shell_stop` |
+| ScheduleWakeup | No built-in equivalent | `wake_later` |
+| TodoWrite | No built-in equivalent | `todo` and `/todos` from `@juicesharp/rpiv-todo` (recommended) |
+| AskUserQuestion | No built-in equivalent | `ask_user` from `pi-ask-user` (recommended) |
+| Plan mode | No built-in equivalent | Ask for a plan first, or `PI_KIT_READONLY=1 pi`; `@plannotator/pi-extension` is optional |
 | SendMessage to an agent | `action: "steer"` (running), `action: "resume"` (finished) | Fixes go to the original worker with `resume` |
 | Agent asks the parent | `contact_supervisor` / `subagent_supervisor` | In both agents' tools |
 | Per-agent model and effort | Frontmatter `model`, `thinking`; per call `model: "provider/id:level"`; `subagents.agentOverrides` | Reviewer pinned in settings or per call |
@@ -63,54 +97,42 @@ pi-subagents on 2026-10-29 is 0.84.0; it has not been tested with the kit.
 | Permission modes, allow/deny | None; tools run freely. Agent `tools` allowlists | Guardrails; reviewer allowlist without edit/write |
 | Plugins | pi packages: `pi install npm:… / git:… / <path>` | `package.json` with a `pi` manifest |
 | `--resume`, `--continue`, `/compact` | Same flags, `/resume`, `/tree`, `/fork`, `/compact` | n/a |
-| MCP | Built in; children need `mcp:` entries in `tools` and must run async | Not used by the kit agents |
+| MCP | Built in; children need `mcp:` entries in `tools` and must run async | Not used by the kit agents; `pi-mcp-adapter` (optional) for lazy docs servers such as Context7 |
 | Memory / notes | No built-in memory | `session-notes` skill |
+| Handoff between sessions | `--resume`, session JSONL files | `handoff` skill (write one, or pick up from a handoff or another session's JSONL) |
 
 ## 3. Setup
 
-1. **Install pi** (Node 22.19 or later): `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`
-   or `curl -fsSL https://pi.dev/install.sh | sh`. Connect a provider with `/login` or
-   `~/.pi/agent/models.json`.
-2. **Install pi-subagents** if it is not already: `pi install npm:pi-subagents@0.78.0` (the
-   tested version). An existing install stays as it is, including its prompt filters.
-3. **Put the kit at a stable path**, for example `~/pi-kit`. pi loads local packages in place and
-   never modifies them.
-4. **Verify offline.** No credentials; a mock model and a temporary `PI_CODING_AGENT_DIR`:
-   ```bash
-   ~/pi-kit/test/typecheck.sh    # tsc of the guardrails against the installed pi
-   ~/pi-kit/test/smoke.sh        # 34 checks; installs pi-subagents@0.78.0 from npm into the temp dir
-   PI_SUBAGENTS_DIR=~/.pi/agent/npm/node_modules/pi-subagents ~/pi-kit/test/smoke.sh   # or use your copy, read-only
-   ```
-5. **Install the kit:** `pi install ~/pi-kit`. This adds a `packages` entry to
-   `~/.pi/agent/settings.json`. Check with `pi list`, then in pi `subagent({ action: "list" })`
-   (or ask "list the subagents"): `kit.worker` and `kit.reviewer` appear under package agents.
-6. **Global rules.** Back up `~/.pi/agent/AGENTS.md`. With no file, copy the kit's `AGENTS.md`.
-   With an existing file, merge section by section:
+[SETUP.md](SETUP.md) is the step-by-step version, written so an agent can follow it.
+`scripts/install.sh` does the idempotent parts: pinned packages from `packages.json`, the kit,
+and the `AGENTS.md` merge (backup, then append the `## ` sections the file lacks).
 
-   | Kit section | Typical existing section | What to do |
-   |---|---|---|
-   | Operating rules | Operating Rules | Keep yours |
-   | Safety | Standing Authorization → Safety and authority | Keep yours; add the kit bullets yours lacks (secrets, personal info, merge to `main`, stashes, do not work around a guardrail) |
-   | Parent session | Standing Authorization → Parent session | Keep yours (same policy: orchestrate within scope, review by risk, fixes to the original worker) |
-   | Delegation mechanics *(kit)* | none | Append: it names the `subagent` calls, `kit.*` agents, worktrees and `async` |
-   | Review and merge gate *(kit)* | Partly in Parent session (review depth, two reviewers) | Append: adds the 2-round cap, the different-model rule and the CI gate |
-   | Child sessions | Standing Authorization → Child sessions | Keep yours |
-   | Durable notes | Your notes section | Keep yours; the kit's points at the `session-notes` skill |
+**Packages.** `packages.json` lists what was vetted on the date it names (npm metadata, README,
+source read from the tarball, never run):
+- *recommended*: `pi-subagents`, `pi-ask-user`, `@ff-labs/pi-fff`, `@juicesharp/rpiv-todo`;
+- *optional*, each with its caveat: `pi-web-access`, `pi-mcp-adapter`, `pi-intercom`,
+  `pi-autoresearch`, `@plannotator/pi-extension`, and two skill repos;
+- *excluded*, with the reason: packages that change model routing or auth or bridge to another
+  vendor (`pi-claude-bridge`, `pi-cursor-sdk`), computer use, and packages that overlap the
+  kit's own tools or guardrails.
 
-   The kit's agents set `inheritGlobalContext: true`, so children read this file too. Keep parent
-   rules labeled as parent-only, as the kit's file does.
-7. **Pick models.** The orchestrator uses `defaultProvider`, `defaultModel` and
-   `defaultThinkingLevel`. Pin the reviewer to another provider:
-   ```json
-   "subagents": { "agentOverrides": { "kit.reviewer": { "model": "provider/id" } } }
-   ```
-   `kit.worker` uses the session's model unless you pin it the same way. List models with
-   `subagent({ action: "models" })` or `pi --list-models`.
-8. **Try it** in a repo: `pi`, then "start a kit.worker in the background that lists the five
-   largest files in this repo". The run shows in FleetView; the report arrives on its own.
+pi's package installer runs npm lifecycle scripts; the recommended set has none.
+
+**AGENTS.md.** The kit's sections are labelled by role because children load the global file
+too (`inheritGlobalContext: true`). Sections marked *(kit)* are kit mechanics; the rest are
+general rules you may already have under other headings. The installer appends any section
+whose heading is missing, so if yours covers the same ground under another name, remove the
+duplicate by hand.
+
+**Models.** The orchestrator uses `defaultProvider`, `defaultModel` and `defaultThinkingLevel`.
+Pin the reviewer to another provider with `install.sh --reviewer-model provider/id`, or by hand:
+```json
+"subagents": { "agentOverrides": { "kit.reviewer": { "model": "provider/id" } } }
+```
+`kit.worker` uses the session's model unless you pin it the same way.
 
 `PI_KIT_READONLY=1 pi` starts a session whose guardrails are read-only (no edits, no mutating
-bash), which is handy for a look-only session.
+bash, no background shells), which is handy for a look-only session.
 
 ## 4. Daily workflow
 
@@ -143,8 +165,8 @@ bash), which is handy for a look-only session.
 - **Read-only reviewer is best-effort.** It has no edit/write tools (a `write` call fails with
   "Tool write not found"), but its bash is limited only by patterns. A test suite it runs can
   still write files.
-- **Children load only the extensions their agent lists.** The kit's agents list only the
-  guardrails, so other installed extensions (web search, MCP adapters, custom tools) are not in
+- **Children load only the extensions their agent lists.** The kit's agents list only the kit's
+  own (guardrails; the worker also gets the shell tools), so other installed extensions (web search, MCP adapters, custom tools) are not in
   kit children. Foreground children never load ambient extensions anyway. Add what a worker needs
   to its `extensions` (or `subagentOnlyExtensions`) and `tools`; MCP tools need async children.
 - **Notices reach only the launching process.** Background runs survive quitting pi, but the
@@ -177,8 +199,27 @@ bash), which is handy for a look-only session.
 - **Context files load without trust.** A repo's `AGENTS.md` / `CLAUDE.md` loads even in an
   untrusted project, so treat it as possible prompt injection. Project `.pi/` resources, project
   agents and project subagent settings need trust.
-- **pi-subagents is large and moves fast** (0.78 → 0.84 in about two weeks). Pin a version and
-  rerun `test/smoke.sh` after upgrading; frontmatter or tool parameters may change.
+- **pi-subagents is large and moves fast** (0.78 → 0.84 in about two weeks, and 0.84.0 fixed a
+  sandbox-escape advisory, GHSA-6v8j-6w28-2w8r). Pin a version and rerun `test/smoke.sh` after
+  upgrading; frontmatter or tool parameters may change.
+- **Background shells do not survive pi.** They belong to the pi process and are killed when
+  the session ends, reloads or switches. A process that leaves its process group (`setsid`, a
+  daemonizing server) escapes `shell_stop` and the cleanup. Output files stay in the temp dir.
+  An output file may hold secrets the command printed: `bash` reading it gets full redaction,
+  the `read` tool only token-shape redaction.
+- **Other packages' tools bypass the guardrails.** The guardrails gate `bash`, the kit's shell
+  tools and the `path` of pi's file tools and pi-fff's search tools. Optional packages run
+  commands or read files through their own tools: `pi-web-access` (`fetch_content` takes local
+  paths; it runs git, gh, ffmpeg, yt-dlp), `pi-mcp-adapter` (every MCP call),
+  `pi-autoresearch` (`run_experiment.command`, and `log_experiment` discards uncommitted work),
+  `@plannotator/pi-extension` (`plannotator` annotate paths). A content search over a directory
+  can still show a secret file's lines if the search tool indexes it. Token-shaped output is
+  redacted for every tool.
+- **Read-only mode covers the kit's tools only.** `kit.reviewer` is safe because its `tools`
+  list is an allowlist. A `PI_KIT_READONLY=1` session still has every other installed
+  package's tools.
+- **No plan mode.** pi has none built in; ask for a plan before edits, or use read-only mode.
+  `@plannotator/pi-extension` is optional (heavy, opens a browser and a local server).
 - **No CI-side enforcement.** The CI gate is an `AGENTS.md` rule the parent follows plus a guardrail that
   asks before `gh pr merge`; branch protection on the host is what actually enforces it.
 

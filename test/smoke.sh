@@ -5,7 +5,8 @@
 # Usage: test/smoke.sh   (needs pi, node and npm on PATH)
 #   PI_SUBAGENTS_DIR=<path>   use an already installed pi-subagents package in place (read-only)
 #                             instead of installing it from npm into the temp agent dir
-#   PI_SUBAGENTS_VERSION=x.y.z  version to install from npm [0.78.0]
+#   PI_SUBAGENTS_VERSION=x.y.z  version to install from npm [the pin in packages.json]
+#   PI_KIT_RECOMMENDED=1      also load the rest of packages.json's recommended set (npm, no scripts)
 set -uo pipefail
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/pi-kit-smoke.XXXXXX")"
@@ -17,12 +18,21 @@ mkdir -p "$PI_CODING_AGENT_DIR" "$T/work" "$TMPDIR"
 if [ -n "${PI_SUBAGENTS_DIR:-}" ]; then
 	SUBAGENTS="$PI_SUBAGENTS_DIR"
 else
-	V="${PI_SUBAGENTS_VERSION:-0.78.0}"
+	V="${PI_SUBAGENTS_VERSION:-$(node -p 'require(process.argv[1]).recommended.find(p=>p.name==="pi-subagents").spec.split("@").pop()' "$KIT/packages.json")}"
 	npm install --prefix "$PI_CODING_AGENT_DIR/npm" --no-audit --no-fund --silent "pi-subagents@$V" >/dev/null 2>"$T/npm.err" \
 		|| { echo "FAIL could not install pi-subagents@$V from npm (see $T/npm.err); set PI_SUBAGENTS_DIR"; exit 2; }
 	SUBAGENTS="$PI_CODING_AGENT_DIR/npm/node_modules/pi-subagents"
 fi
 echo "pi $(pi --version), pi-subagents $(node -p 'require(process.argv[1]).version' "$SUBAGENTS/package.json")"
+EXTRA=""
+if [ "${PI_KIT_RECOMMENDED:-}" = 1 ]; then
+	SPECS="$(node -p 'require(process.argv[1]).recommended.filter(p=>p.name!=="pi-subagents").map(p=>p.spec.slice(4)).join(" ")' "$KIT/packages.json")"
+	# shellcheck disable=SC2086
+	npm install --prefix "$T/extra" --no-audit --no-fund --silent --ignore-scripts $SPECS >/dev/null 2>"$T/npm-extra.err" \
+		|| { echo "FAIL could not install the recommended set (see $T/npm-extra.err)"; exit 2; }
+	for spec in $SPECS; do EXTRA="$EXTRA,\"$T/extra/node_modules/${spec%@*}\""; done
+	echo "with recommended: $SPECS"
+fi
 
 # Two mock providers on the same server, so the reviewer's model pin can be observed.
 cat > "$PI_CODING_AGENT_DIR/models.json" <<JSON
@@ -32,7 +42,7 @@ cat > "$PI_CODING_AGENT_DIR/models.json" <<JSON
 JSON
 cat > "$PI_CODING_AGENT_DIR/settings.json" <<JSON
 {"defaultProvider":"mock","defaultModel":"mock-1","defaultThinkingLevel":"off","enableInstallTelemetry":false,
- "packages":["$SUBAGENTS","$KIT"],
+ "packages":["$SUBAGENTS","$KIT"$EXTRA],
  "subagents":{"agentOverrides":{"kit.reviewer":{"model":"mockb/mock-b"}}}}
 JSON
 echo "FAKE_SECRET=do-not-read" > "$T/work/.env"
@@ -171,6 +181,12 @@ if [ "$N" -ge 3 ]; then echo "PASS monitor sent $N separate notices"; else echo 
 check "monitor delivered the last match" 'ERR 3' "$T/p12.log"
 nocheck "monitor dropped non-matching lines" '"notices":\[[^]]*ok 2' "$T/p12.log"
 check "monitor ended with the command" "Monitor total: 3 matching lines" "$T/p12.log"
+
+# 12b. monitor attached to a running bash_bg task sees only lines written after it attached
+run p12b "Steps:
+$(step bash_bg '{"command":"printf '"'"'old-%s\\n'"'"' line; sleep 1.5; for i in 1 2; do echo after $i; sleep 1; done"}'; step bash '{"command":"sleep 0.5; echo attached"}'; step monitor '{"id":"sh1","pattern":"old|after"}')"
+check "attached monitor got new lines" '"notices":\[[^]]*after 2' "$T/p12b.log"
+nocheck "attached monitor skipped earlier output" '"notices":\[[^]]*old-line' "$T/p12b.log"
 
 # 13. shell_stop kills the whole process group, grandchildren included; shell_list shows tasks
 run p13 "Steps:
