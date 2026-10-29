@@ -7,7 +7,8 @@ description: Keep a running record of the session in a notes folder, written as 
 
 A running record: the chain of events and the current status, written down as they happen, so
 that after a compaction or a handover the next session knows where things stand. Only the main
-session writes notes; workers report to it.
+session writes notes. Workers and reviewers never do: a worker puts its status block in its
+final report.
 
 ## Where
 - The notes folder is `$PI_KIT_NOTES_DIR` if set (`echo "$PI_KIT_NOTES_DIR"`), else the folder
@@ -16,10 +17,11 @@ session writes notes; workers report to it.
   follow them: they win over this skill. This skill only adds the status block and timeline
   inside the session note. Never touch files outside the folder.
 - The session note is `sessions/YYYY-MM-DD-<project>-<slug>.md` unless the folder's rules say
-  otherwise. When several agents share the folder, put the agent in the name (`-pi-`) and never
-  edit another agent's session note unless the user hands that workstream to you.
-- One note per session or workstream. Search first (`grep -ril <topic> <folder>`) and continue an
-  existing note for the same workstream instead of starting another.
+  otherwise. When several agents share the folder, put the agent in the name (`-pi-`) or the
+  tags, so your own notes can be told apart.
+- One note per session or workstream. Search your own notes first (`grep -ril <topic> <folder>`)
+  and continue one for the same workstream instead of starting another. Never edit another
+  agent's note: start your own and link it from the first timeline line.
 
 ## Shape
 ```markdown
@@ -48,7 +50,8 @@ Use the folder's frontmatter if it has its own. Start each day's timeline lines 
 
 **Status block**: rewritten in place whenever it changes. At most about 10 short lines: only what
 a session taking over needs right now. Drop items once they are finished (the timeline keeps
-them). "None" is a valid entry.
+them). "None" is a valid entry. No commands here: how to check an in-flight item goes in its
+timeline line (`launched: run 3f9a2c1d, check: subagent status 3f9a2c1d`).
 
 **Timeline**: append one line per meaningful event, never edit old lines. Verbs: asked,
 decided, approved, launched, finished, failed, found, fixed, merged, deployed, topic. Not every

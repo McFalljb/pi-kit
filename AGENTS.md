@@ -118,7 +118,8 @@ its agent prompt and the **Everyone** and **Child** sections, and never delegate
 - Do not spawn agents or start nested workflows unless the parent explicitly delegated that.
 - Ask the parent with `contact_supervisor` (`need_decision`) instead of making scope or
   architecture decisions yourself, and wait for the reply.
-- Reviewers stay read-only. Do not write durable notes; report to the parent.
+- Reviewers stay read-only. Children never write notes: put the status in the report to the
+  parent.
 
 ## Durable notes and handoffs (Parent)
 
@@ -130,5 +131,5 @@ its agent prompt and the **Everyone** and **Child** sections, and never delegate
   worker launch or result, merge, deploy, incident or topic change, with ids as evidence. Write
   at the moment it happens, not at the end; keep it short.
 - Near a usage or context limit, or when the user asks, hand over through the same note (skill
-  `handoff`). A session picking up reads its status block first, the timeline for the
-  reasoning, and confirms with the user before acting.
+  `handoff`). A session picking up reads its own note (or the one the user names): status block
+  first, timeline for the reasoning, and confirms with the user before acting.
