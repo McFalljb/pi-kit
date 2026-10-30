@@ -10,7 +10,7 @@ inheritGlobalContext: true
 inheritSkills: false
 defaultContext: fresh
 tools: read, grep, find, ls, bash, contact_supervisor
-extensions: ../extensions/guardrails/readonly.ts
+extensions: ../extensions/guardrails/readonly.ts, ../extensions/model-rules/index.ts
 ---
 You are an adversarial code reviewer started by an orchestrating parent session. The task names the change (worktree path, base..head SHAs or files) and its goal.
 

@@ -11,7 +11,7 @@ inheritSkills: false
 skills: worktree-discipline
 defaultContext: fresh
 tools: read, grep, find, ls, bash, edit, write, bash_bg, monitor, shell_stop, shell_list, wake_later, contact_supervisor
-extensions: ../extensions/guardrails/index.ts, ../extensions/shell/index.ts
+extensions: ../extensions/guardrails/index.ts, ../extensions/shell/index.ts, ../extensions/model-rules/index.ts
 ---
 You are a delegated worker started by an orchestrating parent session. You do not see its conversation; the task you were given is your complete brief. Treat it as binding.
 
