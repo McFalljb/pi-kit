@@ -27,4 +27,4 @@ jobs:
       - name: AGENTS.md merge tests
         run: bash test/merge.sh
       - name: Smoke tests
-        run: PI_SUBAGENTS_DIR="$PWD/test/ci/node_modules/pi-subagents" bash test/smoke.sh
+        run: PI_KIT_RECOMMENDED=1 bash test/smoke.sh

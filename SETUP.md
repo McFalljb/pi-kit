@@ -15,7 +15,7 @@ improvise around it.
 ## 1. Prerequisites
 ```bash
 node --version          # needs v22.19.0 or later
-pi --version            # the kit is tested with 1.4.0
+pi --version            # the kit is tested with the version in test/ci/package.json
 npm --version
 git --version
 ```
@@ -52,7 +52,7 @@ idempotent. It:
 2. installs every **recommended** package in `packages.json` at its pinned version
    (from `test/ci/package.json`) with
    `pi install` (a package already configured under the same name is left as it is and
-   reported as "kept");
+   reported as "kept", unless `--update` is given);
 3. installs the kit itself (`pi install ~/pi-kit`);
 4. merges the kit's `AGENTS.md` into `<agent-dir>/AGENTS.md`: copies it if there is none,
    otherwise backs the file up to `AGENTS.md.bak.<timestamp>` and appends the chosen (or new)
@@ -70,8 +70,9 @@ Then do these by hand, with the user:
   `pi install git:github.com/mattpocock/skills@v1.3.2`, then narrow it in settings with the
   object form from `packages.json` (`"filter"`).
 - **"kept" packages.** If the script kept an older version, tell the user the tested version
-  and let them decide. An older `pi-subagents` than 0.84.0 has a known sandbox-escape advisory
-  (GHSA-6v8j-6w28-2w8r): recommend upgrading.
+  and let them decide; `install.sh --update` moves the recommended ones to their pins. An older
+  `pi-subagents` than 0.84.0 has a known sandbox-escape advisory (GHSA-6v8j-6w28-2w8r):
+  recommend upgrading.
 - **AGENTS.md overlap.** The report catches likely overlaps, not every one. After the merge,
   show the user the appended headings and offer to remove duplicates; do not remove them on
   your own. If they skipped `notes` because they have their own notes rules, the kit's skills

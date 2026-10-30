@@ -6,8 +6,8 @@ runs on the third-party extension **pi-subagents** (npm `pi-subagents`,
 github.com/nicobailon/pi-subagents). The kit adds two agent definitions, guardrails, the process
 skills and two prompts on top of it.
 
-Tested offline (mock model) against pi **1.4.0** and pi-subagents **0.84.0**, alone and with the
-recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.md).
+Tested offline (mock model) against the pi and package versions pinned in `test/ci/package.json`,
+alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.md).
 
 ## 1. Architecture
 
@@ -216,26 +216,33 @@ installs exactly those from its lockfile, and `install.sh`, the tests and `exten
 read them there; `packages.json` keeps the names and reasons, and pins only the optional packages
 and skill repos. The contract tests (`test/contracts.test.ts`) check the internals of pi, pi-tui,
 pi-subagents and rpiv-todo that the sidebar and model-rules depend on, and each failure names the
-kit file to fix. The open Dependabot alerts for `undici` come from pi's own exact pin (8.10.2 in
-pi 1.4.0) and clear when a pi release bumps it.
+kit file to fix. The open Dependabot alerts for `undici` come from pi's own exact pin of it and
+clear when a pi release bumps it.
 
 1. Dependabot opens a weekly PR that bumps `test/ci/package.json` and its lockfile, plus one
    for the SHA-pinned GitHub Actions (`.github/dependabot.yml`).
-2. CI runs the typecheck, unit, contract, merge and smoke tests at the new versions. A failing
-   contract check means the kit file it names needs a change before merging.
+2. CI runs the typecheck, unit, contract, merge and smoke tests at the new versions; the smoke
+   test loads pi-subagents and the rest of the recommended set from `test/ci`
+   (`PI_KIT_RECOMMENDED=1`). A failing contract check means the kit file it names needs a change
+   before merging. On the first PR that bumps pi, check in the lockfile diff that the pi sibling
+   packages (`pi-ai`, `pi-tui`, `pi-agent-core`, ...) moved to the same version via `overrides`.
 3. Read the changelogs and security advisories of what changed.
-4. Install the PR's pins locally (`npm ci --ignore-scripts --prefix test/ci`, then put
-   `test/ci/node_modules/.bin` first on `PATH`) and, in a terminal at least 120 columns wide,
-   run the sidebar test prompt below.
-5. Merge, then run `scripts/install.sh` on each machine.
+4. On one machine, check out the PR branch in a worktree and run its `scripts/install.sh --update`:
+   it points pi at that checkout (removing the other configured pi-kit) and installs the PR's
+   package pins. If the PR bumps pi, run the global upgrade command the script prints. In a
+   terminal at least 120 columns wide, run the sidebar test prompt below. Then go back with your
+   main checkout's `scripts/install.sh --update`. (AGENTS.md is not switched: the merge only
+   appends missing sections.)
+5. Merge, then run `scripts/install.sh --update` on each machine.
 
-`install.sh` installs a missing package at its pin, but it keeps a package that is already
-configured under another spec, including an unpinned one such as `npm:pi-ask-user` (it prints
-`kept:`). To move one to the pin, run `pi install npm:<name>@<version>`, which replaces that
-package's entry in `settings.json`. pi itself updates with
-`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@<version>`. While pi or a
-configured package differs from the pins, `extensions/versions` shows one warning when an
-interactive session starts.
+Without `--update`, `install.sh` keeps a package already configured under another spec,
+including an unpinned one such as `npm:pi-ask-user`, and prints `kept:`. With `--update` it backs
+up `settings.json`, moves each recommended package to its pin with `pi install npm:<name>@<version>`
+(which replaces the entry) and removes another configured pi-kit checkout. It never upgrades pi
+itself: when the running pi differs from the pin it prints the
+`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@<version>` command to run.
+`extensions/versions` warns once, when an interactive session starts, if pi or a configured
+recommended package is older than its pin or not pinned; newer versions are not reported.
 
 Sidebar test prompt (paste it into a new interactive session):
 

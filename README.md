@@ -12,7 +12,7 @@ third-party packages with pinned versions.
 
 ## Quick start
 
-Needs Node 22.19+ and pi 1.4.0.
+Needs Node 22.19+ and the pi version pinned in `test/ci/package.json`.
 ```bash
 git clone https://github.com/McFalljb/pi-kit ~/pi-kit
 ~/pi-kit/scripts/install.sh              # pinned packages, the kit, AGENTS.md merge (with backup)
@@ -32,7 +32,7 @@ instructions for an agent, including what to ask you and what never to touch.
 | `extensions/sidebar` | Right-hand column with background subagents, todos and shells instead of widgets under the transcript; `/sidebar` |
 | `extensions/notes` | Once the context is 75% full, reminds the session to update its session note before compaction |
 | `extensions/model-rules` | On OpenAI GPT models only, adds `rules/gpt.md` (less testing, exploring and reporting) to the system prompt; `<agent-dir>/rules/gpt.md` overrides it |
-| `extensions/versions` | At the start of an interactive session, warns once if pi or a recommended package differs from the pins |
+| `extensions/versions` | At the start of an interactive session, warns once if pi or a recommended package is older than its pin or unpinned |
 | `config/` | Compact panel defaults for pi-subagents and rpiv-todo; `install.sh` copies them only where no config exists |
 | `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff` |
 | `prompts/` | `/delegate`, `/review` |

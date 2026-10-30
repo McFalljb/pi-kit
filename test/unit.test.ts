@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
 import { hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
+import { drift } from "../extensions/versions/drift.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -353,5 +354,17 @@ test("a multi-step run lists its steps with their tasks, capped; the count is ru
 		{ text: "  ✓ kit.worker 3s", tone: "success" },
 		{ text: "    review-b", tone: "muted" },
 		{ text: "● kit.worker 14s", tone: "accent" },
+	]);
+});
+
+test("version drift: older or unpinned warns, newer and equal are silent", () => {
+	const pins = { "@earendil-works/pi-coding-agent": "1.4.0", "pi-subagents": "0.84.0", "pi-ask-user": "0.17.0", "@ff-labs/pi-fff": "0.11.0", "@juicesharp/rpiv-todo": "2.15.0" };
+	assert.deepEqual(drift(pins, "1.4.0", ["npm:pi-subagents@0.84.0", { source: "npm:pi-ask-user" }, "../pi-kit"]), []);
+	assert.deepEqual(drift(pins, "1.10.0", ["npm:pi-subagents@0.85.0", "npm:@ff-labs/pi-fff@1.0.0"]), []);
+	assert.deepEqual(drift(pins, "1.3.9", ["npm:pi-subagents@0.9.0", "npm:pi-ask-user", "npm:@juicesharp/rpiv-todo@^2.15.0", "npm:@ff-labs/pi-fff@0.11.0"]), [
+		"pi 1.3.9 (kit tested with 1.4.0)",
+		"npm:pi-subagents@0.9.0 (kit tested with npm:pi-subagents@0.84.0)",
+		"npm:pi-ask-user (kit tested with npm:pi-ask-user@0.17.0)",
+		"npm:@juicesharp/rpiv-todo@^2.15.0 (kit tested with npm:@juicesharp/rpiv-todo@2.15.0)",
 	]);
 });
