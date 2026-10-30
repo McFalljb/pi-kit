@@ -34,14 +34,12 @@ export default function (pi: ExtensionAPI) {
 	let closeOverlay: (() => void) | undefined; // regular mode: closes the open overlay
 	let piRoot: Component | undefined; // pi's layout root, put back on dispose
 	let root: HStack | undefined; // ours: pi's root plus the column
-	let shown = ""; // what the last refresh laid out, so a render can notice a mode or width change
-	let queued = false;
+	let shown = ""; // the layout state last seen, so a render can notice a mode or width change
 	let closed = false;
-	let reading = false;
-	let again = false;
 	let subTimer: NodeJS.Timeout | undefined;
 	let later: NodeJS.Timeout | undefined;
-	let stopRead: (() => void) | undefined; // ends the status read in flight
+	let stopRead: (() => void) | undefined; // set while a status read is in flight; ends it
+	let again = false; // something changed during that read: read again after it
 	let hideTimer: NodeJS.Timeout | undefined;
 	let hideAt = 0;
 	let ownFrame = false; // the next frame is the one our own todo-widget removal asked for
@@ -83,15 +81,14 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function refresh() {
-		queued = false;
 		if (closed || !ui || !tui) return;
 		try {
 			shown = state();
 			if (fullscreen() && column) mount();
 			else unmount();
-			if (closeOverlay && fullscreen() && column && wide()) closeOverlay(); // the column shows the same rows
-			const onScreen = (fullscreen() && column && wide()) || !!closeOverlay;
-			ui.setStatus("sidebar", onScreen ? undefined : summary(data));
+			const inColumn = fullscreen() && column && wide();
+			if (inColumn) closeOverlay?.(); // the column shows the same rows
+			ui.setStatus("sidebar", inColumn || closeOverlay ? undefined : summary(data));
 			if (data.todos.length) ui.setWidget("rpiv-todos", undefined); // rpiv-todo re-adds it after a reload or an empty list
 			tui.requestRender();
 		} catch {}
@@ -121,25 +118,20 @@ export default function (pi: ExtensionAPI) {
 	/** Called on every frame: re-lay out after a tuiMode switch, a resize past MIN_COLUMNS or a lost root. */
 	function watch() {
 		hideTodos();
-		if (queued || closed) return;
+		if (closed) return;
 		if (state() !== shown || (fullscreen() && column && layoutRoot() !== root)) {
-			queued = true;
-			setTimeout(refresh, 0);
+			shown = state();
+			setTimeout(refresh, 0); // not from inside a render
 		}
 	}
 
 	function readSubagents() {
 		subTimer = undefined;
-		if (reading) return void (again = true);
-		reading = true;
+		if (stopRead) return void (again = true);
 		const requestId = randomUUID();
-		let done = false;
 		const finish = (reply?: unknown) => {
-			if (done) return;
-			done = true;
 			off();
 			clearTimeout(timeout);
-			reading = false;
 			stopRead = undefined;
 			const r = reply as { success?: boolean; data?: { asyncSnapshot?: { runs?: unknown } } } | undefined;
 			if (r?.success) {
