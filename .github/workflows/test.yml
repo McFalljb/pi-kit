@@ -26,3 +26,9 @@ jobs:
         run: bash test/merge.sh
       - name: Smoke tests
         run: bash test/smoke.sh
+      - name: DEBUG dump p9
+        if: failure()
+        run: |
+          D=$(ls -d /tmp/pi-kit-smoke.* | head -1)
+          for f in p9.secs p9.exit p9.out p9.err p9.log; do echo "=== $f"; cat "$D/$f"; done
+          echo "=== tree"; find "$D/subagents-tmp" "$D/tmp" -maxdepth 6 2>/dev/null | head -200
