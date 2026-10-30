@@ -101,9 +101,10 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
 - **A sidebar replaces the widgets under the transcript** (`extensions/sidebar`). It lists
   background subagents (pi-subagents: label, state, running time, current tool), background
   shells, monitors and timers (the rows of the shell widget) and todos (rpiv-todo: done/total,
-  the one in progress highlighted). While it is loaded in the TUI, the rpiv-todo widget and the
-  shell widget and footer count are hidden; turn off pi-subagents' own widget with
-  `"subagents": {"asyncWidget": false}`.
+  the one in progress highlighted; like rpiv-todo's own panel, a completed todo stays listed for
+  the rest of the run that completed it, then only the header counts it). While it is loaded in
+  the TUI, the rpiv-todo widget and the shell widget and footer count are hidden; turn off
+  pi-subagents' own widget with `"subagents": {"asyncWidget": false}`.
   - Fullscreen `tuiMode` (pi's default): a 34-column column right of the transcript when the
     terminal is at least 120 columns wide. It scrolls on its own with the mouse wheel.
     `/sidebar` hides or shows it; when it is hidden or the terminal is narrower, the footer

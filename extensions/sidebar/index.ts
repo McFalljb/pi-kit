@@ -16,7 +16,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, HStack, isViewportTUI, ScrollView, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { type Data, type Line, summary, sidebarLines, todosFromBranch } from "./rows.ts";
+import { type Data, hideCompleted, type Line, sidebarLines, summary, type TodoState, todosFromBranch, todoView, trackTodos } from "./rows.ts";
 
 const WIDTH = 34; // columns, border included
 const MIN_COLUMNS = 120; // narrower terminals get the footer summary instead of the column
@@ -25,6 +25,7 @@ const arr = (v: unknown) => (Array.isArray(v) ? v : []);
 
 export default function (pi: ExtensionAPI) {
 	const data: Data = { runs: [], todos: [], shells: [] };
+	let view = todoView(); // which completed todos are no longer listed
 	let ui: ExtensionContext["ui"] | undefined;
 	let tui: TUI | undefined; // pi's TUI reference: it follows the renderer when tuiMode changes
 	let column = true; // fullscreen: /sidebar toggles the column
@@ -186,10 +187,18 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	/** New todos; `reset` (new session, /tree, compaction) forgets which completed ones were hidden, as rpiv-todo does. */
+	function setTodos(s: TodoState, reset = false) {
+		if (reset) view = todoView();
+		trackTodos(view, s.tasks, s.nextId);
+		data.todos = s.tasks;
+		data.hiddenTodos = view.hidden;
+	}
+
 	pi.on("session_start", (_e, ctx) => {
 		if (ctx.mode !== "tui") return;
 		ui = ctx.ui;
-		data.todos = todosFromBranch(ctx.sessionManager.getBranch());
+		setTodos(todosFromBranch(ctx.sessionManager.getBranch()), true);
 		// A widget with no rows: its factory hands over the TUI, its render watches the layout.
 		ui.setWidget("kit-sidebar", (t) => {
 			tui = t;
@@ -200,19 +209,23 @@ export default function (pi: ExtensionAPI) {
 		refresh();
 		refreshSoon(1500); // rpiv-todo adds its widget asynchronously after session_start
 	});
-	const replayTodos = (_e: unknown, ctx: ExtensionContext) => {
+	const replayTodos = (reset: boolean) => (_e: unknown, ctx: ExtensionContext) => {
 		if (!ui) return;
-		data.todos = todosFromBranch(ctx.sessionManager.getBranch());
+		setTodos(todosFromBranch(ctx.sessionManager.getBranch()), reset);
 		refreshSoon();
 	};
-	pi.on("session_tree", replayTodos);
-	pi.on("session_compact", replayTodos);
-	pi.on("turn_end", replayTodos); // todo changes made through another tool (codemode) leave no todo tool_result
+	pi.on("session_tree", replayTodos(true));
+	pi.on("session_compact", replayTodos(true));
+	pi.on("turn_end", replayTodos(false)); // todo changes made through another tool (codemode) leave no todo tool_result
+	pi.on("agent_start", () => {
+		hideCompleted(view); // todos completed in earlier runs stop being listed
+		refresh();
+	});
 	pi.on("tool_execution_end", (e) => void (e.toolName === "todo" && refreshSoon()));
 	pi.on("tool_result", (e) => {
-		const tasks = (e.details as { tasks?: unknown } | undefined)?.tasks;
-		if (e.toolName !== "todo" || e.isError || !Array.isArray(tasks)) return;
-		data.todos = tasks;
+		const d = e.details as { tasks?: unknown; nextId?: unknown } | undefined;
+		if (e.toolName !== "todo" || e.isError || !Array.isArray(d?.tasks)) return;
+		setTodos({ tasks: d.tasks, nextId: typeof d.nextId === "number" ? d.nextId : undefined });
 		refreshSoon(); // after rpiv-todo's own update, which may add its widget back
 	});
 

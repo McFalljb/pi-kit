@@ -19,6 +19,7 @@ export interface Run {
 }
 /** An rpiv-todo task. */
 export interface Todo {
+	id?: number;
 	subject: string;
 	status: string;
 	activeForm?: string;
@@ -34,6 +35,7 @@ export interface Data {
 	runs: Run[];
 	todos: Todo[];
 	shells: ShellRow[];
+	hiddenTodos?: ReadonlySet<number>; // completed todo ids no longer listed (TodoView.hidden)
 }
 
 /** Untrusted text as one line: escapes stripped, secrets redacted, whitespace collapsed. */
@@ -55,11 +57,12 @@ function runLines(runs: Run[], now: number): Line[] {
 	return out;
 }
 
-function todoLines(todos: Todo[]): Line[] {
+function todoLines(todos: Todo[], hidden: ReadonlySet<number>): Line[] {
 	const live = todos.filter((t) => t.status !== "deleted");
 	if (!live.length) return [];
 	const out: Line[] = [{ text: `Todos ${live.filter((t) => t.status === "completed").length}/${live.length}`, head: true }];
 	for (const t of live) {
+		if (t.status === "completed" && hidden.has(t.id!)) continue;
 		if (t.status === "in_progress") out.push({ text: `▸ ${one(t.activeForm) || one(t.subject)}`, tone: "accent" });
 		else if (t.status === "completed") out.push({ text: `✓ ${one(t.subject)}`, tone: "dim" });
 		else out.push({ text: `○ ${one(t.subject)}` });
@@ -88,7 +91,7 @@ function section(name: string, build: () => Line[]): Line[] {
 
 /** The sidebar's rows: subagents, shells, todos, a blank row between sections. */
 export function sidebarLines(d: Data, now: number): Line[] {
-	const parts = [section("subagents", () => runLines(d.runs, now)), section("shells", () => shellLines(d.shells)), section("todos", () => todoLines(d.todos))].filter((p) => p.length);
+	const parts = [section("subagents", () => runLines(d.runs, now)), section("shells", () => shellLines(d.shells)), section("todos", () => todoLines(d.todos, d.hiddenTodos ?? new Set()))].filter((p) => p.length);
 	if (!parts.length) return [{ text: "No subagents, todos or shells", tone: "muted" }];
 	return parts.flatMap((p, i) => (i ? [{ text: "" }, ...p] : p));
 }
@@ -106,14 +109,49 @@ export function summary(d: Data): string | undefined {
 	}
 }
 
-/** The current rpiv-todo tasks on a session branch: its state entries win over `todo` tool results. */
-export function todosFromBranch(entries: Iterable<unknown>): Todo[] {
-	let fromEntries: Todo[] | undefined;
-	let fromResults: Todo[] | undefined;
+export interface TodoState {
+	tasks: Todo[];
+	nextId?: number;
+}
+
+/** The current rpiv-todo state on a session branch: its state entries win over `todo` tool results. */
+export function todosFromBranch(entries: Iterable<unknown>): TodoState {
+	let fromEntries: TodoState | undefined;
+	let fromResults: TodoState | undefined;
 	for (const entry of entries) {
-		const e = entry as { type?: string; customType?: string; data?: { tasks?: unknown }; message?: { role?: string; toolName?: string; details?: { tasks?: unknown } } };
-		if (e?.type === "custom" && e.customType === "rpiv-todo-state" && Array.isArray(e.data?.tasks)) fromEntries = e.data.tasks;
-		else if (e?.type === "message" && e.message?.role === "toolResult" && e.message.toolName === "todo" && Array.isArray(e.message.details?.tasks)) fromResults = e.message.details.tasks;
+		const e = entry as { type?: string; customType?: string; data?: TodoState; message?: { role?: string; toolName?: string; details?: TodoState } };
+		if (e?.type === "custom" && e.customType === "rpiv-todo-state" && Array.isArray(e.data?.tasks)) fromEntries = e.data;
+		else if (e?.type === "message" && e.message?.role === "toolResult" && e.message.toolName === "todo" && Array.isArray(e.message.details?.tasks)) fromResults = e.message.details;
 	}
-	return fromEntries ?? fromResults ?? [];
+	const s = fromEntries ?? fromResults;
+	return s ? { tasks: s.tasks, ...(typeof s.nextId === "number" ? { nextId: s.nextId } : {}) } : { tasks: [] };
+}
+
+/**
+ * Like rpiv-todo's own panel, a completed todo stays listed for the rest of the agent run that
+ * completed it (`pending`) and is hidden from the next run on (`hidden`). Display only.
+ */
+export interface TodoView {
+	pending: Set<number>;
+	hidden: Set<number>;
+	nextId?: number;
+}
+export const todoView = (): TodoView => ({ pending: new Set(), hidden: new Set() });
+
+/** Record a new todo list. A lower nextId means it was cleared and its ids start over. */
+export function trackTodos(v: TodoView, todos: Todo[], nextId?: number): void {
+	if (nextId !== undefined && v.nextId !== undefined && nextId < v.nextId) {
+		v.pending.clear();
+		v.hidden.clear();
+	}
+	if (nextId !== undefined) v.nextId = nextId;
+	const done = new Set(todos.filter((t) => t?.status === "completed" && typeof t.id === "number").map((t) => t.id!));
+	for (const set of [v.pending, v.hidden]) for (const id of set) if (!done.has(id)) set.delete(id);
+	for (const id of done) if (!v.hidden.has(id)) v.pending.add(id);
+}
+
+/** On agent_start: the todos completed in earlier runs stop being listed. */
+export function hideCompleted(v: TodoView): void {
+	for (const id of v.pending) v.hidden.add(id);
+	v.pending.clear();
 }

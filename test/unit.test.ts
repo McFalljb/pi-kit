@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { sidebarLines, summary, todosFromBranch } from "../extensions/sidebar/rows.ts";
+import { hideCompleted, sidebarLines, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -227,9 +227,9 @@ test("todosFromBranch: state entries win over todo tool results", () => {
 	const state = (tasks: unknown) => ({ type: "custom", customType: "rpiv-todo-state", data: { tasks, nextId: 2 } });
 	const a = [{ id: 1, subject: "a", status: "pending" }];
 	const b = [{ id: 1, subject: "b", status: "pending" }];
-	assert.deepEqual(todosFromBranch([result(a)]), a);
-	assert.deepEqual(todosFromBranch([state(b), result(a)]), b);
-	assert.deepEqual(todosFromBranch([null, { type: "message", message: { role: "toolResult", toolName: "bash" } }, result("bad")]), []);
+	assert.deepEqual(todosFromBranch([result(a)]), { tasks: a, nextId: 2 });
+	assert.deepEqual(todosFromBranch([state(b), result(a)]), { tasks: b, nextId: 2 });
+	assert.deepEqual(todosFromBranch([null, { type: "message", message: { role: "toolResult", toolName: "bash" } }, result("bad")]), { tasks: [] });
 });
 
 test("sidebarLines and summary: a paused run is listed as paused, not counted as running", () => {
@@ -239,4 +239,33 @@ test("sidebarLines and summary: a paused run is listed as paused, not counted as
 		{ text: "‖ kit.worker 10s paused", tone: "warning" },
 	]);
 	assert.equal(summary(d), undefined);
+});
+
+test("completed todos stay for the run that completed them, then hide; the header keeps the totals", () => {
+	const todo = (id: number, status: string) => ({ id, subject: `t${id}`, status });
+	const rows = (todos: ReturnType<typeof todo>[], v: ReturnType<typeof todoView>) => sidebarLines({ runs: [], todos, shells: [], hiddenTodos: v.hidden }, 0).map((l) => l.text);
+	const v = todoView();
+	let todos = [todo(1, "completed"), todo(2, "in_progress"), todo(3, "pending")];
+	trackTodos(v, todos, 4);
+	assert.deepEqual(rows(todos, v), ["Todos 1/3", "✓ t1", "▸ t2", "○ t3"]);
+	hideCompleted(v); // next agent run
+	assert.deepEqual(rows(todos, v), ["Todos 1/3", "▸ t2", "○ t3"]);
+	todos = [todo(1, "completed"), todo(2, "completed"), todo(3, "completed")];
+	trackTodos(v, todos, 4);
+	assert.deepEqual(rows(todos, v), ["Todos 3/3", "✓ t2", "✓ t3"]);
+	hideCompleted(v);
+	assert.deepEqual(rows(todos, v), ["Todos 3/3"]);
+	assert.equal(summary({ runs: [], todos, shells: [] }), "todos 3/3 · /sidebar");
+	// Reopened: shown again. Cleared and recreated (nextId went down): ids start over, nothing hidden.
+	trackTodos(v, [todo(1, "pending"), todo(2, "completed"), todo(3, "completed")], 4);
+	assert.deepEqual(rows([todo(1, "pending"), todo(2, "completed"), todo(3, "completed")], v), ["Todos 2/3", "○ t1"]);
+	todos = [todo(1, "completed")];
+	trackTodos(v, todos, 2);
+	hideCompleted(v);
+	trackTodos(v, [todo(1, "completed"), todo(2, "pending")], 3);
+	assert.deepEqual(rows([todo(1, "completed"), todo(2, "pending")], v), ["Todos 1/2", "○ t2"]);
+	trackTodos(v, [], 1); // clear
+	todos = [todo(1, "completed")];
+	trackTodos(v, todos, 2);
+	assert.deepEqual(rows(todos, v), ["Todos 1/1", "✓ t1"]);
 });
