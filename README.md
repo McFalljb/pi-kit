@@ -7,7 +7,7 @@ different model; guardrails around dangerous shell commands; background shells a
 that wake the session instead of sleep-and-poll loops.
 
 It is a pi package: two agent definitions for [pi-subagents](https://github.com/nicobailon/pi-subagents),
-three extensions, five skills, two prompts, global `AGENTS.md` rules, and a vetted list of
+four extensions, five skills, two prompts, global `AGENTS.md` rules, and a vetted list of
 third-party packages with pinned versions.
 
 ## Quick start
@@ -31,6 +31,8 @@ instructions for an agent, including what to ask you and what never to touch.
 | `extensions/shell` | `bash_bg`, `monitor`, `shell_stop`, `shell_list`, `wake_later`, `/shells` |
 | `extensions/sidebar` | Right-hand column with background subagents, todos and shells instead of widgets under the transcript; `/sidebar` |
 | `extensions/notes` | Once the context is 75% full, reminds the session to update its session note before compaction |
+| `extensions/model-rules` | On OpenAI GPT models only, adds `rules/gpt.md` (less testing, exploring and reporting) to the system prompt; `<agent-dir>/rules/gpt.md` overrides it |
+| `config/` | Compact panel defaults for pi-subagents and rpiv-todo; `install.sh` copies them only where no config exists |
 | `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff` |
 | `prompts/` | `/delegate`, `/review` |
 | `AGENTS.md` | Global rules, labelled by role (everyone / parent / child) because workers load it too |

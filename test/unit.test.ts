@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
 import { hideCompleted, sidebarLines, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
+import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -268,4 +269,35 @@ test("completed todos stay for the run that completed them, then hide; the heade
 	todos = [todo(1, "completed")];
 	trackTodos(v, todos, 2);
 	assert.deepEqual(rows(todos, v), ["Todos 1/1", "✓ t1"]);
+});
+
+test("model rules: GPT models get them, others don't", () => {
+	for (const id of ["gpt-6.1-sol", "openai/gpt-6.1-sol", "GPT-5", "openai.gpt-6.1-sol", "us.openai.gpt-6.1-sol", "global.openai.gpt-6.1-sol"]) assert.ok(isGpt(id), id);
+	for (const id of ["claude-opus-5-5", "chatgpt-x", "mock-1", undefined]) assert.ok(!isGpt(id), id);
+	const opts = () => ({ sections: {} as Record<string, string> }) as Parameters<typeof addRules>[0];
+	const gpt = opts();
+	addRules(gpt, "gpt-6.1-sol", "- rule\n");
+	assert.deepEqual(gpt.sections, { gpt_rules: "- rule" });
+	const claude = opts();
+	addRules(claude, "claude-opus-5-5", "- rule\n");
+	assert.deepEqual(claude.sections, {});
+});
+
+test("mock model keeps playing its steps when a completion notice arrives mid-turn", async () => {
+	const port = 18700 + Math.floor(Math.random() * 200);
+	const mock = spawn(process.execPath, [path.join(import.meta.dirname, "mock-llm.mjs"), String(port), "/dev/null"]);
+	try {
+		await new Promise((r) => setTimeout(r, 300));
+		const reply = async (messages: object[]) => (await (await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "m", messages }) })).text()).split("\n")[0];
+		const turn = [
+			{ role: "user", content: 'Steps:\n@@ {"name":"bg_wait","arguments":{}}\n@@ {"name":"bash","arguments":{"command":"echo next"}}' },
+			{ role: "assistant", content: "" },
+			{ role: "tool", content: "Waited 1.0s; done." },
+		];
+		const notice = { role: "user", content: "<pi_subagents_notice>\nBackground task completed: **kit.worker**\n</pi_subagents_notice>" };
+		assert.match(await reply([...turn, notice]), /echo next/);
+		assert.match(await reply([...turn, { role: "assistant", content: "" }, { role: "tool", content: "next" }, { role: "assistant", content: "FINAL" }, notice]), /GOT REPORT: Background task completed/);
+	} finally {
+		mock.kill();
+	}
 });
