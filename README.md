@@ -29,6 +29,7 @@ instructions for an agent, including what to ask you and what never to touch.
 | `agents/worker.md`, `agents/reviewer.md` | `kit.worker` (writer, verifies before reporting) and `kit.reviewer` (read-only, adversarial) |
 | `extensions/guardrails` | Confirms dangerous commands, redacts secret-shaped output; read-only mode |
 | `extensions/shell` | `bash_bg`, `monitor`, `shell_stop`, `shell_list`, `wake_later`, `/shells` |
+| `extensions/sidebar` | Right-hand column with background subagents, todos and shells instead of widgets under the transcript; `/sidebar` |
 | `extensions/notes` | Once the context is 75% full, reminds the session to update its session note before compaction |
 | `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff` |
 | `prompts/` | `/delegate`, `/review` |

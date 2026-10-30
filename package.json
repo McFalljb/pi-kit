@@ -12,7 +12,8 @@
     "extensions": [
       "./extensions/guardrails/index.ts",
       "./extensions/shell/index.ts",
-      "./extensions/notes/index.ts"
+      "./extensions/notes/index.ts",
+      "./extensions/sidebar/index.ts"
     ],
     "skills": [
       "./skills"

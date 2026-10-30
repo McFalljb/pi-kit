@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
+import { sidebarLines, summary, todosFromBranch } from "../extensions/sidebar/rows.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -168,4 +169,65 @@ test("footerText counts each kind", () => {
 	assert.equal(footerText({ shells: 2, monitors: 1, timers: 1, leftovers: 0 }), "2 shells · 1 monitor · 1 timer · /shells");
 	assert.equal(footerText({ shells: 0, monitors: 0, timers: 0, leftovers: 1 }), "1 leftover · /shells");
 	assert.equal(footerText({ shells: 0, monitors: 0, timers: 0, leftovers: 0 }), undefined);
+});
+
+test("sidebarLines: subagents, shells, todos; untrusted text made safe", () => {
+	const now = 100_000;
+	const lines = sidebarLines(
+		{
+			runs: [
+				{ label: "kit.worker", state: "running", startedAt: now - 80_000, activity: { currentTool: "bash" } },
+				{ label: "kit.reviewer", state: "complete", startedAt: 0, endedAt: 5_000 },
+				{ label: "x", state: "failed" },
+			],
+			todos: [
+				{ subject: "Write tests", status: "in_progress", activeForm: "Writing tests" },
+				{ subject: "Ship\n\x1b[31mit\x1b[0m", status: "pending" },
+				{ subject: "Plan", status: "completed" },
+				{ subject: "gone", status: "deleted" },
+			],
+			shells: [{ id: "sh1", status: "12s", label: "echo password=supersecretvalue123" }, { id: "", status: "+2 more · /shells", label: "" }],
+		},
+		now,
+	);
+	assert.deepEqual(lines, [
+		{ text: "Subagents · 1 running", head: true },
+		{ text: "● kit.worker 1m20s · bash", tone: "accent" },
+		{ text: "✓ kit.reviewer 5s", tone: "success" },
+		{ text: "✗ x failed", tone: "warning" },
+		{ text: "" },
+		{ text: "Shells", head: true },
+		{ text: "sh1 12s", tone: "accent" },
+		{ text: "  echo password=[REDACTED]", tone: "muted" },
+		{ text: "+2 more · /shells", tone: "muted" },
+		{ text: "" },
+		{ text: "Todos 1/3", head: true },
+		{ text: "▸ Writing tests", tone: "accent" },
+		{ text: "○ Ship it" },
+		{ text: "✓ Plan", tone: "dim" },
+	]);
+	assert.deepEqual(sidebarLines({ runs: [], todos: [], shells: [] }, now), [{ text: "No subagents, todos or shells", tone: "muted" }]);
+});
+
+test("sidebarLines: a bad record breaks only its own section", () => {
+	const lines = sidebarLines({ runs: [null as never], todos: [{ subject: "a", status: "pending" }], shells: [] }, 0);
+	assert.equal(lines[0].tone, "error");
+	assert.match(lines[0].text, /^subagents: /);
+	assert.deepEqual(lines.slice(2), [{ text: "Todos 0/1", head: true }, { text: "○ a" }]);
+});
+
+test("summary counts what the sidebar would show", () => {
+	const d = { runs: [{ state: "running" }, { state: "complete" }], todos: [{ subject: "a", status: "completed" }, { subject: "b", status: "pending" }], shells: [{ id: "sh1", status: "", label: "" }, { id: "", status: "+1", label: "" }] };
+	assert.equal(summary(d), "1 subagent · todos 1/2 · 1 shell · /sidebar");
+	assert.equal(summary({ runs: [], todos: [], shells: [] }), undefined);
+});
+
+test("todosFromBranch: state entries win over todo tool results", () => {
+	const result = (tasks: unknown) => ({ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks, nextId: 2 } } });
+	const state = (tasks: unknown) => ({ type: "custom", customType: "rpiv-todo-state", data: { tasks, nextId: 2 } });
+	const a = [{ id: 1, subject: "a", status: "pending" }];
+	const b = [{ id: 1, subject: "b", status: "pending" }];
+	assert.deepEqual(todosFromBranch([result(a)]), a);
+	assert.deepEqual(todosFromBranch([state(b), result(a)]), b);
+	assert.deepEqual(todosFromBranch([null, { type: "message", message: { role: "toolResult", toolName: "bash" } }, result("bad")]), []);
 });
