@@ -49,10 +49,11 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
   the model to write anything, hence the threshold. With a window under about 64k tokens pi's
   own compaction threshold can come first. Not loaded in pi-subagents children.
 - **GPT gets extra rules** (`extensions/model-rules`). When the model id is an OpenAI GPT one
-  (`gpt-*`, also behind openai-codex or a router), `before_agent_start` adds `rules/gpt.md` as a
+  (`gpt-*`, also behind openai-codex, a router or Bedrock), `before_agent_start` adds `rules/gpt.md` as a
   `<gpt_rules>` prompt section: run existing tests rather than write new ones, stop exploring
   once the change is clear, smallest change, five-line reports. `<agent-dir>/rules/gpt.md`
-  replaces the kit's file. Other models get nothing. Both kit agents list it in `extensions`, so
+  replaces the kit's file. Other models get nothing. Matching is on the model id, so a
+  custom-named deployment (e.g. on Azure) without `gpt-` in its id does not match. Both kit agents list it in `extensions`, so
   workers and reviewers on GPT get it too; pi-subagents' own agents get it only as background
   children without an `extensions` list. For gpt-6.1-sol use thinking level `medium`: OpenAI's
   Codex default is `low`, and `xhigh` mostly adds self-checking and tests.

@@ -103,5 +103,19 @@ if [ "$(cat "$T/bad.exit")" = 2 ]; then ok "unknown key: exit 2"; else bad "unkn
 has "unknown key: named" "unknown --sections key: bogus" "$T/bad.out"
 if [ ! -e "$(A bad)" ]; then ok "unknown key: nothing written"; else bad "unknown key: file written"; fi
 
+# 6. panel configs: seeded only where neither rpiv-todo location has one; relative XDG = unset
+R=rpiv-todo/config.json
+mkdir -p "$T/h1/.config/rpiv-todo" && echo '{}' > "$T/h1/.config/$R"
+HOME="$T/h1" XDG_CONFIG_HOME="$T/x1" install seed1 -
+has "seed: legacy rpiv-todo config kept" "kept: $T/h1/.config/$R" "$T/seed1.out"
+if [ ! -e "$T/x1/$R" ]; then ok "seed: no XDG copy beside a legacy config"; else bad "seed: XDG copy written"; fi
+has "seed: subagent config seeded" "seeded $T/seed1/extensions/subagent/config.json" "$T/seed1.out"
+HOME="$T/h2" XDG_CONFIG_HOME=rel install seed2 -
+if [ -e "$T/h2/.config/$R" ]; then ok "seed: relative XDG_CONFIG_HOME ignored"; else bad "seed: not in HOME/.config"; fi
+HOME="$T/h3" XDG_CONFIG_HOME="$T/x3" install seed3 - --dry-run
+has "seed dry-run: says would seed" "would seed $T/x3/$R" "$T/seed3.out"
+hasnt "seed dry-run: no seeded line" "^seeded" "$T/seed3.out"
+if [ ! -e "$T/seed3/extensions/subagent/config.json" ]; then ok "seed dry-run: nothing written"; else bad "seed dry-run: written"; fi
+
 echo "merge tests: $n run, fail=$fail"
 exit $fail

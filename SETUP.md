@@ -55,10 +55,12 @@ idempotent. It:
 3. installs the kit itself (`pi install ~/pi-kit`);
 4. merges the kit's `AGENTS.md` into `<agent-dir>/AGENTS.md`: copies it if there is none,
    otherwise backs the file up to `AGENTS.md.bak.<timestamp>` and appends the chosen (or new)
-   `## ` sections. Existing text is never changed;
+   `## ` sections. Existing text is never changed, so an existing install keeps an older
+   wording of a kit section (e.g. rule 4 on tests) until you edit it by hand;
 5. copies the kit's compact panel configs (`config/`) to
    `<agent-dir>/extensions/subagent/config.json` and
-   `${XDG_CONFIG_HOME:-~/.config}/rpiv-todo/config.json`, each only if no file is there yet.
+   `${XDG_CONFIG_HOME:-~/.config}/rpiv-todo/config.json`, each only if no config is there yet
+   (for rpiv-todo, in neither location).
 
 Then do these by hand, with the user:
 - **Optional packages.** Show the user the `optional` list in `packages.json` with each `why`,

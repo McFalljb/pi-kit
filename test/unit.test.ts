@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { addRules, isGpt } from "../extensions/model-rules/index.ts";
+import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -172,7 +172,7 @@ test("footerText counts each kind", () => {
 });
 
 test("model rules: GPT models get them, others don't", () => {
-	for (const id of ["gpt-6.1-sol", "openai/gpt-6.1-sol", "GPT-5"]) assert.ok(isGpt(id), id);
+	for (const id of ["gpt-6.1-sol", "openai/gpt-6.1-sol", "GPT-5", "openai.gpt-6.1-sol", "us.openai.gpt-6.1-sol", "global.openai.gpt-6.1-sol"]) assert.ok(isGpt(id), id);
 	for (const id of ["claude-opus-5-5", "chatgpt-x", "mock-1", undefined]) assert.ok(!isGpt(id), id);
 	const opts = () => ({ sections: {} as Record<string, string> }) as Parameters<typeof addRules>[0];
 	const gpt = opts();
