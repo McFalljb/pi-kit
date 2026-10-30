@@ -41,11 +41,11 @@ const DANGEROUS: [RegExp, string][] = [
 	[/(?:^|[;&|]\s*)(?:\S*\/)?deploy[\w.-]*(?:\s|$)|\b(?:make|just|npm\s+run|pnpm|yarn)\s+deploy\b/, "runs a deploy"],
 	[/\b(?:amtool\s+silence|api\/v[12]\/silences?|alerts?\s+ack)\b/i, "silences or acknowledges alerts"],
 	[/\b(?:drop|truncate)\s+(?:table|database|schema)\b|\bdelete\s+from\b/i, "destructive SQL"],
-	[/\bsudo\b/, "runs as root"],
 	[/\b(?:mkfs|dd\s+if=)/, "writes raw disks"],
 	[/\b(?:npm|pnpm|yarn)\s+publish\b/, "publishes a package"],
 	[/\bcurl\b[^|]*\|\s*(?:ba|z)?sh\b/, "pipes a download into a shell"],
-	[/\bssh\b/, "runs on a remote host"],
+	// ssh and sudo are intentionally not gated: they prompted on every remote or root command and
+	// blocked headless children outright. Remote and root work is governed by AGENTS.md instead.
 ];
 
 // Mutating commands blocked outright in read-only children (reviewers).

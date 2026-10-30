@@ -36,6 +36,7 @@ test("commandVerdict: dangerous asks, read-only blocks mutation", () => {
 	assert.deepEqual(commandVerdict("npm run dev", false), { confirm: [] });
 	assert.match(commandVerdict("touch x", true).block!, /Read-only/);
 	assert.equal(commandVerdict("touch x", false).block, undefined);
+	for (const c of ["ssh nuc uptime", "sudo apt-get update", "ssh nuc 'sudo journalctl -u k3s'"]) assert.deepEqual(commandVerdict(c, false), { confirm: [] }, c);
 });
 
 test("redact", () => {
