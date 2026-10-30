@@ -95,6 +95,9 @@ nocheck "github token redacted" '"role":"tool","text":"[^"]*ghp_abcdef' "$T/p1.l
 check "token replaced in tool output" '"role":"tool","text":"token \[REDACTED\]' "$T/p1.log"
 check "assignment redacted" "password=\[REDACTED\]" "$T/p1.log"
 check "safe command runs" "FINAL: hello-safe" "$T/p1.out"
+head -1 "$T/mock.log.system" > "$T/p1.system"
+check "system prompt lists the wake_later snippet" "wake_later: Wake this session once later" "$T/p1.system"
+check "system prompt has a shell tool guideline" "with bash_bg, not bash" "$T/p1.system"
 
 # 2. common safe commands are not gated
 run p2 "Steps:
