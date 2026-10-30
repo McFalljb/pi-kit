@@ -1,10 +1,11 @@
 {
-  "tested": { "pi": "1.2.0", "vetted": "2026-10-29" },
+  "vetted": "2026-10-30",
+  "pins": "pi and the recommended versions are in test/ci/package.json",
   "recommended": [
-    { "name": "pi-subagents", "spec": "npm:pi-subagents@0.84.0", "why": "Background workers and reviewers; the kit's agents run on it. 0.84.0 fixes GHSA-6v8j-6w28-2w8r (workflow-script sandbox escape in 0.41.0-0.83.x)." },
-    { "name": "pi-ask-user", "spec": "npm:pi-ask-user@0.17.0", "why": "Structured questions to the user (choices, free text). Local only, no dependencies." },
-    { "name": "@ff-labs/pi-fff", "spec": "npm:@ff-labs/pi-fff@0.11.0", "why": "Fast fuzzy file and content search (ffgrep, fffind). Local only; prebuilt native binary." },
-    { "name": "@juicesharp/rpiv-todo", "spec": "npm:@juicesharp/rpiv-todo@2.15.0", "why": "Live todo list (tool todo, /todos) kept in session entries, so it survives compaction. Local only." }
+    { "name": "pi-subagents", "why": "Background workers and reviewers; the kit's agents run on it. Needs 0.84.0 or later, which fixes GHSA-6v8j-6w28-2w8r (workflow-script sandbox escape in 0.41.0-0.83.x)." },
+    { "name": "pi-ask-user", "why": "Structured questions to the user (choices, free text). Local only, no dependencies." },
+    { "name": "@ff-labs/pi-fff", "why": "Fast fuzzy file and content search (ffgrep, fffind). Local only; prebuilt native binary." },
+    { "name": "@juicesharp/rpiv-todo", "why": "Live todo list (tool todo, /todos) kept in session entries, so it survives compaction. Local only." }
   ],
   "optional": [
     { "name": "pi-web-access", "spec": "npm:pi-web-access@0.46.0", "why": "Web search and fetch. Sends queries to third parties (Exa by default), runs git/gh/ffmpeg/yt-dlp, and fetch_content also reads local paths outside the guardrails." },

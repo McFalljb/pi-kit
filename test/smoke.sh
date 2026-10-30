@@ -3,10 +3,11 @@
 # Loads the kit together with pi-subagents, as a real install would.
 #
 # Usage: test/smoke.sh   (needs pi, node and npm on PATH)
+# The recommended packages load in place from test/ci/node_modules when it has them all at their
+# pins (after `npm ci --ignore-scripts --prefix test/ci`); otherwise they come from npm.
 #   PI_SUBAGENTS_DIR=<path>   use an already installed pi-subagents package in place (read-only)
-#                             instead of installing it from npm into the temp agent dir
-#   PI_SUBAGENTS_VERSION=x.y.z  version to install from npm [the pin in packages.json]
-#   PI_KIT_RECOMMENDED=1      also load the rest of packages.json's recommended set (npm, no scripts)
+#   PI_SUBAGENTS_VERSION=x.y.z  install this pi-subagents version from npm instead
+#   PI_KIT_RECOMMENDED=1      also load the rest of the recommended set at its pins (no scripts)
 set -uo pipefail
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/pi-kit-smoke.XXXXXX")"
@@ -15,23 +16,32 @@ PORT="${PI_KIT_MOCK_PORT:-18555}"
 export PI_CODING_AGENT_DIR="$T/agent" PI_OFFLINE=1 PI_SUBAGENTS_TEMP_ROOT="$T/subagents-tmp" TMPDIR="$T/tmp"
 mkdir -p "$PI_CODING_AGENT_DIR" "$T/work" "$TMPDIR"
 
+PINS="$KIT/test/ci/package.json" NM="$KIT/test/ci/node_modules"
+# Every recommended package installed in test/ci at its pin: "1", else "".
+FROM_CI="$(node -p 'const fs=require("fs"),v=require(process.argv[2]).dependencies;require(process.argv[1]).recommended.every(p=>{try{return JSON.parse(fs.readFileSync(`${process.argv[3]}/${p.name}/package.json`,"utf8")).version===v[p.name]}catch{return false}})?"1":""' "$KIT/packages.json" "$PINS" "$NM")"
 if [ -n "${PI_SUBAGENTS_DIR:-}" ]; then
 	SUBAGENTS="$PI_SUBAGENTS_DIR"
+elif [ -n "$FROM_CI" ] && [ -z "${PI_SUBAGENTS_VERSION:-}" ]; then
+	SUBAGENTS="$NM/pi-subagents"
 else
-	V="${PI_SUBAGENTS_VERSION:-$(node -p 'require(process.argv[1]).recommended.find(p=>p.name==="pi-subagents").spec.split("@").pop()' "$KIT/packages.json")}"
+	V="${PI_SUBAGENTS_VERSION:-$(node -p 'require(process.argv[1]).dependencies["pi-subagents"]' "$KIT/test/ci/package.json")}"
 	npm install --prefix "$PI_CODING_AGENT_DIR/npm" --no-audit --no-fund --silent "pi-subagents@$V" >/dev/null 2>"$T/npm.err" \
 		|| { echo "FAIL could not install pi-subagents@$V from npm (see $T/npm.err); set PI_SUBAGENTS_DIR"; exit 2; }
 	SUBAGENTS="$PI_CODING_AGENT_DIR/npm/node_modules/pi-subagents"
 fi
-echo "pi $(pi --version), pi-subagents $(node -p 'require(process.argv[1]).version' "$SUBAGENTS/package.json")"
+echo "pi $(pi --version), pi-subagents $(node -p 'require(process.argv[1]).version' "$SUBAGENTS/package.json") ($SUBAGENTS)"
 EXTRA=""
 if [ "${PI_KIT_RECOMMENDED:-}" = 1 ]; then
-	SPECS="$(node -p 'require(process.argv[1]).recommended.filter(p=>p.name!=="pi-subagents").map(p=>p.spec.slice(4)).join(" ")' "$KIT/packages.json")"
-	# shellcheck disable=SC2086
-	npm install --prefix "$T/extra" --no-audit --no-fund --silent --ignore-scripts $SPECS >/dev/null 2>"$T/npm-extra.err" \
-		|| { echo "FAIL could not install the recommended set (see $T/npm-extra.err)"; exit 2; }
-	for spec in $SPECS; do EXTRA="$EXTRA,\"$T/extra/node_modules/${spec%@*}\""; done
-	echo "with recommended: $SPECS"
+	SPECS="$(node -p 'const v=require(process.argv[2]).dependencies;require(process.argv[1]).recommended.filter(p=>p.name!=="pi-subagents").map(p=>`${p.name}@${v[p.name]}`).join(" ")' "$KIT/packages.json" "$PINS")"
+	DIR="$NM"
+	if [ -z "$FROM_CI" ]; then
+		DIR="$T/extra/node_modules"
+		# shellcheck disable=SC2086
+		npm install --prefix "$T/extra" --no-audit --no-fund --silent --ignore-scripts $SPECS >/dev/null 2>"$T/npm-extra.err" \
+			|| { echo "FAIL could not install the recommended set (see $T/npm-extra.err)"; exit 2; }
+	fi
+	for spec in $SPECS; do EXTRA="$EXTRA,\"$DIR/${spec%@*}\""; done
+	echo "with recommended: $SPECS (from $DIR)"
 fi
 
 # Two mock providers on the same server, so the reviewer's model pin can be observed.

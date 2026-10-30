@@ -6,8 +6,8 @@ runs on the third-party extension **pi-subagents** (npm `pi-subagents`,
 github.com/nicobailon/pi-subagents). The kit adds two agent definitions, guardrails, the process
 skills and two prompts on top of it.
 
-Tested offline (mock model) against pi **1.2.0** and pi-subagents **0.84.0**, alone and with the
-recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.md).
+Tested offline (mock model) against the pi and package versions pinned in `test/ci/package.json`,
+alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.md).
 
 ## 1. Architecture
 
@@ -179,7 +179,7 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
 ## 3. Setup
 
 [SETUP.md](SETUP.md) is the step-by-step version, written so an agent can follow it.
-`scripts/install.sh` does the idempotent parts: pinned packages from `packages.json`, the kit,
+`scripts/install.sh` does the idempotent parts: pinned packages (versions from `test/ci/package.json`), the kit,
 and the `AGENTS.md` merge (backup, then append the `## ` sections the file lacks).
 
 **Packages.** `packages.json` lists what was vetted on the date it names (npm metadata, README,
@@ -208,6 +208,74 @@ Pin the reviewer to another provider with `install.sh --reviewer-model provider/
 
 `PI_KIT_READONLY=1 pi` starts a session whose guardrails are read-only (no edits, no mutating
 bash, no background shells), which is handy for a look-only session.
+
+### Updating
+
+The versions of pi and the recommended packages live in one list, `test/ci/package.json`. CI
+installs exactly those from its lockfile, and `install.sh`, the tests and `extensions/versions`
+read them there; `packages.json` keeps the names and reasons, and pins only the optional packages
+and skill repos. The contract tests (`test/contracts.test.ts`) check the internals of pi, pi-tui,
+pi-subagents and rpiv-todo that the sidebar and model-rules depend on, and each failure names the
+kit file to fix. The open Dependabot alerts for `undici` come from pi's own exact pin of it and
+clear when a pi release bumps it.
+
+1. Dependabot opens a weekly PR that bumps `test/ci/package.json` and its lockfile, plus one
+   for the SHA-pinned GitHub Actions (`.github/dependabot.yml`).
+2. CI runs the typecheck, unit, contract, merge and smoke tests at the new versions; the smoke
+   test loads pi-subagents and the rest of the recommended set from `test/ci`
+   (`PI_KIT_RECOMMENDED=1`). A failing contract check means the kit file it names needs a change
+   before merging. On the first PR that bumps pi, check in the lockfile diff that the pi sibling
+   packages (`pi-ai`, `pi-tui`, `pi-agent-core`, ...) moved to the same version via `overrides`.
+3. Read the changelogs and security advisories of what changed.
+4. On one machine, check out the PR branch in a worktree and run its `scripts/install.sh --update`:
+   it points pi at that checkout (removing the other configured pi-kit) and installs the PR's
+   package pins. If the PR bumps pi, run the global upgrade command the script prints. In a
+   terminal at least 120 columns wide, run the sidebar test prompt below. Then go back with your
+   main checkout's `scripts/install.sh --update`. (AGENTS.md is not switched: the merge only
+   appends missing sections.)
+5. Merge, then run `scripts/install.sh --update` on each machine.
+
+Without `--update`, `install.sh` keeps a package already configured under another spec,
+including an unpinned one such as `npm:pi-ask-user`, and prints `kept:`. With `--update` it backs
+up `settings.json`, moves each recommended package to its pin with `pi install npm:<name>@<version>`
+(which replaces the entry) and removes another configured pi-kit checkout. It never upgrades pi
+itself: when the running pi differs from the pin it prints the
+`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@<version>` command to run.
+`extensions/versions` warns once, when an interactive session starts, if pi or a configured
+recommended package is older than its pin or not pinned; newer versions are not reported.
+
+Sidebar test prompt (paste it into a new interactive session):
+
+```text
+This is a UI test of the pi-kit sidebar. Nothing here needs real work; keep every step short and
+do not edit any files outside /tmp/pi-sidebar-test.
+
+1. Create a todo list with these 5 items: "Start background shell", "Start monitor",
+   "Set a timer", "Launch workers", "Wrap up". Mark the first one in progress.
+2. mkdir -p /tmp/pi-sidebar-test. Use bash_bg to run:
+   for i in $(seq 1 90); do echo "tick $i"; sleep 2; done
+   (this is an intentional long-running test process; don't stop it). Mark todo 1 done, todo 2 in progress.
+3. Use monitor on that shell with the pattern "tick 30" so it wakes you when it hits 30.
+   Mark todo 2 done, todo 3 in progress.
+4. Use wake_later to wake you in 2 minutes with the note "sidebar timer check".
+   Mark todo 3 done, todo 4 in progress.
+5. Launch two kit.worker subagents in parallel with async: true, cwd /tmp/pi-sidebar-test,
+   no worktree needed, read-only:
+   - Worker A: "Run `sleep 45`, then list the files in the pi-kit extensions folder
+     and report the count. Do not modify anything."
+   - Worker B: "Run `sleep 75`, then report the line count of the pi-kit
+     extensions/sidebar/index.ts. Do not modify anything."
+   Do not wait or poll for them; their completions arrive on their own.
+6. Tell me in one line what is running, then stop and wait.
+7. When the monitor fires, the timer fires, and each worker finishes, reply in one line each.
+   After both workers are done, mark todo 4 done and todo 5 in progress, then stop the
+   background shell with shell_stop, mark todo 5 done, and give a 3-line summary.
+```
+
+What to check: the column shows Subagents (2 running → ✓), Shells (tick loop, monitor, timer)
+and Todos (count rising, ▸ on the active one); nothing under the editor; `/sidebar` toggles;
+below 120 columns the footer summary appears and `/sidebar` opens an overlay; wheel scroll over
+the column moves only the column.
 
 ## 4. Daily workflow
 

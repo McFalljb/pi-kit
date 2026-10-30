@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
-# Idempotent pi-kit install: checks prerequisites, installs the pinned packages from packages.json
+# Idempotent pi-kit install: checks prerequisites, installs the pinned packages (recommended
+# versions from test/ci/package.json, optional ones from packages.json)
 # and the kit itself with `pi install`, merges the kit's AGENTS.md into the global one (backup
 # first, append new sections only, skip likely overlaps), optionally pins the reviewer model and
 # seeds compact panel configs for pi-subagents and rpiv-todo where none exist.
 # Never reads credential files and never runs /login. See SETUP.md.
 #
-# Usage: scripts/install.sh [--optional name,name] [--reviewer-model provider/id] [--sections key,key] [--dry-run]
+# Usage: scripts/install.sh [--optional name,name] [--reviewer-model provider/id] [--sections key,key] [--update] [--dry-run]
+#   --update    move recommended packages configured at another version (or unpinned) to the pin,
+#               and replace another configured pi-kit checkout with this one (settings.json backed up)
 #   --sections  append only these kit AGENTS.md sections (keys: operating, communication, safety,
 #               background, parent, delegation, review, child, notes); --dry-run shows the report
 set -euo pipefail
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
-OPTIONAL="" REVIEWER="" SECTIONS="" DRY=0
+OPTIONAL="" REVIEWER="" SECTIONS="" DRY=0 UPDATE=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--optional) OPTIONAL="$2"; shift 2 ;;
 		--reviewer-model) REVIEWER="$2"; shift 2 ;;
 		--sections) SECTIONS="$2"; shift 2 ;;
 		--dry-run) DRY=1; shift ;;
+		--update) UPDATE=1; shift ;;
 		*) echo "unknown argument: $1" >&2; exit 2 ;;
 	esac
 done
@@ -26,6 +30,13 @@ for k in ${SECTIONS//,/ }; do
 		*) echo "unknown --sections key: $k (see the usage line in $0)" >&2; exit 2 ;; esac
 done
 run() { if [ "$DRY" = 1 ]; then echo "would run: $*"; else "$@"; fi; }
+BACKED=0
+# Backs up settings.json once per run, before the first change to it.
+backup() {
+	[ "$DRY" = 1 ] || [ "$BACKED" = 1 ] || [ ! -f "$AGENT_DIR/settings.json" ] && return 0
+	cp "$AGENT_DIR/settings.json" "$AGENT_DIR/settings.json.bak.$(date +%Y%m%d%H%M%S)"
+	BACKED=1
+}
 
 # 1. Prerequisites
 command -v node >/dev/null || { echo "node not found: install Node.js 22.19 or later" >&2; exit 1; }
@@ -33,14 +44,18 @@ node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(
 	|| { echo "node $(node --version) is too old: pi needs 22.19 or later" >&2; exit 1; }
 command -v pi >/dev/null || { echo "pi not found: npm install -g --ignore-scripts @earendil-works/pi-coding-agent" >&2; exit 1; }
 echo "node $(node --version), pi $(pi --version), agent dir $AGENT_DIR"
+PI_PIN="$(node -p 'require(process.argv[1]).dependencies["@earendil-works/pi-coding-agent"]' "$KIT/test/ci/package.json")"
+[ "$(pi --version)" = "$PI_PIN" ] || echo "note: the kit is tested with pi $PI_PIN; to match: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@$PI_PIN"
 mkdir -p "$AGENT_DIR"
 
 # 2. Packages: install each pinned spec unless a package of that name is already configured.
 # Prints "<spec>\t<name>\t<installed spec or ->" for the recommended set plus the chosen optional ones.
-PLAN="$(node - "$KIT/packages.json" "$AGENT_DIR/settings.json" "$OPTIONAL" <<'JS'
+PLAN="$(node - "$KIT/packages.json" "$AGENT_DIR/settings.json" "$OPTIONAL" "$KIT/test/ci/package.json" <<'JS'
 const fs = require("fs");
-const [manifest, settingsPath, optional] = process.argv.slice(2);
+const [manifest, settingsPath, optional, ciPath] = process.argv.slice(2);
 const m = JSON.parse(fs.readFileSync(manifest, "utf8"));
+const pins = JSON.parse(fs.readFileSync(ciPath, "utf8")).dependencies;
+for (const p of m.recommended) p.spec = `npm:${p.name}@${pins[p.name]}`;
 let configured = [];
 try { configured = (JSON.parse(fs.readFileSync(settingsPath, "utf8")).packages || []).map((p) => (typeof p === "string" ? p : p.source)); } catch {}
 const nameOf = (spec) => spec.replace(/^npm:/, "").replace(/^(@?[^@]+)@.*$/, "$1");
@@ -60,10 +75,27 @@ while IFS=$'\t' read -r spec name have; do
 		run pi install "$spec"
 	elif [ "$have" = "$spec" ]; then
 		echo "ok: $spec"
+	elif [ "$UPDATE" = 1 ]; then
+		echo "updating $have to $spec"
+		backup
+		run pi install "$spec"   # replaces the entry of the same package
 	else
-		echo "kept: $name is already configured as $have (kit tested with $spec; change it yourself if you want)"
+		echo "kept: $name is already configured as $have (kit tested with $spec; scripts/install.sh --update moves it)"
 	fi
 done <<< "$PLAN"
+# Another pi-kit checkout in settings (a local path whose package.json is named pi-kit) would load
+# a second copy of the kit: --update removes it.
+OTHERS="$(node -e 'const fs=require("fs"),path=require("path"),f=process.argv[1];let s;try{s=JSON.parse(fs.readFileSync(f,"utf8"))}catch{process.exit(0)}const kit=fs.realpathSync(process.argv[2]);for(const p of s.packages||[]){const src=typeof p==="string"?p:p.source;if(/^(npm|git|https?):/.test(src))continue;const abs=path.resolve(path.dirname(f),src);try{if(JSON.parse(fs.readFileSync(path.join(abs,"package.json"),"utf8")).name==="pi-kit"&&fs.realpathSync(abs)!==kit)console.log(abs)}catch{}}' "$AGENT_DIR/settings.json" "$KIT")"
+while IFS= read -r other; do
+	[ -n "$other" ] || continue
+	if [ "$UPDATE" = 1 ]; then
+		echo "removing the other pi-kit checkout $other"
+		backup
+		run pi remove "$other"
+	else
+		echo "note: another pi-kit checkout is configured ($other); scripts/install.sh --update replaces it with $KIT"
+	fi
+done <<< "$OTHERS"
 # pi stores local paths relative to settings.json, so compare resolved real paths.
 if node -e 'const fs=require("fs"),path=require("path"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f,"utf8"));const real=(p)=>{try{return fs.realpathSync(path.resolve(path.dirname(f),p))}catch{return ""}};process.exit((s.packages||[]).some(p=>real(typeof p==="string"?p:p.source)===fs.realpathSync(process.argv[2]))?0:1)' "$AGENT_DIR/settings.json" "$KIT" 2>/dev/null; then
 	echo "ok: kit ($KIT)"
@@ -87,7 +119,7 @@ if [ -n "$REVIEWER" ] && [ "$CURRENT" = "$REVIEWER" ]; then
 elif [ -n "$REVIEWER" ]; then
 	echo "pinning kit.reviewer to $REVIEWER"
 	if [ "$DRY" = 0 ]; then
-		cp "$AGENT_DIR/settings.json" "$AGENT_DIR/settings.json.bak.$(date +%Y%m%d%H%M%S)"
+		backup
 		node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f,"utf8"));s.subagents??={};s.subagents.agentOverrides??={};s.subagents.agentOverrides["kit.reviewer"]={...s.subagents.agentOverrides["kit.reviewer"],model:process.argv[2]};fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")' "$AGENT_DIR/settings.json" "$REVIEWER"
 	fi
 else

@@ -7,9 +7,12 @@ T="$(mktemp -d "${TMPDIR:-/tmp}/pi-kit-merge.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 export XDG_CONFIG_HOME="$T/xdg"   # install.sh seeds rpiv-todo's config there, not in ~/.config
-# Stub pi: a version, and `pi install` does nothing (every package is already configured below).
-printf '#!/bin/sh\n[ "$1" = --version ] && echo 1.2.0\nexit 0\n' > "$T/bin/pi"; chmod +x "$T/bin/pi"
-PKGS="$(node -p 'const m=require(process.argv[1]);JSON.stringify([...m.recommended.map(p=>p.spec),process.argv[2]])' "$KIT/packages.json" "$KIT")"
+# Stub pi: the pinned version (or $PI_STUB_VERSION); other calls change nothing and are logged
+# to $PI_CODING_AGENT_DIR/calls (every package is already configured below).
+PINS="$KIT/test/ci/package.json"
+PI_PIN="$(node -p 'require(process.argv[1]).dependencies["@earendil-works/pi-coding-agent"]' "$PINS")"
+printf '#!/bin/sh\n[ "$1" = --version ] && echo "${PI_STUB_VERSION:-%s}" && exit 0\necho "$*" >> "$PI_CODING_AGENT_DIR/calls"\n' "$PI_PIN" > "$T/bin/pi"; chmod +x "$T/bin/pi"
+PKGS="$(node -p 'const m=require(process.argv[1]),v=require(process.argv[3]).dependencies;JSON.stringify([...m.recommended.map(p=>`npm:${p.name}@${v[p.name]}`),process.argv[2]])' "$KIT/packages.json" "$KIT" "$PINS")"
 fail=0 n=0
 ok() { n=$((n + 1)); echo "PASS $1"; }
 bad() { n=$((n + 1)); echo "FAIL $1"; fail=1; }
@@ -116,6 +119,31 @@ HOME="$T/h3" XDG_CONFIG_HOME="$T/x3" install seed3 - --dry-run
 has "seed dry-run: says would seed" "would seed $T/x3/$R" "$T/seed3.out"
 hasnt "seed dry-run: no seeded line" "^seeded" "$T/seed3.out"
 if [ ! -e "$T/seed3/extensions/subagent/config.json" ]; then ok "seed dry-run: nothing written"; else bad "seed dry-run: written"; fi
+
+# 7. --update: recommended packages at another version or unpinned move to the pin (settings
+# backed up first); without it they are kept. Another pi-kit checkout is replaced by this one.
+pin() { node -p 'require(process.argv[1]).dependencies[process.argv[2]]' "$PINS" "$1"; }
+SUB="npm:pi-subagents@$(pin pi-subagents)" ASK="npm:pi-ask-user@$(pin pi-ask-user)"
+mkdir -p "$T/oldkit" && echo '{"name":"pi-kit"}' > "$T/oldkit/package.json"
+OLD="$(node -p 'JSON.stringify(JSON.parse(process.argv[1]).map(p=>p===process.argv[2]?"npm:pi-subagents@0.1.0":p===process.argv[3]?"npm:pi-ask-user":p===process.argv[4]?process.argv[5]:p))' "$PKGS" "$SUB" "$ASK" "$KIT" "$T/oldkit")"
+for c in keep upd updry; do mkdir -p "$T/$c" && echo "{\"packages\":$OLD}" > "$T/$c/settings.json"; done
+install keep -
+has "no --update: older pin kept" "kept: pi-subagents is already configured as npm:pi-subagents@0.1.0" "$T/keep.out"
+hasnt "no --update: nothing reinstalled" "pi-subagents\|pi-ask-user" "$T/keep/calls"
+has "no --update: other kit checkout reported" "--update replaces it" "$T/keep.out"
+install upd - --update
+has "--update: older pin replaced" "^install $SUB$" "$T/upd/calls"
+has "--update: unpinned spec replaced" "^install $ASK$" "$T/upd/calls"
+hasnt "--update: pinned package untouched" "pi-fff" "$T/upd/calls"
+has "--update: other kit checkout removed" "^remove $(node -p 'require("path").resolve(process.argv[1])' "$T/oldkit")$" "$T/upd/calls"
+has "--update: this kit installed" "^install $KIT$" "$T/upd/calls"
+if ls "$T/upd/settings.json.bak."* >/dev/null 2>&1; then ok "--update: settings backed up"; else bad "--update: no settings backup"; fi
+install updry - --update --dry-run
+has "--update dry-run: says what it would run" "would run: pi install $SUB" "$T/updry.out"
+if [ ! -e "$T/updry/calls" ] && ! ls "$T/updry/settings.json.bak."* >/dev/null 2>&1; then ok "--update dry-run: nothing run or written"; else bad "--update dry-run: ran or wrote"; fi
+PI_STUB_VERSION=0.1.0 install oldpi -
+has "pi older than the pin: upgrade command printed" "npm install -g --ignore-scripts @earendil-works/pi-coding-agent@$PI_PIN" "$T/oldpi.out"
+hasnt "upgrade command not run" "-g" "$T/oldpi/calls"
 
 echo "merge tests: $n run, fail=$fail"
 exit $fail
