@@ -48,6 +48,19 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
   `PI_KIT_NOTES_REMIND_PERCENT` sets the threshold; `0` turns the reminder off. pi's `session_before_compact` hook fires too late for
   the model to write anything, hence the threshold. With a window under about 64k tokens pi's
   own compaction threshold can come first. Not loaded in pi-subagents children.
+- **GPT gets extra rules** (`extensions/model-rules`). When the model id is an OpenAI GPT one
+  (`gpt-*`, also behind openai-codex or a router), `before_agent_start` adds `rules/gpt.md` as a
+  `<gpt_rules>` prompt section: run existing tests rather than write new ones, stop exploring
+  once the change is clear, smallest change, five-line reports. `<agent-dir>/rules/gpt.md`
+  replaces the kit's file. Other models get nothing. Both kit agents list it in `extensions`, so
+  workers and reviewers on GPT get it too; pi-subagents' own agents get it only as background
+  children without an `extensions` list. For gpt-6.1-sol use thinking level `medium`: OpenAI's
+  Codex default is `low`, and `xhigh` mostly adds self-checking and tests.
+- **Compact panels** (`config/`). `install.sh` seeds `<agent-dir>/extensions/subagent/config.json`
+  (`asyncWidget: false`, `inlineToolDisplay: "summary"`: no under-editor run widget, one row per
+  `subagent` call; `/subagents-fleet` still shows live progress) and
+  `${XDG_CONFIG_HOME:-~/.config}/rpiv-todo/config.json` (`maxWidgetLines: 3`), only if the file
+  does not exist yet. Edit or delete them to change it.
 - **Background shells are an extension** (`extensions/shell`), modelled on Claude Code's
   background Bash, Monitor, TaskStop and ScheduleWakeup:
   - `bash_bg { command, cwd?, timeout? }` starts the command with `bash -c` in its own process

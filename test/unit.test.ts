@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
+import { addRules, isGpt } from "../extensions/model-rules/index.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -168,4 +169,16 @@ test("footerText counts each kind", () => {
 	assert.equal(footerText({ shells: 2, monitors: 1, timers: 1, leftovers: 0 }), "2 shells · 1 monitor · 1 timer · /shells");
 	assert.equal(footerText({ shells: 0, monitors: 0, timers: 0, leftovers: 1 }), "1 leftover · /shells");
 	assert.equal(footerText({ shells: 0, monitors: 0, timers: 0, leftovers: 0 }), undefined);
+});
+
+test("model rules: GPT models get them, others don't", () => {
+	for (const id of ["gpt-6.1-sol", "openai/gpt-6.1-sol", "GPT-5"]) assert.ok(isGpt(id), id);
+	for (const id of ["claude-opus-5-5", "chatgpt-x", "mock-1", undefined]) assert.ok(!isGpt(id), id);
+	const opts = () => ({ sections: {} as Record<string, string> }) as Parameters<typeof addRules>[0];
+	const gpt = opts();
+	addRules(gpt, "gpt-6.1-sol", "- rule\n");
+	assert.deepEqual(gpt.sections, { gpt_rules: "- rule" });
+	const claude = opts();
+	addRules(claude, "claude-opus-5-5", "- rule\n");
+	assert.deepEqual(claude.sections, {});
 });

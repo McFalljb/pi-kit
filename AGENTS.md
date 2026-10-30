@@ -14,9 +14,9 @@ its agent prompt and the **Everyone** and **Child** sections, and never delegate
    strong reason.
 3. Make surgical changes. Touch only what the request requires and match the existing style.
    Mention unrelated problems and dead code instead of fixing them.
-4. Work against verifiable goals. Define success first. Bugs: reproduce, then fix. Validation:
-   test the invalid input, then make it pass. Refactors: same behavior before and after.
-   Multi-step work: step, then verification.
+4. Work against verifiable goals. Define success first. Bugs: reproduce, then fix. Refactors:
+   same behavior before and after. Run the existing tests for what you changed; write a new test
+   only to reproduce a bug or when asked. Multi-step work: step, then verification.
 
 ## Communication (Everyone)
 

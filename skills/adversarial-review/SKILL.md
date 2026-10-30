@@ -68,7 +68,8 @@ the user: reviewed SHA, reviewer model(s), verdicts, confirmed findings, and wha
 and why.
 
 ## 7. Fix and re-review (cap: 2 rounds)
-- Send accepted fixes to the **original** worker, with a failing test for each finding first:
+- Send accepted fixes to the **original** worker, with a failing test first for each accepted
+  behavioural bug (not for style or docs findings):
   `subagent({ action: "resume", id: "<worker run id>", message: "<accepted findings and the fix to make>" })`.
 - Round 2 covers only the fix diff and the findings still open: a fresh `kit.reviewer` with the
   new HEAD, the round-1 findings and how each was resolved. To keep the same reviewer's context,

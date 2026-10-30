@@ -6,6 +6,7 @@ KIT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/pi-kit-merge.XXXXXX")"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
+export XDG_CONFIG_HOME="$T/xdg"   # install.sh seeds rpiv-todo's config there, not in ~/.config
 # Stub pi: a version, and `pi install` does nothing (every package is already configured below).
 printf '#!/bin/sh\n[ "$1" = --version ] && echo 1.2.0\nexit 0\n' > "$T/bin/pi"; chmod +x "$T/bin/pi"
 PKGS="$(node -p 'const m=require(process.argv[1]);JSON.stringify([...m.recommended.map(p=>p.spec),process.argv[2]])' "$KIT/packages.json" "$KIT")"

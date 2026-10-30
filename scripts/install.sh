@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Idempotent pi-kit install: checks prerequisites, installs the pinned packages from packages.json
 # and the kit itself with `pi install`, merges the kit's AGENTS.md into the global one (backup
-# first, append new sections only, skip likely overlaps) and optionally pins the reviewer model.
+# first, append new sections only, skip likely overlaps), optionally pins the reviewer model and
+# seeds compact panel configs for pi-subagents and rpiv-todo where none exist.
 # Never reads credential files and never runs /login. See SETUP.md.
 #
 # Usage: scripts/install.sh [--optional name,name] [--reviewer-model provider/id] [--sections key,key] [--dry-run]
@@ -92,4 +93,13 @@ elif [ -n "$REVIEWER" ]; then
 else
 	echo "reminder: pin the reviewer to another provider: scripts/install.sh --reviewer-model <provider>/<model-id>"
 fi
+
+# 5. Compact panels: seed pi-subagents' and rpiv-todo's config with the kit's quieter defaults
+# (config/), only where no config file exists yet. An existing config is never changed.
+seed() {
+	if [ -e "$2" ]; then echo "kept: $2 exists (kit defaults are in $1)"
+	else echo "seeding $2 from $1"; run mkdir -p "$(dirname "$2")"; run cp "$1" "$2"; fi
+}
+seed "$KIT/config/subagent.json" "$AGENT_DIR/extensions/subagent/config.json"
+seed "$KIT/config/rpiv-todo.json" "${XDG_CONFIG_HOME:-$HOME/.config}/rpiv-todo/config.json"
 echo "done. Next: test/typecheck.sh, test/smoke.sh, then the manual checks in SETUP.md."
