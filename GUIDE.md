@@ -95,7 +95,8 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
     command can observe.
   - `shell_list {}` and `/shells` list running and the last 20 finished tasks and pending
     timers; in the TUI, `/shells` then offers a picker that stops the chosen task (the same
-    path as `shell_stop`). A widget above the editor shows one line per running shell (id,
+    path as `shell_stop`). A widget above the editor (the sidebar instead, when it is loaded)
+    shows one line per running shell (id,
     running time, `watching /pattern/ · N matches` when monitored, command), finished shell
     with processes left in its group, and pending timer (time left, prompt), at most 5 plus
     `+N more · /shells`; it never shows output lines. The footer counts them, e.g.
@@ -111,6 +112,33 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
     end of a turn for the next notice or until every task and timer is done, up to 30 minutes,
     then kill what is left and send one notice listing it.
   - `kit.worker` has the tools; `kit.reviewer` does not.
+- **A sidebar replaces the widgets under the transcript** (`extensions/sidebar`). It lists
+  background subagents (pi-subagents: agent, state, running time, current tool, and the first
+  line of the task for runs this session started; a workflow lists each step, up to 6, with its
+  key; the running count is pi-subagents' own "N active agents"), background
+  shells, monitors and timers (the rows of the shell widget) and todos (rpiv-todo: done/total,
+  the one in progress highlighted; like rpiv-todo's own panel, a completed todo stays listed for
+  the rest of the run that completed it, then only the header counts it). While it is loaded in
+  the TUI, the rpiv-todo widget and the shell widget and footer count are hidden; turn off
+  pi-subagents' own widget with `"subagents": {"asyncWidget": false}`.
+  - Fullscreen `tuiMode` (pi's default): a 34-column column right of the transcript when the
+    terminal is at least 120 columns wide. It scrolls on its own with the mouse wheel.
+    `/sidebar` hides or shows it; when it is hidden or the terminal is narrower, the footer
+    shows a summary instead, e.g. `2 subagents · todos 1/4 · 1 shell · /sidebar`. On a narrower
+    terminal `/sidebar` opens the overlay below instead.
+  - Regular `tuiMode`: the footer summary; `/sidebar` opens or closes the same rows as an overlay
+    on the right that does not take keyboard focus. While the overlay is open, pi refuses to
+    change `tuiMode` in `/settings` ("Close active overlays before changing TUI mode"): close it
+    with `/sidebar` first.
+  - Switching `tuiMode` in `/settings` or resizing the terminal re-lays it out on the next frame.
+  - Limits: it shows only background subagents (foreground ones are in the transcript), and the
+    subagent list updates only when pi-subagents reports a change (it does so only in sessions
+    with a UI). pi-subagents keeps task text out of its status, so the sidebar takes it from
+    this session's own `subagent` calls: runs started before a reload or by a child show only
+    the agent. A paused run is listed as paused and not counted as running. If something else
+    closes the overlay, the next `/sidebar` only notices that; run it again to reopen. The widgets stay hidden while the extension is loaded, also with the column off
+    (the footer summary stands in). With the column on, pi's layout renders the transcript once
+    more per frame to measure it, which a very long transcript may feel.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
   the first two.

@@ -8,7 +8,7 @@
  * - wake_later: a one-shot timer that wakes the session with a prompt (for checks no shell sees).
  * - shell_stop: kill a task's whole process group (or end only its watch, or cancel a timer).
  *   shell_list and /shells: running and recent tasks (/shells can stop one). A widget above the editor
- *   shows each active task and timer; the footer counts them.
+ *   (or the kit sidebar, when it is loaded) shows each active task and timer; the footer counts them.
  *
  * Every command goes through the kit guardrails' checkCommand (confirm dangerous commands). Every
  * delivered line is redacted like bash output before it is cut, and private key blocks are dropped. Not registered
@@ -120,6 +120,7 @@ export default function (pi: ExtensionAPI) {
 	let tick: NodeJS.Timeout | undefined;
 	let rows: ReturnType<typeof panelRows> = [];
 	let closed = false;
+	let sidebar = false; // the kit sidebar shows the rows and counts instead of the widget and footer
 	let noticesThisRun = 0;
 	let wake: (() => void) | undefined; // resolves the headless drain wait
 
@@ -133,10 +134,11 @@ export default function (pi: ExtensionAPI) {
 	function refresh() {
 		if (closed) return;
 		rows = allRows();
+		pi.events.emit("kit:shell:rows", rows);
 		const run = running();
 		try {
-			ui?.setStatus("shell", footerText({ shells: run.length, monitors: run.filter((t) => t.watch).length, timers: wakes.size, leftovers: [...tasks.values()].filter(leftover).length }));
-			if (mode === "tui" && !rows.length) ui?.setWidget("shell", undefined);
+			ui?.setStatus("shell", sidebar ? undefined : footerText({ shells: run.length, monitors: run.filter((t) => t.watch).length, timers: wakes.size, leftovers: [...tasks.values()].filter(leftover).length }));
+			if (mode === "tui" && (!rows.length || sidebar)) ui?.setWidget("shell", undefined);
 			else if (mode === "tui" && !tui)
 				ui?.setWidget("shell", (t, theme) => {
 					tui = t;
@@ -581,6 +583,10 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", (_e, ctx) => {
 		ui = ctx.ui;
 		mode = ctx.mode;
+	});
+	pi.events.on("kit:sidebar", (on) => {
+		sidebar = on === true;
+		refresh();
 	});
 	pi.on("agent_start", () => {
 		noticesThisRun = 0;

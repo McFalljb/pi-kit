@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
+import { hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
@@ -171,6 +172,105 @@ test("footerText counts each kind", () => {
 	assert.equal(footerText({ shells: 0, monitors: 0, timers: 0, leftovers: 0 }), undefined);
 });
 
+test("sidebarLines: subagents, shells, todos; untrusted text made safe", () => {
+	const now = 100_000;
+	const lines = sidebarLines(
+		{
+			runs: [
+				{ label: "kit.worker", state: "running", startedAt: now - 80_000, activity: { currentTool: "bash" } },
+				{ label: "kit.reviewer", state: "complete", startedAt: 0, endedAt: 5_000 },
+				{ label: "x", state: "failed" },
+			],
+			todos: [
+				{ subject: "Write tests", status: "in_progress", activeForm: "Writing tests" },
+				{ subject: "Ship\n\x1b[31mit\x1b[0m", status: "pending" },
+				{ subject: "Plan", status: "completed" },
+				{ subject: "gone", status: "deleted" },
+			],
+			shells: [{ id: "sh1", status: "12s", label: "echo password=supersecretvalue123" }, { id: "", status: "+2 more · /shells", label: "" }],
+		},
+		now,
+	);
+	assert.deepEqual(lines, [
+		{ text: "Subagents · 1 running", head: true },
+		{ text: "● kit.worker 1m20s · bash", tone: "accent" },
+		{ text: "✓ kit.reviewer 5s", tone: "success" },
+		{ text: "✗ x failed", tone: "warning" },
+		{ text: "" },
+		{ text: "Shells", head: true },
+		{ text: "sh1 12s", tone: "accent" },
+		{ text: "  echo password=[REDACTED]", tone: "muted" },
+		{ text: "+2 more · /shells", tone: "muted" },
+		{ text: "" },
+		{ text: "Todos 1/3", head: true },
+		{ text: "▸ Writing tests", tone: "accent" },
+		{ text: "○ Ship it" },
+		{ text: "✓ Plan", tone: "dim" },
+	]);
+	assert.deepEqual(sidebarLines({ runs: [], todos: [], shells: [] }, now), [{ text: "No subagents, todos or shells", tone: "muted" }]);
+});
+
+test("sidebarLines: a bad record breaks only its own section", () => {
+	const lines = sidebarLines({ runs: [null as never], todos: [{ subject: "a", status: "pending" }], shells: [] }, 0);
+	assert.equal(lines[0].tone, "error");
+	assert.match(lines[0].text, /^subagents: /);
+	assert.deepEqual(lines.slice(2), [{ text: "Todos 0/1", head: true }, { text: "○ a" }]);
+});
+
+test("summary counts what the sidebar would show", () => {
+	const d = { runs: [{ state: "running" }, { state: "complete" }], todos: [{ subject: "a", status: "completed" }, { subject: "b", status: "pending" }], shells: [{ id: "sh1", status: "", label: "" }, { id: "", status: "+1", label: "" }] };
+	assert.equal(summary(d), "1 subagent · todos 1/2 · 1 shell · /sidebar");
+	assert.equal(summary({ runs: [], todos: [], shells: [] }), undefined);
+});
+
+test("todosFromBranch: state entries win over todo tool results", () => {
+	const result = (tasks: unknown) => ({ type: "message", message: { role: "toolResult", toolName: "todo", details: { tasks, nextId: 2 } } });
+	const state = (tasks: unknown) => ({ type: "custom", customType: "rpiv-todo-state", data: { tasks, nextId: 2 } });
+	const a = [{ id: 1, subject: "a", status: "pending" }];
+	const b = [{ id: 1, subject: "b", status: "pending" }];
+	assert.deepEqual(todosFromBranch([result(a)]), { tasks: a, nextId: 2 });
+	assert.deepEqual(todosFromBranch([state(b), result(a)]), { tasks: b, nextId: 2 });
+	assert.deepEqual(todosFromBranch([null, { type: "message", message: { role: "toolResult", toolName: "bash" } }, result("bad")]), { tasks: [] });
+});
+
+test("sidebarLines and summary: a paused run is listed as paused, not counted as running", () => {
+	const d = { runs: [{ label: "kit.worker", state: "paused", startedAt: 0, activity: { currentTool: "bash" } }], todos: [], shells: [] };
+	assert.deepEqual(sidebarLines(d, 10_000), [
+		{ text: "Subagents", head: true },
+		{ text: "‖ kit.worker 10s paused", tone: "warning" },
+	]);
+	assert.equal(summary(d), undefined);
+});
+
+test("completed todos stay for the run that completed them, then hide; the header keeps the totals", () => {
+	const todo = (id: number, status: string) => ({ id, subject: `t${id}`, status });
+	const rows = (todos: ReturnType<typeof todo>[], v: ReturnType<typeof todoView>) => sidebarLines({ runs: [], todos, shells: [], hiddenTodos: v.hidden }, 0).map((l) => l.text);
+	const v = todoView();
+	let todos = [todo(1, "completed"), todo(2, "in_progress"), todo(3, "pending")];
+	trackTodos(v, todos, 4);
+	assert.deepEqual(rows(todos, v), ["Todos 1/3", "✓ t1", "▸ t2", "○ t3"]);
+	hideCompleted(v); // next agent run
+	assert.deepEqual(rows(todos, v), ["Todos 1/3", "▸ t2", "○ t3"]);
+	todos = [todo(1, "completed"), todo(2, "completed"), todo(3, "completed")];
+	trackTodos(v, todos, 4);
+	assert.deepEqual(rows(todos, v), ["Todos 3/3", "✓ t2", "✓ t3"]);
+	hideCompleted(v);
+	assert.deepEqual(rows(todos, v), ["Todos 3/3"]);
+	assert.equal(summary({ runs: [], todos, shells: [] }), "todos 3/3 · /sidebar");
+	// Reopened: shown again. Cleared and recreated (nextId went down): ids start over, nothing hidden.
+	trackTodos(v, [todo(1, "pending"), todo(2, "completed"), todo(3, "completed")], 4);
+	assert.deepEqual(rows([todo(1, "pending"), todo(2, "completed"), todo(3, "completed")], v), ["Todos 2/3", "○ t1"]);
+	todos = [todo(1, "completed")];
+	trackTodos(v, todos, 2);
+	hideCompleted(v);
+	trackTodos(v, [todo(1, "completed"), todo(2, "pending")], 3);
+	assert.deepEqual(rows([todo(1, "completed"), todo(2, "pending")], v), ["Todos 1/2", "○ t2"]);
+	trackTodos(v, [], 1); // clear
+	todos = [todo(1, "completed")];
+	trackTodos(v, todos, 2);
+	assert.deepEqual(rows(todos, v), ["Todos 1/1", "✓ t1"]);
+});
+
 test("model rules: GPT models get them, others don't", () => {
 	for (const id of ["gpt-6.1-sol", "openai/gpt-6.1-sol", "GPT-5", "openai.gpt-6.1-sol", "us.openai.gpt-6.1-sol", "global.openai.gpt-6.1-sol"]) assert.ok(isGpt(id), id);
 	for (const id of ["claude-opus-5-5", "chatgpt-x", "mock-1", undefined]) assert.ok(!isGpt(id), id);
@@ -200,4 +300,58 @@ test("mock model keeps playing its steps when a completion notice arrives mid-tu
 	} finally {
 		mock.kill();
 	}
+});
+
+test("subagent rows show the task captured from the parent's own subagent call", () => {
+	const runs = [
+		{ id: "r1", label: "kit.worker", state: "running", startedAt: 0, activity: { currentTool: "bash" } },
+		{ id: "r2", label: "kit.reviewer", state: "complete", startedAt: 0, endedAt: 5_000 },
+	];
+	const tasks = new Map([["r1", ["Goal: fix the \x1b[31msidebar\x1b[0m rows token=supersecretvalue123"]]]);
+	assert.deepEqual(sidebarLines({ runs, todos: [], shells: [], tasks }, 80_000).slice(1, 4), [
+		{ text: "● kit.worker 1m20s · bash", tone: "accent" },
+		{ text: "  Goal: fix the sidebar rows token=[REDACTED]", tone: "muted" },
+		{ text: "✓ kit.reviewer 5s", tone: "success" },
+	]);
+});
+
+test("subagentTask: run id and first line of each task of an execution call; management calls ignored", () => {
+	assert.deepEqual(subagentTask({ agent: "kit.worker", task: "\n  Goal: x\nmore", async: true }, { asyncId: "abc-1", runId: "abc-1" }), ["abc-1", ["Goal: x"]]);
+	assert.deepEqual(subagentTask({ task: "overall", tasks: [{ agent: "a", task: "Review A" }, { agent: "b", task: "B\nx" }] }, { runId: "r2" }), ["r2", ["Review A", "B"]]);
+	assert.deepEqual(subagentTask({ chain: [{ agent: "a", task: "Step one" }, { parallel: [{ agent: "b", task: "Fan out" }] }] }, { asyncId: "r3" }), ["r3", ["Step one", "Fan out"]]);
+	assert.equal(subagentTask({ action: "status", id: "abc-1" }, { asyncId: "abc-1" }), undefined);
+	assert.equal(subagentTask({ agent: "kit.worker", task: "x" }, {}), undefined); // foreground: no run id
+	assert.equal(subagentTask({ agent: "kit.worker" }, { asyncId: "r4" }), undefined);
+	assert.equal(subagentTask(undefined, undefined), undefined);
+});
+
+test("a multi-step run lists its steps with their tasks, capped; the count is running leaves, like pi-subagents' footer", () => {
+	const step = (i: number, state: string) => ({ id: `step:${i}`, label: "kit.worker", agent: "kit.worker", state, startedAt: 0, ...(state === "complete" ? { endedAt: 30_000 } : {}) });
+	const run = { id: "p1", kind: "parallel", label: "kit.worker, kit.worker, +6 more", state: "running", startedAt: 0, children: [step(0, "running"), step(1, "complete"), ...Array.from({ length: 6 }, (_, i) => step(i + 2, "running"))] };
+	const tasks = new Map([["p1", ["Review A", "Review B", "Review C"]]]);
+	const lines = sidebarLines({ runs: [run], todos: [], shells: [], tasks }, 80_000);
+	assert.deepEqual(lines.slice(0, 7), [
+		{ text: "Subagents · 7 running", head: true },
+		{ text: "● parallel · 8 agents 1m20s", tone: "accent" },
+		{ text: "  ● kit.worker 1m20s", tone: "accent" },
+		{ text: "    Review A", tone: "muted" },
+		{ text: "  ✓ kit.worker 30s", tone: "success" },
+		{ text: "    Review B", tone: "muted" },
+		{ text: "  ● kit.worker 1m20s", tone: "accent" },
+	]);
+	assert.deepEqual(lines.at(-1), { text: "  +2 more", tone: "muted" });
+	assert.equal(lines.length, 12); // header, run, 3 steps with tasks, 3 without, "+2 more"
+	assert.equal(summary({ runs: [run], todos: [], shells: [] }), "7 subagents · /sidebar");
+	// A workflow's steps are keyed: the key stands in for the task. A single-step run is one row.
+	const wf = { id: "w1", kind: "workflow", label: "x", state: "running", startedAt: 0, children: [{ id: "review-a", label: "review-a", agent: "kit.worker", state: "running", startedAt: 0 }, { id: "review-b", label: "review-b", agent: "kit.worker", state: "complete", startedAt: 0, endedAt: 3_000 }] };
+	const single = { id: "s1", kind: "subagent", label: "kit.worker", state: "running", startedAt: 0, children: [step(0, "running")] };
+	assert.deepEqual(sidebarLines({ runs: [wf, single], todos: [], shells: [] }, 14_000), [
+		{ text: "Subagents · 2 running", head: true },
+		{ text: "● workflow · 2 agents 14s", tone: "accent" },
+		{ text: "  ● kit.worker 14s", tone: "accent" },
+		{ text: "    review-a", tone: "muted" },
+		{ text: "  ✓ kit.worker 3s", tone: "success" },
+		{ text: "    review-b", tone: "muted" },
+		{ text: "● kit.worker 14s", tone: "accent" },
+	]);
 });
