@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { hideCompleted, sidebarLines, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
+import { hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
@@ -300,4 +300,58 @@ test("mock model keeps playing its steps when a completion notice arrives mid-tu
 	} finally {
 		mock.kill();
 	}
+});
+
+test("subagent rows show the task captured from the parent's own subagent call", () => {
+	const runs = [
+		{ id: "r1", label: "kit.worker", state: "running", startedAt: 0, activity: { currentTool: "bash" } },
+		{ id: "r2", label: "kit.reviewer", state: "complete", startedAt: 0, endedAt: 5_000 },
+	];
+	const tasks = new Map([["r1", ["Goal: fix the \x1b[31msidebar\x1b[0m rows token=supersecretvalue123"]]]);
+	assert.deepEqual(sidebarLines({ runs, todos: [], shells: [], tasks }, 80_000).slice(1, 4), [
+		{ text: "● kit.worker 1m20s · bash", tone: "accent" },
+		{ text: "  Goal: fix the sidebar rows token=[REDACTED]", tone: "muted" },
+		{ text: "✓ kit.reviewer 5s", tone: "success" },
+	]);
+});
+
+test("subagentTask: run id and first line of each task of an execution call; management calls ignored", () => {
+	assert.deepEqual(subagentTask({ agent: "kit.worker", task: "\n  Goal: x\nmore", async: true }, { asyncId: "abc-1", runId: "abc-1" }), ["abc-1", ["Goal: x"]]);
+	assert.deepEqual(subagentTask({ task: "overall", tasks: [{ agent: "a", task: "Review A" }, { agent: "b", task: "B\nx" }] }, { runId: "r2" }), ["r2", ["Review A", "B"]]);
+	assert.deepEqual(subagentTask({ chain: [{ agent: "a", task: "Step one" }, { parallel: [{ agent: "b", task: "Fan out" }] }] }, { asyncId: "r3" }), ["r3", ["Step one", "Fan out"]]);
+	assert.equal(subagentTask({ action: "status", id: "abc-1" }, { asyncId: "abc-1" }), undefined);
+	assert.equal(subagentTask({ agent: "kit.worker", task: "x" }, {}), undefined); // foreground: no run id
+	assert.equal(subagentTask({ agent: "kit.worker" }, { asyncId: "r4" }), undefined);
+	assert.equal(subagentTask(undefined, undefined), undefined);
+});
+
+test("a multi-step run lists its steps with their tasks, capped; the count is running leaves, like pi-subagents' footer", () => {
+	const step = (i: number, state: string) => ({ id: `step:${i}`, label: "kit.worker", agent: "kit.worker", state, startedAt: 0, ...(state === "complete" ? { endedAt: 30_000 } : {}) });
+	const run = { id: "p1", kind: "parallel", label: "kit.worker, kit.worker, +6 more", state: "running", startedAt: 0, children: [step(0, "running"), step(1, "complete"), ...Array.from({ length: 6 }, (_, i) => step(i + 2, "running"))] };
+	const tasks = new Map([["p1", ["Review A", "Review B", "Review C"]]]);
+	const lines = sidebarLines({ runs: [run], todos: [], shells: [], tasks }, 80_000);
+	assert.deepEqual(lines.slice(0, 7), [
+		{ text: "Subagents · 7 running", head: true },
+		{ text: "● parallel · 8 agents 1m20s", tone: "accent" },
+		{ text: "  ● kit.worker 1m20s", tone: "accent" },
+		{ text: "    Review A", tone: "muted" },
+		{ text: "  ✓ kit.worker 30s", tone: "success" },
+		{ text: "    Review B", tone: "muted" },
+		{ text: "  ● kit.worker 1m20s", tone: "accent" },
+	]);
+	assert.deepEqual(lines.at(-1), { text: "  +2 more", tone: "muted" });
+	assert.equal(lines.length, 12); // header, run, 3 steps with tasks, 3 without, "+2 more"
+	assert.equal(summary({ runs: [run], todos: [], shells: [] }), "7 subagents · /sidebar");
+	// A workflow's steps are keyed: the key stands in for the task. A single-step run is one row.
+	const wf = { id: "w1", kind: "workflow", label: "x", state: "running", startedAt: 0, children: [{ id: "review-a", label: "review-a", agent: "kit.worker", state: "running", startedAt: 0 }, { id: "review-b", label: "review-b", agent: "kit.worker", state: "complete", startedAt: 0, endedAt: 3_000 }] };
+	const single = { id: "s1", kind: "subagent", label: "kit.worker", state: "running", startedAt: 0, children: [step(0, "running")] };
+	assert.deepEqual(sidebarLines({ runs: [wf, single], todos: [], shells: [] }, 14_000), [
+		{ text: "Subagents · 2 running", head: true },
+		{ text: "● workflow · 2 agents 14s", tone: "accent" },
+		{ text: "  ● kit.worker 14s", tone: "accent" },
+		{ text: "    review-a", tone: "muted" },
+		{ text: "  ✓ kit.worker 3s", tone: "success" },
+		{ text: "    review-b", tone: "muted" },
+		{ text: "● kit.worker 14s", tone: "accent" },
+	]);
 });

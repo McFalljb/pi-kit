@@ -113,7 +113,9 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
     then kill what is left and send one notice listing it.
   - `kit.worker` has the tools; `kit.reviewer` does not.
 - **A sidebar replaces the widgets under the transcript** (`extensions/sidebar`). It lists
-  background subagents (pi-subagents: label, state, running time, current tool), background
+  background subagents (pi-subagents: agent, state, running time, current tool, and the first
+  line of the task for runs this session started; a workflow lists each step, up to 6, with its
+  key; the running count is pi-subagents' own "N active agents"), background
   shells, monitors and timers (the rows of the shell widget) and todos (rpiv-todo: done/total,
   the one in progress highlighted; like rpiv-todo's own panel, a completed todo stays listed for
   the rest of the run that completed it, then only the header counts it). While it is loaded in
@@ -131,7 +133,9 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
   - Switching `tuiMode` in `/settings` or resizing the terminal re-lays it out on the next frame.
   - Limits: it shows only background subagents (foreground ones are in the transcript), and the
     subagent list updates only when pi-subagents reports a change (it does so only in sessions
-    with a UI). A paused run is listed as paused and not counted as running. If something else
+    with a UI). pi-subagents keeps task text out of its status, so the sidebar takes it from
+    this session's own `subagent` calls: runs started before a reload or by a child show only
+    the agent. A paused run is listed as paused and not counted as running. If something else
     closes the overlay, the next `/sidebar` only notices that; run it again to reopen. The widgets stay hidden while the extension is loaded, also with the column off
     (the footer summary stands in). With the column on, pi's layout renders the transcript once
     more per frame to measure it, which a very long transcript may feel.

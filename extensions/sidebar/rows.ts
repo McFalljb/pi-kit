@@ -9,9 +9,13 @@ export interface Line {
 	head?: boolean; // a section title
 }
 
-/** A run from pi-subagents' status reply (`data.asyncSnapshot.runs`). */
+/** A run from pi-subagents' status reply (`data.asyncSnapshot.runs`); a parallel or chain run has its steps as children. */
 export interface Run {
+	id?: string; // a run: its async id; a step: "step:<index>", or its workflow key (then also its label)
+	kind?: string; // "subagent", "workflow", ...
 	label?: string;
+	agent?: string; // steps
+	children?: Run[];
 	state?: string;
 	startedAt?: number;
 	endedAt?: number;
@@ -36,23 +40,46 @@ export interface Data {
 	todos: Todo[];
 	shells: ShellRow[];
 	hiddenTodos?: ReadonlySet<number>; // completed todo ids no longer listed (TodoView.hidden)
+	tasks?: ReadonlyMap<string, string[]>; // run id -> task line per step, from the parent's own subagent calls
 }
 
 /** Untrusted text as one line: escapes stripped, secrets redacted, whitespace collapsed. */
 const one = (s: unknown) => clip(String(s ?? "")).replace(/\s+/g, " ").trim();
 const RUNNING = new Set(["queued", "running"]); // a paused run is listed, but not counted as running
 const RUN_ICON: Record<string, [string, Tone]> = { queued: ["…", "muted"], running: ["●", "accent"], paused: ["‖", "warning"], complete: ["✓", "success"] };
+const MAX_STEPS = 6; // steps listed per run, then "+N more"
 
-function runLines(runs: Run[], now: number): Line[] {
-	if (!runs.length) return [];
-	const active = runs.filter((r) => RUNNING.has(r.state ?? "")).length;
+/** Steps listed under a run: only when there are several (a single step is the run itself). */
+const steps = (r: Run) => (Array.isArray(r.children) && r.children.length > 1 ? r.children : []);
+/** Running agents, counted like pi-subagents' own "N active agents": each running step, else the run. */
+const runningLeaves = (r: Run): number => (steps(r).length ? steps(r).reduce((n, c) => n + runningLeaves(c), 0) : RUNNING.has(r?.state ?? "") ? 1 : 0);
+const runningCount = (d: Data) => d.runs.reduce((n, r) => n + runningLeaves(r), 0);
+
+function runRow(r: Run, name: unknown, task: unknown, indent: string, now: number): Line[] {
+	const state = r.state ?? "";
+	const [icon, tone] = RUN_ICON[state] ?? ["✗", "warning"];
+	const took = typeof r.startedAt === "number" ? ` ${duration(Math.max(0, (r.endedAt ?? now) - r.startedAt))}` : "";
+	const extra = RUNNING.has(state) ? (r.activity?.currentTool ? ` · ${one(r.activity.currentTool)}` : "") : state === "complete" ? "" : ` ${one(state) || "?"}`;
+	const out: Line[] = [{ text: `${indent}${icon} ${one(name) || "subagent"}${took}${extra}`, tone }];
+	if (one(task)) out.push({ text: `${indent}  ${one(task)}`, tone: "muted" });
+	return out;
+}
+
+function runLines(d: Data, now: number): Line[] {
+	if (!d.runs.length) return [];
+	const active = runningCount(d);
 	const out: Line[] = [{ text: active ? `Subagents · ${active} running` : "Subagents", head: true }];
-	for (const r of runs) {
-		const state = r.state ?? "";
-		const [icon, tone] = RUN_ICON[state] ?? ["✗", "warning"];
-		const took = typeof r.startedAt === "number" ? ` ${duration(Math.max(0, (r.endedAt ?? now) - r.startedAt))}` : "";
-		const extra = RUNNING.has(state) ? (r.activity?.currentTool ? ` · ${one(r.activity.currentTool)}` : "") : state === "complete" ? "" : ` ${one(state) || "?"}`;
-		out.push({ text: `${icon} ${one(r.label) || "subagent"}${took}${extra}`, tone });
+	for (const r of d.runs) {
+		const texts = (r.id && d.tasks?.get(r.id)) || [];
+		const kids = steps(r);
+		if (!kids.length) out.push(...runRow(r, r.label, texts[0], "", now));
+		else out.push(...runRow(r, `${one(r.kind) || "run"} · ${kids.length} agents`, "", "", now));
+		kids.slice(0, MAX_STEPS).forEach((c, i) => {
+			const index = Number(/^step:(\d+)$/.exec(String(c?.id))?.[1] ?? i);
+			const key = c.agent && c.label !== c.agent ? c.label : ""; // a workflow step's key
+			out.push(...runRow(c, c.agent ?? c.label, texts[index] || key, "  ", now));
+		});
+		if (kids.length > MAX_STEPS) out.push({ text: `  +${kids.length - MAX_STEPS} more`, tone: "muted" });
 	}
 	return out;
 }
@@ -91,7 +118,7 @@ function section(name: string, build: () => Line[]): Line[] {
 
 /** The sidebar's rows: subagents, shells, todos, a blank row between sections. */
 export function sidebarLines(d: Data, now: number): Line[] {
-	const parts = [section("subagents", () => runLines(d.runs, now)), section("shells", () => shellLines(d.shells)), section("todos", () => todoLines(d.todos, d.hiddenTodos ?? new Set()))].filter((p) => p.length);
+	const parts = [section("subagents", () => runLines(d, now)), section("shells", () => shellLines(d.shells)), section("todos", () => todoLines(d.todos, d.hiddenTodos ?? new Set()))].filter((p) => p.length);
 	if (!parts.length) return [{ text: "No subagents, todos or shells", tone: "muted" }];
 	return parts.flatMap((p, i) => (i ? [{ text: "" }, ...p] : p));
 }
@@ -99,7 +126,7 @@ export function sidebarLines(d: Data, now: number): Line[] {
 /** Footer text for when the sidebar is not on screen, e.g. "2 subagents · todos 1/4 · 1 shell · /sidebar". */
 export function summary(d: Data): string | undefined {
 	try {
-		const runs = d.runs.filter((r) => RUNNING.has(r.state ?? "")).length;
+		const runs = runningCount(d);
 		const todos = d.todos.filter((t) => t.status !== "deleted");
 		const shells = d.shells.filter((r) => r.id).length;
 		const parts = [runs ? `${runs} subagent${runs === 1 ? "" : "s"}` : "", todos.length ? `todos ${todos.filter((t) => t.status === "completed").length}/${todos.length}` : "", shells ? `${shells} shell${shells === 1 ? "" : "s"}` : ""].filter(Boolean);
@@ -154,4 +181,21 @@ export function trackTodos(v: TodoView, todos: Todo[], nextId?: number): void {
 export function hideCompleted(v: TodoView): void {
 	for (const id of v.pending) v.hidden.add(id);
 	v.pending.clear();
+}
+
+/**
+ * [run id, first task line] from the parent's own `subagent` tool call and its result, for the row
+ * pi-subagents' public status leaves without task text. Undefined for management calls and results
+ * without a run id.
+ */
+export function subagentTask(input: unknown, details: unknown): [string, string[]] | undefined {
+	type Item = { task?: unknown; parallel?: { task?: unknown }[] };
+	const i = input as { action?: unknown; task?: unknown; tasks?: Item[]; chain?: Item[] } | undefined;
+	const d = details as { asyncId?: unknown; runId?: unknown } | undefined;
+	const id = d?.asyncId ?? d?.runId;
+	if (!i || i.action !== undefined || typeof id !== "string" || !id) return undefined;
+	const first = (t: unknown) => (typeof t === "string" ? t.trim().split("\n")[0].trim() : "");
+	const items = Array.isArray(i.tasks) ? i.tasks : Array.isArray(i.chain) ? i.chain : undefined;
+	const lines = items ? items.map((s) => first(s?.task ?? (Array.isArray(s?.parallel) ? s.parallel[0]?.task : undefined))) : [first(i.task)];
+	return lines.some(Boolean) ? [id, lines] : undefined;
 }

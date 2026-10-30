@@ -16,7 +16,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, HStack, isViewportTUI, ScrollView, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { type Data, hideCompleted, type Line, sidebarLines, summary, type TodoState, todosFromBranch, todoView, trackTodos } from "./rows.ts";
+import { type Data, hideCompleted, type Line, type Run, sidebarLines, subagentTask, summary, type TodoState, todosFromBranch, todoView, trackTodos } from "./rows.ts";
 
 const WIDTH = 34; // columns, border included
 const MIN_COLUMNS = 120; // narrower terminals get the footer summary instead of the column
@@ -24,7 +24,9 @@ const SUBAGENT_EVENTS = ["subagent:jobs-changed", "subagent:async-started", "sub
 const arr = (v: unknown) => (Array.isArray(v) ? v : []);
 
 export default function (pi: ExtensionAPI) {
-	const data: Data = { runs: [], todos: [], shells: [] };
+	const tasks = new Map<string, string[]>(); // run id -> task line per step, from this session's own subagent calls
+	const taskAt = new Map<string, number>();
+	const data: Data = { runs: [], todos: [], shells: [], tasks };
 	let view = todoView(); // which completed todos are no longer listed
 	let ui: ExtensionContext["ui"] | undefined;
 	let tui: TUI | undefined; // pi's TUI reference: it follows the renderer when tuiMode changes
@@ -140,7 +142,12 @@ export default function (pi: ExtensionAPI) {
 			reading = false;
 			stopRead = undefined;
 			const r = reply as { success?: boolean; data?: { asyncSnapshot?: { runs?: unknown } } } | undefined;
-			if (r?.success) data.runs = arr(r.data?.asyncSnapshot?.runs);
+			if (r?.success) {
+				data.runs = arr(r.data?.asyncSnapshot?.runs);
+				// Forget tasks of runs gone from the snapshot (a minute's grace: a read may predate a launch).
+				const live = new Set(data.runs.map((run: Run) => run?.id));
+				for (const [id, at] of taskAt) if (!live.has(id) && Date.now() - at > 60_000) tasks.delete(id), taskAt.delete(id);
+			}
 			refresh();
 			if (again && !closed) {
 				again = false;
@@ -223,6 +230,12 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("tool_execution_end", (e) => void (e.toolName === "todo" && refreshSoon()));
 	pi.on("tool_result", (e) => {
+		const t = e.toolName === "subagent" && !e.isError ? subagentTask(e.input, e.details) : undefined;
+		if (t && ui) {
+			tasks.set(t[0], t[1]);
+			taskAt.set(t[0], Date.now());
+			subagentsChanged();
+		}
 		const d = e.details as { tasks?: unknown; nextId?: unknown } | undefined;
 		if (e.toolName !== "todo" || e.isError || !Array.isArray(d?.tasks)) return;
 		setTodos({ tasks: d.tasks, nextId: typeof d.nextId === "number" ? d.nextId : undefined });
