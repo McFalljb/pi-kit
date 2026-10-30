@@ -477,6 +477,7 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Run a shell command in the background (dev servers, long builds, test suites). Returns at once with an id and an output file. When the command exits, a notice with its exit code, last lines and output path arrives on its own: do not sleep, poll or re-read the file in a loop. Stop it with shell_stop when you no longer need it.",
 		promptSnippet: "Run a long command in the background; a notice arrives when it exits",
+		promptGuidelines: ["Run dev servers, watchers and long builds or test runs with bash_bg, not bash."],
 		parameters: Type.Object({ command: Type.String({ description: "Bash command" }), cwd, timeout }),
 		async execute(_id, p, _signal, _onUpdate, ctx) {
 			const t = await start(p.command, p.cwd, p.timeout, ctx);
@@ -490,6 +491,7 @@ export default function (pi: ExtensionAPI) {
 		description:
 			"Watch output and get a notice for each new line matching `pattern` (a JavaScript regex; every line if omitted), batched about once a second. Either give `command` to run and watch it (it is killed at `timeout`), or `id` of a running bash_bg task to watch its output. Ends when the command exits, on shell_stop, or at `timeout`. For \"tell me when X\" use a command that prints when X happens and exits, e.g. `until curl -sf localhost:3000; do sleep 2; done; echo ready`.",
 		promptSnippet: "Get notified on each output line matching a pattern, or when a condition becomes true",
+		promptGuidelines: ['For "tell me when X" or "on each error", use monitor instead of checking again yourself.'],
 		parameters: Type.Object({
 			command: Type.Optional(Type.String({ description: "Bash command to run and watch" })),
 			id: Type.Optional(Type.String({ description: "Watch this running bash_bg task instead of starting a command" })),
@@ -518,6 +520,7 @@ export default function (pi: ExtensionAPI) {
 		name: "wake_later",
 		label: "Wake later",
 		description: `Wake this session once after \`seconds\` (clamped to ${WAKE_MIN}-${WAKE_MAX}; headless sessions at most ${HEADLESS_DRAIN_MS / 1000}) with \`prompt\` as a notice. Only for checks no shell command can observe; when the check is a command, use monitor or bash_bg instead. Cancel with shell_stop.`,
+		promptSnippet: "Wake this session once later, for checks no shell command can observe",
 		parameters: Type.Object({
 			seconds: Type.Number({ description: `Delay in seconds (${WAKE_MIN}-${WAKE_MAX})` }),
 			prompt: Type.String({ description: "What to do when it fires; written for your future self" }),
@@ -545,6 +548,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Stop shell",
 		description:
 			"Stop a background task: kill its whole process group (SIGTERM, then SIGKILL after 2s), including processes left in the group of a task that has exited. With watch_only, end only the monitor on it and leave the task running. A wake_later id cancels that timer.",
+		promptSnippet: "Stop a background task or its monitor, or cancel a wake_later timer",
 		parameters: Type.Object({
 			id: Type.String({ description: "Task id (sh1) or timer id (wk2)" }),
 			watch_only: Type.Optional(Type.Boolean({ description: "End only the monitor; keep the task running" })),
@@ -558,6 +562,7 @@ export default function (pi: ExtensionAPI) {
 		name: "shell_list",
 		label: "List shells",
 		description: "List this session's background tasks (running and recently finished) with state, watch and output path, and pending wake_later timers.",
+		promptSnippet: "List background tasks and pending wake_later timers",
 		parameters: Type.Object({}),
 		async execute() {
 			return text(listText());

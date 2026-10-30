@@ -112,6 +112,10 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     end of a turn for the next notice or until every task and timer is done, up to 30 minutes,
     then kill what is left and send one notice listing it.
   - `kit.worker` has the tools; `kit.reviewer` does not.
+  - Their usage rules sit on the tools (`promptSnippet`, `promptGuidelines`), not in `AGENTS.md`.
+    pi adds those only to its default system prompt, so `kit.worker` (`systemPromptMode:
+    replace`) keeps its own one-line background rule. A `~/.pi/agent/AGENTS.md` merged earlier
+    still has the longer "Background work" section; you can cut it to the kit's two lines by hand.
 - **A sidebar replaces the widgets under the transcript** (`extensions/sidebar`). It lists
   background subagents (pi-subagents: agent, state, running time, current tool, and the first
   line of the task for runs this session started; a workflow lists each step, up to 6, with its

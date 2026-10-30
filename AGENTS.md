@@ -43,14 +43,8 @@ its agent prompt and the **Everyone** and **Child** sections, and never delegate
 
 ## Background work (Everyone) *(kit)*
 
-- Never `sleep` or poll in a loop. Dev servers, watchers and long builds or test runs go in
-  `bash_bg`; its exit notice arrives on its own.
-- "Tell me when X" or "on each error": `monitor` with a pattern, or a command that exits when X
-  is true (`until curl -sf localhost:3000; do sleep 2; done`).
-- `wake_later` only for checks no shell command can observe.
-- Read an output file once when a notice says something is worth reading, not in a loop.
-- Stop what you started (`shell_stop`) when you no longer need it, and always before a final
-  report.
+- Never `sleep` or poll in a loop. Stop background work you started when you no longer need it,
+  and always before a final report.
 
 ## Parent session (Parent)
 
