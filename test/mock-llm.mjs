@@ -15,17 +15,25 @@ const SHELL_NOTICE = /^(?:(?:Background shell|Monitor) sh|Wake-up wk)\d+/;
 const REMINDER = /^Context is [\d.]+% full and will be compacted soon/;
 const textOf = (c) => (typeof c === "string" ? c : (c || []).map((p) => p.text || "").join(""));
 
+// pi-subagents 0.84 wraps its completion notice in a <pi_subagents_notice> envelope; match the status line.
+const reportOf = (t) => (/@@/.test(t) ? null : t.match(/^Background task (?:completed|failed).*$/m));
+
 function decide(messages) {
-	let lastUser = -1;
-	for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user" && !REMINDER.test(textOf(messages[i].content))) { lastUser = i; break; }
+	const isUser = (m, skipReports) => m.role === "user" && !REMINDER.test(textOf(m.content)) && !(skipReports && reportOf(textOf(m.content)));
+	const lastIndex = (skipReports) => messages.findLastIndex((m) => isUser(m, skipReports));
+	// A completion notice can arrive mid-turn (pi delivers it as a steer while the parent is still
+	// running, e.g. right after bg_wait). It must not abandon the steps of the prompt in progress.
+	const stepsAt = (i) => textOf(messages[i]?.content).split("\n").filter((l) => l.startsWith("@@ ")).map((l) => JSON.parse(l.slice(3)));
+	const doneAfter = (i) => messages.slice(i + 1).filter((m) => m.role === "assistant").length;
+	const prompt = lastIndex(true);
+	const pending = prompt >= 0 && doneAfter(prompt) < stepsAt(prompt).length;
+	const lastUser = pending ? prompt : lastIndex(false);
 	const userText = textOf(messages[lastUser]?.content);
-	// pi-subagents 0.84 wraps the notice in a <pi_subagents_notice> envelope; quote the status line.
-	const report = userText.match(/^Background task (?:completed|failed).*$/m);
-	if (report && !/@@/.test(userText)) return { text: `GOT REPORT: ${report[0]}` };
+	const report = reportOf(userText);
+	if (report) return { text: `GOT REPORT: ${report[0]}` };
 	if (SHELL_NOTICE.test(userText) && !/@@/.test(userText)) return { text: `GOT SHELL: ${userText.split("\n")[0]}` };
-	const steps = userText.split("\n").filter((l) => l.startsWith("@@ ")).map((l) => JSON.parse(l.slice(3)));
-	const after = messages.slice(lastUser + 1);
-	const done = after.filter((m) => m.role === "assistant").length;
+	const steps = stepsAt(lastUser);
+	const done = doneAfter(lastUser);
 	const toolTexts = messages.filter((m) => m.role === "tool").map((m) => textOf(m.content));
 	const ids = [...toolTexts.join("\n").matchAll(/(?:Async|Run): \S+ \[([0-9a-f-]{8,})\]/g)].map((m) => m[1]);
 	const id = ids.length ? ids[ids.length - 1] : "none";

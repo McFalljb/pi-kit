@@ -182,3 +182,22 @@ test("model rules: GPT models get them, others don't", () => {
 	addRules(claude, "claude-opus-5-5", "- rule\n");
 	assert.deepEqual(claude.sections, {});
 });
+
+test("mock model keeps playing its steps when a completion notice arrives mid-turn", async () => {
+	const port = 18700 + Math.floor(Math.random() * 200);
+	const mock = spawn(process.execPath, [path.join(import.meta.dirname, "mock-llm.mjs"), String(port), "/dev/null"]);
+	try {
+		await new Promise((r) => setTimeout(r, 300));
+		const reply = async (messages: object[]) => (await (await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: "POST", body: JSON.stringify({ model: "m", messages }) })).text()).split("\n")[0];
+		const turn = [
+			{ role: "user", content: 'Steps:\n@@ {"name":"bg_wait","arguments":{}}\n@@ {"name":"bash","arguments":{"command":"echo next"}}' },
+			{ role: "assistant", content: "" },
+			{ role: "tool", content: "Waited 1.0s; done." },
+		];
+		const notice = { role: "user", content: "<pi_subagents_notice>\nBackground task completed: **kit.worker**\n</pi_subagents_notice>" };
+		assert.match(await reply([...turn, notice]), /echo next/);
+		assert.match(await reply([...turn, { role: "assistant", content: "" }, { role: "tool", content: "next" }, { role: "assistant", content: "FINAL" }, notice]), /GOT REPORT: Background task completed/);
+	} finally {
+		mock.kill();
+	}
+});
