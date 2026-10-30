@@ -14,7 +14,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22.19.0
-      - name: Install pi 1.2.0 from test/ci/package-lock.json
+      - name: Install the pinned pi and recommended packages from test/ci/package-lock.json
         run: |
           npm ci --ignore-scripts --no-audit --no-fund --prefix test/ci
           echo "$PWD/test/ci/node_modules/.bin" >> "$GITHUB_PATH"
@@ -22,7 +22,9 @@ jobs:
         run: bash test/typecheck.sh
       - name: Unit tests
         run: node --test test/unit.test.ts
+      - name: Contract tests (pins agree; internals the kit relies on)
+        run: node --test test/contracts.test.ts
       - name: AGENTS.md merge tests
         run: bash test/merge.sh
       - name: Smoke tests
-        run: bash test/smoke.sh
+        run: PI_SUBAGENTS_DIR="$PWD/test/ci/node_modules/pi-subagents" bash test/smoke.sh

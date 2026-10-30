@@ -1,0 +1,16 @@
+# Weekly update PRs for the kit's pins (test/ci/package.json: pi and the recommended packages) and
+# for the workflow's SHA-pinned actions. CI runs the contract tests on each; see GUIDE.md "Updating".
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /test/ci
+    schedule:
+      interval: weekly
+    versioning-strategy: increase
+    groups:
+      pins:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
