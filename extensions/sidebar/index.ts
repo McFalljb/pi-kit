@@ -4,9 +4,9 @@
  *
  * - Fullscreen tuiMode (pi's default): a column right of the transcript, `WIDTH` wide, shown when
  *   the terminal is at least `MIN_COLUMNS` wide. It is its own scroll view (mouse wheel, selection).
- * - Regular tuiMode, or a narrower terminal: a one-line footer summary. In regular mode `/sidebar`
- *   opens the same rows as an overlay on the right (it does not take keyboard focus).
- * - `/sidebar` shows or hides the column (fullscreen) or the overlay (regular).
+ * - Regular tuiMode, or a narrower terminal: a one-line footer summary, and `/sidebar` opens the
+ *   same rows as an overlay on the right (it does not take keyboard focus).
+ * - `/sidebar` shows or hides the column (wide fullscreen) or the overlay (otherwise).
  *
  * While loaded with a UI, the rpiv-todo widget and the kit shell widget are hidden for good.
  * Data: pi-subagents' event-bus status RPC, re-read when its job events fire; rpiv-todo's state on
@@ -38,6 +38,10 @@ export default function (pi: ExtensionAPI) {
 	let again = false;
 	let subTimer: NodeJS.Timeout | undefined;
 	let later: NodeJS.Timeout | undefined;
+	let stopRead: (() => void) | undefined; // ends the status read in flight
+	let hideTimer: NodeJS.Timeout | undefined;
+	let hideAt = 0;
+	let ownFrame = false; // the next frame is the one our own todo-widget removal asked for
 
 	const fullscreen = () => !!tui && isViewportTUI(tui);
 	const wide = () => (tui?.terminal.columns ?? 0) >= MIN_COLUMNS;
@@ -82,7 +86,8 @@ export default function (pi: ExtensionAPI) {
 			shown = state();
 			if (fullscreen() && column) mount();
 			else unmount();
-			const onScreen = fullscreen() ? column && wide() : !!closeOverlay;
+			if (closeOverlay && fullscreen() && column && wide()) closeOverlay(); // the column shows the same rows
+			const onScreen = (fullscreen() && column && wide()) || !!closeOverlay;
 			ui.setStatus("sidebar", onScreen ? undefined : summary(data));
 			if (data.todos.length) ui.setWidget("rpiv-todos", undefined); // rpiv-todo re-adds it after a reload or an empty list
 			tui.requestRender();
@@ -93,8 +98,26 @@ export default function (pi: ExtensionAPI) {
 		later = setTimeout(refresh, ms);
 	};
 
+	/**
+	 * rpiv-todo may add its widget back at any time (it loads its view lazily). Each frame checks,
+	 * at most every 500 ms; the frame our own removal causes is skipped, so an idle session stays idle.
+	 */
+	function hideTodos() {
+		if (ownFrame) return void (ownFrame = false);
+		if (!data.todos.length || hideTimer || closed) return;
+		hideTimer = setTimeout(() => {
+			hideTimer = undefined;
+			hideAt = Date.now();
+			ownFrame = true;
+			try {
+				ui?.setWidget("rpiv-todos", undefined);
+			} catch {}
+		}, Math.max(0, hideAt + 500 - Date.now()));
+	}
+
 	/** Called on every frame: re-lay out after a tuiMode switch, a resize past MIN_COLUMNS or a lost root. */
 	function watch() {
+		hideTodos();
 		if (queued || closed) return;
 		if (state() !== shown || (fullscreen() && column && layoutRoot() !== root)) {
 			queued = true;
@@ -114,16 +137,18 @@ export default function (pi: ExtensionAPI) {
 			off();
 			clearTimeout(timeout);
 			reading = false;
+			stopRead = undefined;
 			const r = reply as { success?: boolean; data?: { asyncSnapshot?: { runs?: unknown } } } | undefined;
 			if (r?.success) data.runs = arr(r.data?.asyncSnapshot?.runs);
 			refresh();
-			if (again) {
+			if (again && !closed) {
 				again = false;
 				subagentsChanged();
 			}
 		};
 		const off = pi.events.on(`subagents:rpc:v1:reply:${requestId}`, finish);
 		const timeout = setTimeout(finish, 5000); // no pi-subagents, or it did not answer
+		stopRead = finish;
 		pi.events.emit("subagents:rpc:v1:request", { version: 1, requestId, method: "status" });
 	}
 	// Events come in bursts: one status read per 250 ms.
@@ -154,7 +179,7 @@ export default function (pi: ExtensionAPI) {
 		description: "Show or hide the sidebar: subagents, todos, background shells",
 		handler: async (_args, ctx) => {
 			if (!tui) return ctx.ui.notify("The sidebar needs the interactive TUI.", "warning");
-			if (fullscreen()) column = !column;
+			if (fullscreen() && wide()) column = !column;
 			else if (closeOverlay) closeOverlay();
 			else openOverlay();
 			refresh();
@@ -176,11 +201,14 @@ export default function (pi: ExtensionAPI) {
 		refreshSoon(1500); // rpiv-todo adds its widget asynchronously after session_start
 	});
 	const replayTodos = (_e: unknown, ctx: ExtensionContext) => {
+		if (!ui) return;
 		data.todos = todosFromBranch(ctx.sessionManager.getBranch());
 		refreshSoon();
 	};
 	pi.on("session_tree", replayTodos);
 	pi.on("session_compact", replayTodos);
+	pi.on("turn_end", replayTodos); // todo changes made through another tool (codemode) leave no todo tool_result
+	pi.on("tool_execution_end", (e) => void (e.toolName === "todo" && refreshSoon()));
 	pi.on("tool_result", (e) => {
 		const tasks = (e.details as { tasks?: unknown } | undefined)?.tasks;
 		if (e.toolName !== "todo" || e.isError || !Array.isArray(tasks)) return;
@@ -193,6 +221,8 @@ export default function (pi: ExtensionAPI) {
 		closed = true;
 		clearTimeout(subTimer);
 		clearTimeout(later);
+		clearTimeout(hideTimer);
+		stopRead?.();
 		try {
 			closeOverlay?.();
 			ui.setStatus("sidebar", undefined);

@@ -120,7 +120,7 @@ export default function (pi: ExtensionAPI) {
 	let tick: NodeJS.Timeout | undefined;
 	let rows: ReturnType<typeof panelRows> = [];
 	let closed = false;
-	let sidebar = false; // the kit sidebar shows the rows instead of the widget
+	let sidebar = false; // the kit sidebar shows the rows and counts instead of the widget and footer
 	let noticesThisRun = 0;
 	let wake: (() => void) | undefined; // resolves the headless drain wait
 
@@ -137,7 +137,7 @@ export default function (pi: ExtensionAPI) {
 		pi.events.emit("kit:shell:rows", rows);
 		const run = running();
 		try {
-			ui?.setStatus("shell", footerText({ shells: run.length, monitors: run.filter((t) => t.watch).length, timers: wakes.size, leftovers: [...tasks.values()].filter(leftover).length }));
+			ui?.setStatus("shell", sidebar ? undefined : footerText({ shells: run.length, monitors: run.filter((t) => t.watch).length, timers: wakes.size, leftovers: [...tasks.values()].filter(leftover).length }));
 			if (mode === "tui" && (!rows.length || sidebar)) ui?.setWidget("shell", undefined);
 			else if (mode === "tui" && !tui)
 				ui?.setWidget("shell", (t, theme) => {

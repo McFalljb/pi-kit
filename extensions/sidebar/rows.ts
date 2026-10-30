@@ -38,18 +38,18 @@ export interface Data {
 
 /** Untrusted text as one line: escapes stripped, secrets redacted, whitespace collapsed. */
 const one = (s: unknown) => clip(String(s ?? "")).replace(/\s+/g, " ").trim();
-const ACTIVE = new Set(["queued", "running", "paused"]);
+const RUNNING = new Set(["queued", "running"]); // a paused run is listed, but not counted as running
 const RUN_ICON: Record<string, [string, Tone]> = { queued: ["…", "muted"], running: ["●", "accent"], paused: ["‖", "warning"], complete: ["✓", "success"] };
 
 function runLines(runs: Run[], now: number): Line[] {
 	if (!runs.length) return [];
-	const active = runs.filter((r) => ACTIVE.has(r.state ?? "")).length;
+	const active = runs.filter((r) => RUNNING.has(r.state ?? "")).length;
 	const out: Line[] = [{ text: active ? `Subagents · ${active} running` : "Subagents", head: true }];
 	for (const r of runs) {
 		const state = r.state ?? "";
 		const [icon, tone] = RUN_ICON[state] ?? ["✗", "warning"];
 		const took = typeof r.startedAt === "number" ? ` ${duration(Math.max(0, (r.endedAt ?? now) - r.startedAt))}` : "";
-		const extra = ACTIVE.has(state) ? (r.activity?.currentTool ? ` · ${one(r.activity.currentTool)}` : "") : RUN_ICON[state] ? "" : ` ${one(state) || "?"}`;
+		const extra = RUNNING.has(state) ? (r.activity?.currentTool ? ` · ${one(r.activity.currentTool)}` : "") : state === "complete" ? "" : ` ${one(state) || "?"}`;
 		out.push({ text: `${icon} ${one(r.label) || "subagent"}${took}${extra}`, tone });
 	}
 	return out;
@@ -96,7 +96,7 @@ export function sidebarLines(d: Data, now: number): Line[] {
 /** Footer text for when the sidebar is not on screen, e.g. "2 subagents · todos 1/4 · 1 shell · /sidebar". */
 export function summary(d: Data): string | undefined {
 	try {
-		const runs = d.runs.filter((r) => ACTIVE.has(r.state ?? "")).length;
+		const runs = d.runs.filter((r) => RUNNING.has(r.state ?? "")).length;
 		const todos = d.todos.filter((t) => t.status !== "deleted");
 		const shells = d.shells.filter((r) => r.id).length;
 		const parts = [runs ? `${runs} subagent${runs === 1 ? "" : "s"}` : "", todos.length ? `todos ${todos.filter((t) => t.status === "completed").length}/${todos.length}` : "", shells ? `${shells} shell${shells === 1 ? "" : "s"}` : ""].filter(Boolean);

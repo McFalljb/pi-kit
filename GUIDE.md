@@ -101,19 +101,23 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
 - **A sidebar replaces the widgets under the transcript** (`extensions/sidebar`). It lists
   background subagents (pi-subagents: label, state, running time, current tool), background
   shells, monitors and timers (the rows of the shell widget) and todos (rpiv-todo: done/total,
-  the one in progress highlighted). While it is loaded in the TUI, the rpiv-todo and shell
-  widgets are hidden; turn off pi-subagents' own widget with `"subagents": {"asyncWidget": false}`.
+  the one in progress highlighted). While it is loaded in the TUI, the rpiv-todo widget and the
+  shell widget and footer count are hidden; turn off pi-subagents' own widget with
+  `"subagents": {"asyncWidget": false}`.
   - Fullscreen `tuiMode` (pi's default): a 34-column column right of the transcript when the
     terminal is at least 120 columns wide. It scrolls on its own with the mouse wheel.
     `/sidebar` hides or shows it; when it is hidden or the terminal is narrower, the footer
-    shows a summary instead, e.g. `2 subagents · todos 1/4 · 1 shell · /sidebar`.
+    shows a summary instead, e.g. `2 subagents · todos 1/4 · 1 shell · /sidebar`. On a narrower
+    terminal `/sidebar` opens the overlay below instead.
   - Regular `tuiMode`: the footer summary; `/sidebar` opens or closes the same rows as an overlay
-    on the right that does not take keyboard focus. pi refuses to change `tuiMode` in
-    `/settings` while an overlay is open: close it with `/sidebar` first.
+    on the right that does not take keyboard focus. While the overlay is open, pi refuses to
+    change `tuiMode` in `/settings` ("Close active overlays before changing TUI mode"): close it
+    with `/sidebar` first.
   - Switching `tuiMode` in `/settings` or resizing the terminal re-lays it out on the next frame.
   - Limits: it shows only background subagents (foreground ones are in the transcript), and the
     subagent list updates only when pi-subagents reports a change (it does so only in sessions
-    with a UI). The widgets stay hidden while the extension is loaded, also with the column off
+    with a UI). A paused run is listed as paused and not counted as running. If something else
+    closes the overlay, the next `/sidebar` only notices that; run it again to reopen. The widgets stay hidden while the extension is loaded, also with the column off
     (the footer summary stands in). With the column on, pi's layout renders the transcript once
     more per frame to measure it, which a very long transcript may feel.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,

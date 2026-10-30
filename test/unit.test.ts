@@ -231,3 +231,12 @@ test("todosFromBranch: state entries win over todo tool results", () => {
 	assert.deepEqual(todosFromBranch([state(b), result(a)]), b);
 	assert.deepEqual(todosFromBranch([null, { type: "message", message: { role: "toolResult", toolName: "bash" } }, result("bad")]), []);
 });
+
+test("sidebarLines and summary: a paused run is listed as paused, not counted as running", () => {
+	const d = { runs: [{ label: "kit.worker", state: "paused", startedAt: 0, activity: { currentTool: "bash" } }], todos: [], shells: [] };
+	assert.deepEqual(sidebarLines(d, 10_000), [
+		{ text: "Subagents", head: true },
+		{ text: "‖ kit.worker 10s paused", tone: "warning" },
+	]);
+	assert.equal(summary(d), undefined);
+});
