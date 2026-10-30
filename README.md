@@ -37,7 +37,7 @@ instructions for an agent, including what to ask you and what never to touch.
 | `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff` |
 | `prompts/` | `/delegate`, `/review` |
 | `AGENTS.md` | Global rules, labelled by role (everyone / parent / child) because workers load it too |
-| `packages.json` | Recommended, optional and excluded third-party packages, pinned, with reasons |
+| `packages.json` | Recommended, optional and excluded third-party packages, with reasons; pins for the optional ones |
 | `test/ci/package.json` | The pins CI tests and Dependabot updates: pi and the recommended packages |
 
 ## Claude Code → pi

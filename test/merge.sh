@@ -8,8 +8,9 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 export XDG_CONFIG_HOME="$T/xdg"   # install.sh seeds rpiv-todo's config there, not in ~/.config
 # Stub pi: a version, and `pi install` does nothing (every package is already configured below).
-printf '#!/bin/sh\n[ "$1" = --version ] && echo 1.2.0\nexit 0\n' > "$T/bin/pi"; chmod +x "$T/bin/pi"
-PKGS="$(node -p 'const m=require(process.argv[1]);JSON.stringify([...m.recommended.map(p=>p.spec),process.argv[2]])' "$KIT/packages.json" "$KIT")"
+PINS="$KIT/test/ci/package.json"
+printf '#!/bin/sh\n[ "$1" = --version ] && echo %s\nexit 0\n' "$(node -p 'require(process.argv[1]).dependencies["@earendil-works/pi-coding-agent"]' "$PINS")" > "$T/bin/pi"; chmod +x "$T/bin/pi"
+PKGS="$(node -p 'const m=require(process.argv[1]),v=require(process.argv[3]).dependencies;JSON.stringify([...m.recommended.map(p=>`npm:${p.name}@${v[p.name]}`),process.argv[2]])' "$KIT/packages.json" "$KIT" "$PINS")"
 fail=0 n=0
 ok() { n=$((n + 1)); echo "PASS $1"; }
 bad() { n=$((n + 1)); echo "FAIL $1"; fail=1; }

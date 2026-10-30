@@ -1,7 +1,7 @@
 {
   "name": "pi-kit-ci",
   "private": true,
-  "description": "The kit's version pins: pi and the recommended packages that CI installs and tests (npm ci --ignore-scripts --prefix test/ci). Dependabot bumps these; packages.json must match (test/contracts.test.ts checks).",
+  "description": "The kit's version pins: pi and the recommended packages that CI installs and tests (npm ci --ignore-scripts --prefix test/ci). Dependabot bumps these; install.sh, the tests and extensions/versions read them here.",
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",
     "pi-subagents": "0.84.0",

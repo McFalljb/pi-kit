@@ -5,8 +5,8 @@
 # Usage: test/smoke.sh   (needs pi, node and npm on PATH)
 #   PI_SUBAGENTS_DIR=<path>   use an already installed pi-subagents package in place (read-only)
 #                             instead of installing it from npm into the temp agent dir
-#   PI_SUBAGENTS_VERSION=x.y.z  version to install from npm [the pin in packages.json]
-#   PI_KIT_RECOMMENDED=1      also load the rest of packages.json's recommended set (npm, no scripts)
+#   PI_SUBAGENTS_VERSION=x.y.z  version to install from npm [the pin in test/ci/package.json]
+#   PI_KIT_RECOMMENDED=1      also load the rest of the recommended set at its pins (npm, no scripts)
 set -uo pipefail
 KIT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d "${TMPDIR:-/tmp}/pi-kit-smoke.XXXXXX")"
@@ -18,7 +18,7 @@ mkdir -p "$PI_CODING_AGENT_DIR" "$T/work" "$TMPDIR"
 if [ -n "${PI_SUBAGENTS_DIR:-}" ]; then
 	SUBAGENTS="$PI_SUBAGENTS_DIR"
 else
-	V="${PI_SUBAGENTS_VERSION:-$(node -p 'require(process.argv[1]).recommended.find(p=>p.name==="pi-subagents").spec.split("@").pop()' "$KIT/packages.json")}"
+	V="${PI_SUBAGENTS_VERSION:-$(node -p 'require(process.argv[1]).dependencies["pi-subagents"]' "$KIT/test/ci/package.json")}"
 	npm install --prefix "$PI_CODING_AGENT_DIR/npm" --no-audit --no-fund --silent "pi-subagents@$V" >/dev/null 2>"$T/npm.err" \
 		|| { echo "FAIL could not install pi-subagents@$V from npm (see $T/npm.err); set PI_SUBAGENTS_DIR"; exit 2; }
 	SUBAGENTS="$PI_CODING_AGENT_DIR/npm/node_modules/pi-subagents"
@@ -26,7 +26,7 @@ fi
 echo "pi $(pi --version), pi-subagents $(node -p 'require(process.argv[1]).version' "$SUBAGENTS/package.json")"
 EXTRA=""
 if [ "${PI_KIT_RECOMMENDED:-}" = 1 ]; then
-	SPECS="$(node -p 'require(process.argv[1]).recommended.filter(p=>p.name!=="pi-subagents").map(p=>p.spec.slice(4)).join(" ")' "$KIT/packages.json")"
+	SPECS="$(node -p 'const v=require(process.argv[2]).dependencies;require(process.argv[1]).recommended.filter(p=>p.name!=="pi-subagents").map(p=>`${p.name}@${v[p.name]}`).join(" ")' "$KIT/packages.json" "$KIT/test/ci/package.json")"
 	# shellcheck disable=SC2086
 	npm install --prefix "$T/extra" --no-audit --no-fund --silent --ignore-scripts $SPECS >/dev/null 2>"$T/npm-extra.err" \
 		|| { echo "FAIL could not install the recommended set (see $T/npm-extra.err)"; exit 2; }

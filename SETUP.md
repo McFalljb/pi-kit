@@ -49,7 +49,8 @@ Without `--sections` the script appends only the sections reported as new and sk
 overlaps (it says which), so an unattended run never duplicates rules. The script is
 idempotent. It:
 1. checks node and pi;
-2. installs every **recommended** package in `packages.json` at its pinned version with
+2. installs every **recommended** package in `packages.json` at its pinned version
+   (from `test/ci/package.json`) with
    `pi install` (a package already configured under the same name is left as it is and
    reported as "kept");
 3. installs the kit itself (`pi install ~/pi-kit`);

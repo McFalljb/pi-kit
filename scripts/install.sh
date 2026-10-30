@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Idempotent pi-kit install: checks prerequisites, installs the pinned packages from packages.json
+# Idempotent pi-kit install: checks prerequisites, installs the pinned packages (recommended
+# versions from test/ci/package.json, optional ones from packages.json)
 # and the kit itself with `pi install`, merges the kit's AGENTS.md into the global one (backup
 # first, append new sections only, skip likely overlaps), optionally pins the reviewer model and
 # seeds compact panel configs for pi-subagents and rpiv-todo where none exist.
@@ -37,10 +38,12 @@ mkdir -p "$AGENT_DIR"
 
 # 2. Packages: install each pinned spec unless a package of that name is already configured.
 # Prints "<spec>\t<name>\t<installed spec or ->" for the recommended set plus the chosen optional ones.
-PLAN="$(node - "$KIT/packages.json" "$AGENT_DIR/settings.json" "$OPTIONAL" <<'JS'
+PLAN="$(node - "$KIT/packages.json" "$AGENT_DIR/settings.json" "$OPTIONAL" "$KIT/test/ci/package.json" <<'JS'
 const fs = require("fs");
-const [manifest, settingsPath, optional] = process.argv.slice(2);
+const [manifest, settingsPath, optional, ciPath] = process.argv.slice(2);
 const m = JSON.parse(fs.readFileSync(manifest, "utf8"));
+const pins = JSON.parse(fs.readFileSync(ciPath, "utf8")).dependencies;
+for (const p of m.recommended) p.spec = `npm:${p.name}@${pins[p.name]}`;
 let configured = [];
 try { configured = (JSON.parse(fs.readFileSync(settingsPath, "utf8")).packages || []).map((p) => (typeof p === "string" ? p : p.source)); } catch {}
 const nameOf = (spec) => spec.replace(/^npm:/, "").replace(/^(@?[^@]+)@.*$/, "$1");

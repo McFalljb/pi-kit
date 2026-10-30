@@ -179,7 +179,7 @@ recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.m
 ## 3. Setup
 
 [SETUP.md](SETUP.md) is the step-by-step version, written so an agent can follow it.
-`scripts/install.sh` does the idempotent parts: pinned packages from `packages.json`, the kit,
+`scripts/install.sh` does the idempotent parts: pinned packages (versions from `test/ci/package.json`), the kit,
 and the `AGENTS.md` merge (backup, then append the `## ` sections the file lacks).
 
 **Packages.** `packages.json` lists what was vetted on the date it names (npm metadata, README,
@@ -211,18 +211,18 @@ bash, no background shells), which is handy for a look-only session.
 
 ### Updating
 
-The pins live in `test/ci/package.json` (pi and the recommended packages; the optional packages
-and skill repos are pinned only in `packages.json`). CI installs exactly those versions from its
-lockfile. `packages.json` repeats them for `install.sh`, and `test/contracts.test.ts` fails when
-the two differ. The contract tests also check the internals of pi, pi-tui, pi-subagents and
-rpiv-todo that the sidebar and model-rules depend on, and each failure names the kit file to fix.
+The versions of pi and the recommended packages live in one list, `test/ci/package.json`. CI
+installs exactly those from its lockfile, and `install.sh`, the tests and `extensions/versions`
+read them there; `packages.json` keeps the names and reasons, and pins only the optional packages
+and skill repos. The contract tests (`test/contracts.test.ts`) check the internals of pi, pi-tui,
+pi-subagents and rpiv-todo that the sidebar and model-rules depend on, and each failure names the
+kit file to fix. The open Dependabot alerts for `undici` come from pi's own exact pin (8.10.2 in
+pi 1.4.0) and clear when a pi release bumps it.
 
 1. Dependabot opens a weekly PR that bumps `test/ci/package.json` and its lockfile, plus one
    for the SHA-pinned GitHub Actions (`.github/dependabot.yml`).
-2. CI runs the typecheck, unit, contract, merge and smoke tests at the new versions. The pin
-   check stays red until you set the same versions in `packages.json` on the PR branch
-   (`spec`, and `tested.pi`/`vetted` for pi). A failing internal check means the kit file it
-   names needs a change first.
+2. CI runs the typecheck, unit, contract, merge and smoke tests at the new versions. A failing
+   contract check means the kit file it names needs a change before merging.
 3. Read the changelogs and security advisories of what changed.
 4. Install the PR's pins locally (`npm ci --ignore-scripts --prefix test/ci`, then put
    `test/ci/node_modules/.bin` first on `PATH`) and, in a terminal at least 120 columns wide,

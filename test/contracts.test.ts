@@ -1,4 +1,4 @@
-// Contract tests: the pins agree, and the pinned packages still have the internals the kit relies
+// Contract tests: the pins are complete, and the pinned packages still have the internals the kit relies
 // on. Run after `npm ci --ignore-scripts --prefix test/ci`: node --test test/contracts.test.ts
 // A failure names the kit file that depends on the changed internal; fix that file or the pin.
 import assert from "node:assert/strict";
@@ -27,11 +27,9 @@ function source(pkg: string): string {
 	return out.join("\n");
 }
 
-test("packages.json pins equal test/ci/package.json (the single source; Dependabot bumps it)", () => {
+test("every recommended package in packages.json is pinned in test/ci/package.json", () => {
 	const ci = JSON.parse(read("test/ci/package.json")).dependencies;
-	const m = JSON.parse(read("packages.json"));
-	assert.equal(m.tested.pi, ci["@earendil-works/pi-coding-agent"], "packages.json tested.pi must equal the pi pin in test/ci/package.json");
-	for (const p of m.recommended) assert.equal(p.spec, `npm:${p.name}@${ci[p.name]}`, `packages.json recommended ${p.name}: set spec to npm:${p.name}@${ci[p.name]} (test/ci/package.json)`);
+	for (const p of JSON.parse(read("packages.json")).recommended) assert.match(ci[p.name] ?? "", /^\d+\.\d+\.\d+$/, `${p.name} needs an exact version in test/ci/package.json (install.sh, smoke.sh and extensions/versions read it there)`);
 });
 
 test("rpiv-todo: widget key, state entry and todo result shape (extensions/sidebar/index.ts, rows.ts)", () => {
