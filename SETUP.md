@@ -15,7 +15,7 @@ improvise around it.
 ## 1. Prerequisites
 ```bash
 node --version          # needs v22.19.0 or later
-pi --version            # the kit is tested with 1.2.0
+pi --version            # the kit is tested with 1.4.0
 npm --version
 git --version
 ```

@@ -6,7 +6,7 @@ runs on the third-party extension **pi-subagents** (npm `pi-subagents`,
 github.com/nicobailon/pi-subagents). The kit adds two agent definitions, guardrails, the process
 skills and two prompts on top of it.
 
-Tested offline (mock model) against pi **1.2.0** and pi-subagents **0.84.0**, alone and with the
+Tested offline (mock model) against pi **1.4.0** and pi-subagents **0.84.0**, alone and with the
 recommended set in `packages.json` loaded. Setup steps are in [SETUP.md](SETUP.md).
 
 ## 1. Architecture
@@ -208,6 +208,67 @@ Pin the reviewer to another provider with `install.sh --reviewer-model provider/
 
 `PI_KIT_READONLY=1 pi` starts a session whose guardrails are read-only (no edits, no mutating
 bash, no background shells), which is handy for a look-only session.
+
+### Updating
+
+The pins live in `test/ci/package.json` (pi and the recommended packages; the optional packages
+and skill repos are pinned only in `packages.json`). CI installs exactly those versions from its
+lockfile. `packages.json` repeats them for `install.sh`, and `test/contracts.test.ts` fails when
+the two differ. The contract tests also check the internals of pi, pi-tui, pi-subagents and
+rpiv-todo that the sidebar and model-rules depend on, and each failure names the kit file to fix.
+
+1. Dependabot opens a weekly PR that bumps `test/ci/package.json` and its lockfile, plus one
+   for the SHA-pinned GitHub Actions (`.github/dependabot.yml`).
+2. CI runs the typecheck, unit, contract, merge and smoke tests at the new versions. The pin
+   check stays red until you set the same versions in `packages.json` on the PR branch
+   (`spec`, and `tested.pi`/`vetted` for pi). A failing internal check means the kit file it
+   names needs a change first.
+3. Read the changelogs and security advisories of what changed.
+4. Install the PR's pins locally (`npm ci --ignore-scripts --prefix test/ci`, then put
+   `test/ci/node_modules/.bin` first on `PATH`) and, in a terminal at least 120 columns wide,
+   run the sidebar test prompt below.
+5. Merge, then run `scripts/install.sh` on each machine.
+
+`install.sh` installs a missing package at its pin, but it keeps a package that is already
+configured under another spec, including an unpinned one such as `npm:pi-ask-user` (it prints
+`kept:`). To move one to the pin, run `pi install npm:<name>@<version>`, which replaces that
+package's entry in `settings.json`. pi itself updates with
+`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@<version>`. While pi or a
+configured package differs from the pins, `extensions/versions` shows one warning when an
+interactive session starts.
+
+Sidebar test prompt (paste it into a new interactive session):
+
+```text
+This is a UI test of the pi-kit sidebar. Nothing here needs real work; keep every step short and
+do not edit any files outside /tmp/pi-sidebar-test.
+
+1. Create a todo list with these 5 items: "Start background shell", "Start monitor",
+   "Set a timer", "Launch workers", "Wrap up". Mark the first one in progress.
+2. mkdir -p /tmp/pi-sidebar-test. Use bash_bg to run:
+   for i in $(seq 1 90); do echo "tick $i"; sleep 2; done
+   (this is an intentional long-running test process; don't stop it). Mark todo 1 done, todo 2 in progress.
+3. Use monitor on that shell with the pattern "tick 30" so it wakes you when it hits 30.
+   Mark todo 2 done, todo 3 in progress.
+4. Use wake_later to wake you in 2 minutes with the note "sidebar timer check".
+   Mark todo 3 done, todo 4 in progress.
+5. Launch two kit.worker subagents in parallel with async: true, cwd /tmp/pi-sidebar-test,
+   no worktree needed, read-only:
+   - Worker A: "Run `sleep 45`, then list the files in the pi-kit extensions folder
+     and report the count. Do not modify anything."
+   - Worker B: "Run `sleep 75`, then report the line count of the pi-kit
+     extensions/sidebar/index.ts. Do not modify anything."
+   Do not wait or poll for them; their completions arrive on their own.
+6. Tell me in one line what is running, then stop and wait.
+7. When the monitor fires, the timer fires, and each worker finishes, reply in one line each.
+   After both workers are done, mark todo 4 done and todo 5 in progress, then stop the
+   background shell with shell_stop, mark todo 5 done, and give a 3-line summary.
+```
+
+What to check: the column shows Subagents (2 running → ✓), Shells (tick loop, monitor, timer)
+and Todos (count rising, ▸ on the active one); nothing under the editor; `/sidebar` toggles;
+below 120 columns the footer summary appears and `/sidebar` opens an overlay; wheel scroll over
+the column moves only the column.
 
 ## 4. Daily workflow
 

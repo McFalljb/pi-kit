@@ -7,12 +7,12 @@ different model; guardrails around dangerous shell commands; background shells a
 that wake the session instead of sleep-and-poll loops.
 
 It is a pi package: two agent definitions for [pi-subagents](https://github.com/nicobailon/pi-subagents),
-four extensions, five skills, two prompts, global `AGENTS.md` rules, and a vetted list of
+six extensions, five skills, two prompts, global `AGENTS.md` rules, and a vetted list of
 third-party packages with pinned versions.
 
 ## Quick start
 
-Needs Node 22.19+ and pi 1.2.0.
+Needs Node 22.19+ and pi 1.4.0.
 ```bash
 git clone https://github.com/McFalljb/pi-kit ~/pi-kit
 ~/pi-kit/scripts/install.sh              # pinned packages, the kit, AGENTS.md merge (with backup)
@@ -32,11 +32,13 @@ instructions for an agent, including what to ask you and what never to touch.
 | `extensions/sidebar` | Right-hand column with background subagents, todos and shells instead of widgets under the transcript; `/sidebar` |
 | `extensions/notes` | Once the context is 75% full, reminds the session to update its session note before compaction |
 | `extensions/model-rules` | On OpenAI GPT models only, adds `rules/gpt.md` (less testing, exploring and reporting) to the system prompt; `<agent-dir>/rules/gpt.md` overrides it |
+| `extensions/versions` | At the start of an interactive session, warns once if pi or a recommended package differs from the pins |
 | `config/` | Compact panel defaults for pi-subagents and rpiv-todo; `install.sh` copies them only where no config exists |
 | `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff` |
 | `prompts/` | `/delegate`, `/review` |
 | `AGENTS.md` | Global rules, labelled by role (everyone / parent / child) because workers load it too |
 | `packages.json` | Recommended, optional and excluded third-party packages, pinned, with reasons |
+| `test/ci/package.json` | The pins CI tests and Dependabot updates: pi and the recommended packages |
 
 ## Claude Code → pi
 
