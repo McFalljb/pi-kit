@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { backoff, blockers, busyReasons, deskToken, promptRefusal, inDesk, keepReconnectToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
+import { backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
+import { COMMANDS, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
+import { filterState, noticeFor, noticeText, piTabOf, seenFrom, summarize } from "../extensions/desk/state.ts";
 import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { drift } from "../extensions/versions/drift.ts";
@@ -446,4 +448,113 @@ test("desk bridge: pi.prompt is refused while a dialog is open or a manual /comp
 	assert.equal(promptRefusal({ dialogs: 0, compacting: false }), undefined);
 	assert.equal(promptRefusal({ dialogs: 1, compacting: false }), "pi is waiting on the user (a dialog is open)");
 	assert.equal(promptRefusal({ dialogs: 0, compacting: true }), "pi is compacting the session; retry when it is idle");
+});
+
+test("desk: the control token is kept apart from the pi tab's token", () => {
+	const saved = { c: process.env.PI_DESK_CONTROL_TOKEN, t: process.env.PI_DESK_TOKEN };
+	try {
+		process.env.PI_DESK_CONTROL_TOKEN = "ctl-1";
+		process.env.PI_DESK_TOKEN = "tab-1";
+		assert.equal(envToken("PI_DESK_CONTROL_TOKEN", true), "ctl-1");
+		assert.equal(process.env.PI_DESK_CONTROL_TOKEN, undefined);
+		keepToken("PI_DESK_CONTROL_TOKEN", "ctl-2");
+		assert.equal(envToken("PI_DESK_CONTROL_TOKEN"), "ctl-2");
+		assert.equal(deskToken(), "tab-1", "the bridge's token is untouched");
+	} finally {
+		(globalThis as any)[Symbol.for("pi-kit.desk.token.PI_DESK_CONTROL_TOKEN")] = undefined;
+		for (const [k, v] of [["PI_DESK_CONTROL_TOKEN", saved.c], ["PI_DESK_TOKEN", saved.t]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
+	}
+});
+
+test("desk: desk_run's description is generated from the command list; list_commands results are checked", () => {
+	const d = runDescription(COMMANDS);
+	assert.match(d, /^- close_tab \{tab_id\}: close a shell tab .* \[confirms: tab_close\]$/m);
+	assert.match(d, /^- pi_reload \{tab_id\}: .* \[confirms: session_restart, long-running\]$/m);
+	assert.match(d, /^- rescan: .* \[long-running\]$/m);
+	for (const userOnly of ["set_confirm_policy", "set_close_confirm", "panel.set", "pi.status"]) assert.ok(!d.includes(`- ${userOnly}`), userOnly);
+	assert.deepEqual(parseCommands({ commands: [{ type: "x", args: "a, b?", does: "does x", confirm_class: "delete", long_running: true, extra: 1 }, { type: "y" }] }), [
+		{ type: "x", args: "a, b?", does: "does x", confirm_class: "delete", long_running: true },
+		{ type: "y", does: "" },
+	]);
+	for (const bad of [undefined, {}, { commands: [] }, { commands: [{ does: "no type" }] }, { commands: "x" }]) assert.equal(parseCommands(bad), undefined);
+});
+
+test("desk: sameCommand matches the same type and target, ignoring confirm and extra fields", () => {
+	const ours = { type: "close_tab", tab_id: 5 };
+	assert.ok(sameCommand({ type: "close_tab", tab_id: 5, confirm: "<redacted>" }, ours));
+	assert.ok(!sameCommand({ type: "close_tab", tab_id: 6 }, ours));
+	assert.ok(!sameCommand({ type: "focus_tab", tab_id: 5 }, ours));
+	assert.ok(!sameCommand(undefined, ours));
+});
+
+const deskState = {
+	version: 9,
+	projects: [{ id: 1, cwd: "/w/app", label: "~/w/app", name: "App" }, { id: 2, cwd: "/w/kit", label: "~/w/kit", name: "" }],
+	selected_project: 1,
+	sessions: Array.from({ length: 7 }, (_, i) => ({ id: `s${i}`, when: "2026-10-30 10:00", title: `chat ${i}` })),
+	open_sessions: [
+		{ id: 3, pi_session_id: "aaaa", project_id: 1, active_tab: 2, tabs: [
+			{ id: 2, kind: "pi", title: "pi", status: "running", agent: "working", waiting: false, question: false, blockers: ["shell sh1: npm test"], panels: [{ panel: "todos", title: "Todos", rows: [{ text: "Todos 1/2", head: true }] }] },
+			{ id: 4, kind: "shell", title: "shell 1", status: "running" },
+		] },
+		{ id: 5, pi_session_id: "bbbb", project_id: 2, active_tab: 6, tabs: [{ id: 6, kind: "pi", title: "pi", status: "running", agent: "idle", waiting: true, question: false, blockers: [] }] },
+	],
+	current_session: 3,
+	pending_confirmations: [{ summary: "Close shell 1?", caller: "control", class: "tab_close", command: { type: "close_tab", tab_id: 4 } }],
+};
+
+test("desk: state summary is compact and readable; filters narrow it", () => {
+	assert.equal(
+		summarize(deskState),
+		[
+			"pi-desk state v9",
+			"Projects:",
+			"- project 1 App (/w/app) [selected]",
+			"  - session 3 [current] pi_session_id aaaa",
+			'    - tab 2 pi "pi" · working · busy: shell sh1: npm test · panels: Todos 1/2 [active]',
+			'    - tab 4 shell "shell 1"',
+			"- project 2 ~/w/kit (/w/kit)",
+			"  - session 5 pi_session_id bbbb",
+			'    - tab 6 pi "pi" · waiting for the user [active]',
+			"Saved pi sessions of project 1 (7, newest first; open_session resumes one):",
+			"- s0 2026-10-30 10:00 chat 0",
+			"- s1 2026-10-30 10:00 chat 1",
+			"- s2 2026-10-30 10:00 chat 2",
+			"- s3 2026-10-30 10:00 chat 3",
+			"- s4 2026-10-30 10:00 chat 4",
+			"- … 2 more (full: true lists them)",
+			"Waiting for the user's confirmation in pi-desk:",
+			"- Close shell 1? (control, tab_close)",
+		].join("\n"),
+	);
+	const kit = filterState(deskState, { project: "kit" });
+	assert.deepEqual([kit.projects.map((p: any) => p.id), kit.open_sessions.map((s: any) => s.id), kit.sessions], [[2], [5], []]);
+	assert.deepEqual(filterState(deskState, { project: 1, session: 3 }).open_sessions.map((s: any) => s.id), [3]);
+	assert.deepEqual(filterState(deskState, { session: 5 }).projects.length, 2, "a session filter keeps every project");
+	assert.equal(piTabOf(deskState, 5), 6);
+	assert.equal(piTabOf(deskState, 99), undefined);
+	assert.equal(summarize(null), "pi-desk sent no state.");
+});
+
+test("desk: notices only for waiting, error, question and finished runs; coalesced per tab and labelled", () => {
+	const seen = seenFrom(deskState);
+	const ev = (tab_id: number, agent: string, waiting = false, question = false) => ({ event: "command", caller: "panel", command: { type: "pi.status", tab_id, agent, waiting, question, blockers: [] }, result: { ok: true } });
+	assert.deepEqual(noticeFor(ev(2, "working"), seen), undefined, "still working");
+	assert.deepEqual(noticeFor(ev(2, "idle"), seen), { tab: 2, kind: "finished" });
+	assert.deepEqual(noticeFor(ev(2, "idle"), seen), undefined, "idle again is not news");
+	assert.deepEqual(noticeFor(ev(6, "idle", true), seen), undefined, "tab 6 was already waiting");
+	assert.deepEqual(noticeFor(ev(6, "idle"), seen), undefined);
+	assert.deepEqual(noticeFor(ev(6, "idle", true), seen), { tab: 6, kind: "waiting" });
+	assert.deepEqual(noticeFor(ev(9, "idle"), seen), undefined, "an unknown tab going idle: no run seen");
+	assert.deepEqual(noticeFor(ev(9, "error"), seen), { tab: 9, kind: "error" });
+	assert.deepEqual(noticeFor(ev(2, "idle", false, true), seen), { tab: 2, kind: "question" });
+	assert.equal(noticeFor({ event: "command", command: { type: "close_tab", tab_id: 4 } }, seen), undefined);
+	assert.equal(noticeFor({ event: "finished", request_id: 1 }, seen), undefined);
+	const text = noticeText([{ tab: 2, kind: "finished" }, { tab: 6, kind: "waiting" }, { tab: 2, kind: "question" }, { tab: 9, kind: "error" }], deskState);
+	assert.deepEqual(text.split("\n").slice(1), ["- ~/w/kit (session 5, tab 6): waiting for you (a dialog is open)", "- App (session 3, tab 2): asked a question", "- tab 9: stopped with an error"]);
+	assert.match(text, /^pi-desk: /);
+	assert.equal(noticeText([], deskState), "");
+	const many = noticeText(Array.from({ length: 12 }, (_, i) => ({ tab: 100 + i, kind: "finished" as const })), deskState).split("\n");
+	assert.equal(many.length, 9);
+	assert.equal(many[8], "- … 5 more (desk_state shows all)");
 });

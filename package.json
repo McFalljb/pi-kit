@@ -15,6 +15,7 @@
       "./extensions/notes/index.ts",
       "./extensions/sidebar/index.ts",
       "./extensions/desk-bridge/index.ts",
+      "./extensions/desk/index.ts",
       "./extensions/model-rules/index.ts",
       "./extensions/versions/index.ts"
     ],
