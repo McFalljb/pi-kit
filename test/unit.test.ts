@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { backoff, blockers, deskToken, inDesk, keepReconnectToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
+import { backoff, blockers, busyReasons, deskToken, inDesk, keepReconnectToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
 import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { drift } from "../extensions/versions/drift.ts";
@@ -379,12 +379,16 @@ test("desk bridge: messages carry v and type; replies echo the id; bad lines are
 });
 
 test("desk bridge: status from idle, run outcome, dialogs and blockers", () => {
-	const base = { idle: true, error: false, dialog: false, question: false, shells: [], runs: [] };
+	const base = { idle: true, error: false, dialogs: 0, question: false, shells: [], runs: [] };
 	assert.deepEqual(status(base), { agent: "idle", waiting: false, question: false, blockers: [] });
 	assert.equal(status({ ...base, idle: false }).agent, "working");
 	assert.equal(status({ ...base, error: true }).agent, "error");
 	assert.equal(status({ ...base, idle: false, error: true }).agent, "working", "a retry after an error is still working");
-	assert.equal(status({ ...base, dialog: true, idle: false }).waiting, true, "a dialog waits even mid-run");
+	assert.equal(status({ ...base, dialogs: 1, idle: false }).waiting, true, "a dialog waits even mid-run");
+	assert.equal(status({ ...base, dialogs: 2 }).waiting, true, "overlapping dialogs: still waiting while one is open");
+	assert.deepEqual(busyReasons(status(base), false), []);
+	assert.deepEqual(busyReasons(status({ ...base, idle: false, dialogs: 1, shells: [{ id: "sh1", status: "1s", label: "make" }] }), true), ["agent working", "a dialog is open", "messages queued", "shell sh1: make"]);
+	assert.deepEqual(busyReasons(status({ ...base, question: true, error: true }), false), [], "a question or an error is idle");
 	assert.deepEqual([status({ ...base, question: true }).question, status({ ...base, question: true }).waiting], [true, false], "a final question is `question`, not `waiting` (only dialogs wait)");
 	assert.equal(status({ ...base, question: true, idle: false }).question, false, "a question mid-run is not reported");
 	const ask = (text: string, stopReason = "stop") => [{ role: "user", content: "x" }, { role: "assistant", stopReason, content: [{ type: "text", text }] }];

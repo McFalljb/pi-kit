@@ -73,8 +73,13 @@ export function runOutcome(messages: unknown): { error: boolean; question: boole
  * left; agent_end alone is not idle). `waiting`: a dialog is open. `question`: pi is idle after a
  * final answer that ends with a question.
  */
-export function status(s: { idle: boolean; error: boolean; dialog: boolean; question: boolean; shells: ShellRow[]; runs: Run[] }): Status {
-	return { agent: !s.idle ? "working" : s.error ? "error" : "idle", waiting: s.dialog, question: s.idle && s.question, blockers: blockers(s.shells, s.runs) };
+export function status(s: { idle: boolean; error: boolean; dialogs: number; question: boolean; shells: ShellRow[]; runs: Run[] }): Status {
+	return { agent: !s.idle ? "working" : s.error ? "error" : "idle", waiting: s.dialogs > 0, question: s.idle && s.question, blockers: blockers(s.shells, s.runs) };
+}
+
+/** Why pi is not idle for wait_idle and reload (a reload would cut these off); empty when it is. */
+export function busyReasons(s: Status, queued: boolean): string[] {
+	return [...(s.agent === "working" ? ["agent working"] : []), ...(s.waiting ? ["a dialog is open"] : []), ...(queued ? ["messages queued"] : []), ...s.blockers];
 }
 
 /** Background work a reload would kill or that will start another run: kit shells and timers, running subagents. Redacted. */

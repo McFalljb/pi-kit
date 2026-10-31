@@ -155,7 +155,7 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   guardrail confirm); `question` when pi is idle after a final answer ending in `?`; `blockers` are the
   kit's background shells and timers and running background subagents. It answers
   `pi.prompt` (a follow-up if a run is going; refused while a dialog is open), `pi.wait_idle`
-  (idle for 250 ms with nothing queued and no blockers) and `pi.reload` (refused with the
+  (idle for 250 ms with no dialog open, nothing queued and no blockers) and `pi.reload` (refused with the
   reasons unless that idle holds, since a reload kills background shells; it runs the
   `/desk-reload` command and answers after the reload). pi-desk's env token is single-use: the first
   `hello` revokes it and returns a reconnect token, which the bridge keeps in memory for every

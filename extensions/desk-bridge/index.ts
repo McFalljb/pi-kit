@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Panel, type Run, type ShellRow, SUBAGENT_EVENTS } from "../sidebar/rows.ts";
-import { backoff, deskToken, keepReconnectToken, line, parse, reply, runOutcome, status } from "./protocol.ts";
+import { backoff, busyReasons, deskToken, keepReconnectToken, line, parse, reply, runOutcome, status } from "./protocol.ts";
 
 export { inDesk } from "./protocol.ts";
 
@@ -43,7 +43,7 @@ export default function (pi: ExtensionAPI) {
 	let sent = ""; // the last pi.status sent on this connection
 	let shells: ShellRow[] = [];
 	let runs: Run[] = [];
-	let dialog = false;
+	let dialogs = 0; // open pi dialogs (they can overlap)
 	let error = false;
 	let question = false;
 	let subTimer: NodeJS.Timeout | undefined;
@@ -62,13 +62,9 @@ export default function (pi: ExtensionAPI) {
 	};
 
 	function current() {
-		return status({ idle: ctx!.isIdle(), error, dialog, question, shells, runs });
+		return status({ idle: ctx!.isIdle(), error, dialogs, question, shells, runs });
 	}
-	/** Why pi is not idle for wait_idle and reload; empty when it is. */
-	function busyReasons(): string[] {
-		const s = current();
-		return [...(s.agent === "working" ? ["agent working"] : []), ...(ctx!.hasPendingMessages() ? ["messages queued"] : []), ...s.blockers];
-	}
+	const notIdle = () => busyReasons(current(), ctx!.hasPendingMessages());
 
 	/** Send pi.status if it changed; answer wait_idle requests once pi is idle. */
 	function update() {
@@ -79,13 +75,13 @@ export default function (pi: ExtensionAPI) {
 				sent = s;
 				send({ type: "pi.status", ...JSON.parse(s) });
 			}
-			if (waiters.size && !busyReasons().length) idleTimer ??= setTimeout(answerIdle, IDLE_SETTLE_MS);
+			if (waiters.size && !notIdle().length) idleTimer ??= setTimeout(answerIdle, IDLE_SETTLE_MS);
 		} catch {}
 	}
 	function answerIdle() {
 		idleTimer = undefined;
 		try {
-			if (!ctx || closed || busyReasons().length) return; // the next update() checks again
+			if (!ctx || closed || notIdle().length) return; // the next update() checks again
 			for (const [id, t] of waiters) clearTimeout(t), answer(id, { ok: true });
 			waiters.clear();
 		} catch {}
@@ -114,7 +110,7 @@ export default function (pi: ExtensionAPI) {
 		if (m.id === undefined) return; // events: none expected yet
 		if (m.type === "pi.prompt") {
 			if (typeof m.text !== "string" || !m.text.trim()) return answer(m.id, { ok: false, error: "text is required" });
-			if (dialog) return answer(m.id, { ok: false, error: "pi is waiting on the user" });
+			if (dialogs) return answer(m.id, { ok: false, error: "pi is waiting on the user" });
 			pi.sendUserMessage(m.text, ctx!.isIdle() ? undefined : { deliverAs: "followUp" });
 			return answer(m.id, { ok: true });
 		}
@@ -125,7 +121,7 @@ export default function (pi: ExtensionAPI) {
 			return update();
 		}
 		if (m.type === "pi.reload") {
-			const why = busyReasons();
+			const why = notIdle();
 			if (why.length) return answer(m.id, { ok: false, error: `not idle: ${why.join("; ")}` });
 			if (reloadId !== undefined) return answer(m.id, { ok: false, error: "a reload is already running" });
 			reloadId = m.id;
@@ -231,11 +227,11 @@ export default function (pi: ExtensionAPI) {
 		subagentsChanged();
 	});
 	pi.on("ui_prompt_start", () => {
-		dialog = true;
+		dialogs++;
 		update();
 	});
 	pi.on("ui_prompt_end", () => {
-		dialog = false;
+		dialogs = Math.max(0, dialogs - 1);
 		update();
 	});
 	pi.on("agent_start", () => {
