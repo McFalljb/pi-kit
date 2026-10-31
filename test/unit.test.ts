@@ -502,7 +502,32 @@ test("desk: desk_offer takes 1-4 short-labelled buttons with listed commands, no
 	assert.match(offerRefusal([b("Close", { type: "close_tab", tab_id: 5, confirm: "tok" })], COMMANDS, own) ?? "", /confirm token/);
 	assert.match(offerRefusal([b("Focus", { type: "focus_tab", tab_id: 1 })], COMMANDS, own) ?? "", /your own tab/);
 	assert.match(offerRefusal([b("Fake", { type: "fake_cmd" })], COMMANDS, own) ?? "", /not a pi-desk command/);
-	assert.equal(offerRefusal([b("Fake", { type: "fake_cmd" })], [{ type: "fake_cmd", does: "" }], own), undefined, "checked against pi-desk's listed commands");
+});
+
+test("desk: desk_offer buttons carry only offerable commands (pi-desk's flag, else the built-in list) and pass desk_run's refusals", () => {
+	const own = new Set([1]);
+	const b = (label: string, command: object) => ({ label, command });
+	for (const type of ["send_text", "pi_prompt", "pi_wait_idle", "cancel_confirmation", "copy_selection", "set_focus", "get_state", "set_reduce_motion"])
+		assert.match(offerRefusal([b("Do it", { type, tab_id: 5 })], COMMANDS, own) ?? "", /cannot be offered as a button/, type);
+	for (const type of ["focus_tab", "close_tab", "pi_reload", "quit", "rescan", "set_theme", "new_chat"]) assert.equal(offerRefusal([b("Do it", { type, tab_id: 5 })], COMMANDS, own), undefined, type);
+	assert.equal(offerRefusal([b("Open notes.md", { type: "open_file", path: "notes.md" })], [{ type: "open_file", does: "" }], own), undefined, "built-in list when pi-desk sends no flags");
+	assert.match(offerRefusal([b("Fake", { type: "fake_cmd" })], [{ type: "fake_cmd", does: "" }], own) ?? "", /cannot be offered/, "unflagged and not built-in");
+	const flagged = [
+		{ type: "fake_cmd", does: "", offerable: true },
+		{ type: "focus_tab", does: "", offerable: false },
+		{ type: "rescan", does: "" },
+	];
+	assert.equal(offerRefusal([b("Fake", { type: "fake_cmd" })], flagged, own), undefined, "pi-desk's flag wins");
+	assert.match(offerRefusal([b("Focus", { type: "focus_tab", tab_id: 5 })], flagged, own) ?? "", /cannot be offered/);
+	assert.match(offerRefusal([b("Rescan", { type: "rescan" })], flagged, own) ?? "", /cannot be offered/, "with flags, an unflagged command is not offerable");
+	assert.deepEqual(parseCommands({ commands: [{ type: "a", offerable: true }, { type: "b", offerable: false }, { type: "c" }] }), [
+		{ type: "a", does: "", offerable: true },
+		{ type: "b", does: "", offerable: false },
+		{ type: "c", does: "" },
+	]);
+	const anything = [{ type: "send_text", does: "", offerable: true }, { type: "focus_tab", does: "", offerable: true }];
+	assert.match(offerRefusal([b("Focus", { type: "focus_tab", tab_id: 1 })], anything, own) ?? "", /your own tab/);
+	assert.match(offerRefusal([b("Type", { type: "send_text", tab_id: 2, text: "hi" })], anything, own, deskState) ?? "", /pi tab.*desk_prompt/, "desk_run's refusals apply even if pi-desk flags send_text");
 });
 
 test("desk: desk_report takes a title and at most 5 lines", () => {

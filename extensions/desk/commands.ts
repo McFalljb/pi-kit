@@ -3,13 +3,27 @@
 // extension asks with `list_commands` (a proposed control command, same shape as Cmd) and falls
 // back to COMMANDS, which mirrors pi-desk docs/PROTOCOL.md §3 for the `control` caller.
 
+import { refusal } from "./state.ts";
+
 export interface Cmd {
 	type: string;
 	args?: string; // fields, `?` = optional, e.g. "tab_id, confirm?"
 	does: string;
 	confirm_class?: string; // asks for confirmation (class from PROTOCOL.md §3)
 	long_running?: boolean; // returns `pending`, then a `finished` event
+	offerable?: boolean; // pi-desk lets a desk_offer button carry it (absent: see OFFERABLE)
 }
+
+/**
+ * Commands a desk_offer button may carry when pi-desk's list has no `offerable` flags: navigation
+ * and choices the user makes (close_tab, close_session, pi_reload and quit always ask on click).
+ * Mirrors pi-desk's server-side allowlist.
+ */
+export const OFFERABLE = new Set([
+	"focus_session", "focus_tab", "select_project", "open_session", "new_chat", "new_shell_tab", "open_file",
+	"set_panel", "set_panel_collapsed", "set_theme", "set_appearance", "set_layout", "rescan",
+	"close_tab", "close_session", "pi_reload", "quit",
+]);
 
 /** PROTOCOL.md §3, the commands a `control` caller may send (not the user-only, bridge-only or test-only ones). */
 export const COMMANDS: Cmd[] = [
@@ -52,6 +66,7 @@ export function parseCommands(data: unknown): Cmd[] | undefined {
 			does: typeof c.does === "string" ? c.does : "",
 			...(typeof c.confirm_class === "string" && c.confirm_class ? { confirm_class: c.confirm_class } : {}),
 			...(c.long_running === true ? { long_running: true } : {}),
+			...(typeof c.offerable === "boolean" ? { offerable: c.offerable } : {}),
 		});
 	}
 	return out;
@@ -98,12 +113,16 @@ export const MAX_REPORT_LINES = 5;
 
 /**
  * Why desk_offer must not show these buttons, or undefined: 1–MAX_BUTTONS buttons, each with a
- * label of at most MAX_LABEL characters and a command from `cmds` that carries no confirm token
- * (the user's click must go through pi-desk's confirmation) and is not aimed at Home's own tabs.
+ * label of at most MAX_LABEL characters and an offerable command from `cmds` (pi-desk's
+ * `offerable` flags if its list has any, else OFFERABLE) that carries no confirm token (the user's
+ * click must go through pi-desk's confirmation) and passes desk_run's `refusal` (`state` for
+ * send_text; own tabs).
  */
-export function offerRefusal(buttons: unknown, cmds: Cmd[], own: Set<number>): string | undefined {
+export function offerRefusal(buttons: unknown, cmds: Cmd[], own: Set<number>, state?: unknown): string | undefined {
 	if (!Array.isArray(buttons) || buttons.length < 1 || buttons.length > MAX_BUTTONS) return `Offer 1 to ${MAX_BUTTONS} buttons.`;
 	const types = new Set(cmds.map((c) => c.type));
+	const flagged = cmds.some((c) => c.offerable !== undefined);
+	const offerable = new Set(cmds.filter((c) => (flagged ? c.offerable === true : OFFERABLE.has(c.type))).map((c) => c.type));
 	for (const [i, b] of buttons.entries()) {
 		const label = typeof b?.label === "string" ? b.label.trim() : "";
 		const cmd = b?.command;
@@ -111,8 +130,10 @@ export function offerRefusal(buttons: unknown, cmds: Cmd[], own: Set<number>): s
 		if (!label) return `${at} has no label.`;
 		if (label.length > MAX_LABEL) return `${at}'s label is longer than ${MAX_LABEL} characters.`;
 		if (typeof cmd?.type !== "string" || !types.has(cmd.type)) return `${at}'s command type ${JSON.stringify(cmd?.type)} is not a pi-desk command (desk_run lists them).`;
+		if (!offerable.has(cmd.type)) return `${at}'s command ${cmd.type} cannot be offered as a button: buttons are for navigation and the user's choices.`;
 		if ("confirm" in cmd) return `${at}'s command carries a confirm token: the user's click must go through pi-desk's confirmation.`;
-		if (typeof cmd.tab_id === "number" && own.has(cmd.tab_id)) return `${at} targets tab ${cmd.tab_id}, your own tab: pi-desk's Home never acts on itself.`;
+		const why = refusal(cmd, state, own);
+		if (why) return `${at}: ${why}`;
 	}
 }
 

@@ -399,11 +399,12 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "desk_offer",
 			label: "Offer choices",
-			description: `Show the user 1-${MAX_BUTTONS} buttons in pi-desk's chat, with optional text above them. Clicking a button runs its pi-desk command as the user (pi-desk asks for confirmation where its settings say so). Each command is {type, ...fields} from desk_run's list, without a confirm token, not aimed at your own tab. Returns once the buttons are shown; the click does not come back to you.`,
+			description: `Show the user 1-${MAX_BUTTONS} buttons in pi-desk's chat, with optional text above them. Clicking a button runs its pi-desk command as the user (pi-desk asks for confirmation where its settings say so). Buttons are for navigation and the user's choices: only commands pi-desk lets a button carry (focusing and opening projects, sessions, tabs and files; panels, theme and layout; rescan; and close_tab, close_session, pi_reload and quit, which pi-desk always confirms on click). Each command is {type, ...fields} as for desk_run, without a confirm token, not aimed at your own tab. Returns once the buttons are shown; the click does not come back to you.`,
 			promptSnippet: "Show the user buttons that run pi-desk commands, so they decide",
 			promptGuidelines: [
 				"When the user should decide (several options, or anything they may not want), offer desk_offer buttons instead of acting with desk_run.",
 				"A desk_offer button's label must say what its command does; never put a destructive command behind a harmless label.",
+				"desk_offer buttons are for navigation and the user's decisions; never send text or prompts through a button (use desk_prompt when the user asks).",
 			],
 			parameters: Type.Object({
 				text: Type.Optional(Type.String({ description: "A short line above the buttons" })),
@@ -416,7 +417,8 @@ export default function (pi: ExtensionAPI) {
 				),
 			}),
 			async execute(_id, p) {
-				const why = offerRefusal(p.buttons, commands, own());
+				const typing = p.buttons.some((b) => b.command?.type === "send_text");
+				const why = offerRefusal(p.buttons, commands, own(), typing ? await getState() : undefined);
 				if (why) throw new Error(why);
 				return text("Shown to the user. Do not run these commands yourself; the user decides.");
 			},

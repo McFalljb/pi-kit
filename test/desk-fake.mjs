@@ -163,7 +163,7 @@ function control(c, m) {
 	const finish = (result, ms) => setTimeout(() => send(c, { type: "event", event: "finished", request_id: rid, result }), ms);
 	if (cmd.type === "get_state") return answer({ ok: true, data: deskState() });
 	if (cmd.type === "list_commands")
-		return answer({ ok: true, data: { commands: [{ type: "get_state", does: "the state" }, { type: "close_tab", args: "tab_id", does: "close a shell tab", confirm_class: "tab_close" }, { type: "fake_cmd", args: "x", does: "listed by the fake pi-desk" }] } });
+		return answer({ ok: true, data: { commands: [{ type: "get_state", does: "the state" }, { type: "close_tab", args: "tab_id", does: "close a shell tab", confirm_class: "tab_close", offerable: true }, { type: "fake_cmd", args: "x", does: "listed by the fake pi-desk", offerable: true }] } });
 	if (cmd.type === "close_tab" && !cmd.confirm) {
 		const entry = { summary: "Close shell 1?", caller: "control", class: "tab_close", command: { type: "close_tab", tab_id: cmd.tab_id } };
 		if (cmd.tab_id !== 9) parked.push(entry);
@@ -313,6 +313,7 @@ try {
 			step("desk_offer", { text: "Pick one", buttons: [{ label: "Close shell 1", command: { type: "close_tab", tab_id: 5 } }, { label: "Fake", command: { type: "fake_cmd", x: 1 } }] }),
 			step("desk_offer", { buttons: [{ label: "Rescan", command: { type: "rescan" } }] }),
 			step("desk_offer", { buttons: [{ label: "Close", command: { type: "close_tab", tab_id: 1 } }] }),
+			step("desk_offer", { buttons: [{ label: "Show state", command: { type: "get_state" } }] }),
 			step("desk_report", { title: "Nightly", lines: ["3 passed", "0 failed"], details: "all green" }),
 			step("desk_report", { title: "Too long", lines: ["1", "2", "3", "4", "5", "6"] }),
 			step("desk_wait", { tab_id: 2, timeout_s: 5 }),
@@ -324,7 +325,11 @@ try {
 		const start = rpc.find((e) => e.type === "tool_execution_start" && e.toolName === "desk_offer");
 		result("desk_offer's buttons are in the tool-call event's args", start?.args?.buttons?.[1]?.command?.type === "fake_cmd" && start.args.text === "Pick one", JSON.stringify(start?.args));
 		const offers = ends("desk_offer").map((e) => [e.isError, e.result?.content?.[0]?.text ?? ""]);
-		result("desk_offer: listed commands shown, an unlisted type and Home's own tab refused", offers.length === 3 && !offers[0][0] && /^Shown to the user/.test(offers[0][1]) && offers[1][0] && /"rescan" is not a pi-desk command/.test(offers[1][1]) && offers[2][0] && /your own tab/.test(offers[2][1]), JSON.stringify(offers));
+		result(
+			"desk_offer: offerable commands shown; an unlisted type, Home's own tab and a listed but not offerable command refused",
+			offers.length === 4 && !offers[0][0] && /^Shown to the user/.test(offers[0][1]) && offers[1][0] && /"rescan" is not a pi-desk command/.test(offers[1][1]) && offers[2][0] && /your own tab/.test(offers[2][1]) && offers[3][0] && /get_state cannot be offered/.test(offers[3][1]),
+			JSON.stringify(offers),
+		);
 		const reports = ends("desk_report").map((e) => e.isError);
 		result("desk_report: shown; six lines refused", JSON.stringify(reports) === "[false,true]", JSON.stringify(reports));
 		const notice = await untilRpc("the notice arrives as a custom message event", (e) => e.type === "message_end" && e.message?.role === "custom" && e.message.customType === "kit-desk" && /^pi-desk: /.test(e.message.content), 30_000);

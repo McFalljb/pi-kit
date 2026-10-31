@@ -183,9 +183,10 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   call is waiting on). pi-desk itself never sends a caller its own events. After a `dropped`
   event stream the extension subscribes again and re-checks pending confirmations. In RPC mode
   notices reach pi-desk as `kit-desk` custom message events, and two more tools exist, which only
-  validate and return: `desk_offer` (1–4 buttons, each a label of at most 40 characters and a
-  command from the list, without a confirm token, not on Home's own tab; clicking runs it as the
-  user) and `desk_report` (title, at most 5 lines, optional details). pi-desk draws them from the
+  validate and return: `desk_offer` (1–4 buttons, each a label of at most 40 characters and an
+  offerable command: pi-desk's `offerable` flags in `list_commands`, else the built-in `OFFERABLE`
+  list of navigation and choices; without a confirm token, passing desk_run's refusals; clicking
+  runs it as the user) and `desk_report` (title, at most 5 lines, optional details). pi-desk draws them from the
   `tool_execution_start` args once `tool_execution_end` (same `toolCallId`) says it succeeded.
   The bridge and sidebar stay TUI-only: in RPC mode pi-desk reads status from the RPC stream.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,

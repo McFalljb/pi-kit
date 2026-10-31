@@ -31,8 +31,9 @@ exist only when pi-desk started this pi with a control token.
   tell the user instead.
 - In pi-desk's chat (desk_offer and desk_report are there):
   - `desk_offer` when the user should decide: several options, or anything they may not want.
-    Each button runs its command as the user, with pi-desk's confirmations. Its label says what
-    the command does.
+    Buttons are for navigation and decisions (focus/open, panels, theme, layout, rescan; closing
+    and reloading, which pi-desk always confirms); never send text or prompts through one. Each
+    button runs its command as the user. Its label says what the command does.
   - `desk_run` when the user asked for exactly that action.
   - `desk_report` for a timed or background job's result or a summary: a title, at most 5
     short lines, the rest in `details`.
