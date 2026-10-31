@@ -143,9 +143,10 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     closes the overlay, the next `/sidebar` only notices that; run it again to reopen. The widgets stay hidden while the extension is loaded, also with the column off
     (the footer summary stands in). With the column on, pi's layout renders the transcript once
     more per frame to measure it, which a very long transcript may feel.
-  - In a pi-desk tab (`PI_DESK_SOCKET` and `PI_DESK_TOKEN` set) there is no column, footer
-    summary or overlay: the desk bridge publishes the same sections as pi-desk panels, and
-    `/sidebar` says so.
+  - In a pi-desk tab (`PI_DESK_SOCKET` and `PI_DESK_TOKEN` set) whose pi-desk advertises the
+    `panels` capability, there is no column, footer summary or overlay: the desk bridge
+    publishes the same sections as pi-desk panels, and `/sidebar` says so. Without that
+    capability, or if the bridge cannot connect within 3 s, the sidebar draws as usual.
 - **pi-desk bridge** (`extensions/desk-bridge`): when pi runs in a pi-desk tab (both variables
   set, interactive TUI), it is the tab's control plane over pi-desk's socket (pi-desk's
   `docs/PROTOCOL.md` §4–5). It reports the session (id, file, cwd) and a status: `agent`

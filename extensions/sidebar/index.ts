@@ -7,8 +7,10 @@
  * - Regular tuiMode, or a narrower terminal: a one-line footer summary, and `/sidebar` opens the
  *   same rows as an overlay on the right (it does not take keyboard focus).
  * - `/sidebar` shows or hides the column (wide fullscreen) or the overlay (otherwise).
- * - In a pi-desk tab (inDesk()): no column, footer or overlay; the same sections go to pi-desk as
- *   panels through the desk bridge (`kit:desk:panels` event).
+ * - In a pi-desk tab that draws panels (the desk bridge's `kit:desk:mode` event says so after its
+ *   handshake): no column, footer or overlay; the same sections go to pi-desk as panels through the
+ *   bridge (`kit:desk:panels` event). In a pi-desk tab nothing is drawn until the bridge answers
+ *   (at most DESK_WAIT_MS), so a tab with panels never shows the column.
  *
  * While loaded with a UI, the rpiv-todo widget and the kit shell widget are hidden for good.
  * Data: pi-subagents' event-bus status RPC, re-read when its job events fire; rpiv-todo's state on
@@ -23,6 +25,7 @@ import { type Data, deskPanels, hideCompleted, type Line, type Run, SUBAGENT_EVE
 
 const WIDTH = 34; // columns, border included
 const MIN_COLUMNS = 120; // narrower terminals get the footer summary instead of the column
+const DESK_WAIT_MS = 3000; // in a pi-desk tab, how long to wait for the bridge before drawing the sidebar
 const arr = (v: unknown) => (Array.isArray(v) ? v : []);
 
 export default function (pi: ExtensionAPI) {
@@ -38,7 +41,8 @@ export default function (pi: ExtensionAPI) {
 	let root: HStack | undefined; // ours: pi's root plus the column
 	let shown = ""; // the layout state last seen, so a render can notice a mode or width change
 	let closed = false;
-	let desk = false; // in a pi-desk tab: panels instead of the column
+	let desk = false; // pi-desk draws panels: they replace the column
+	let deskWait: NodeJS.Timeout | undefined; // in a pi-desk tab, until the bridge says whether it draws panels
 	let subTimer: NodeJS.Timeout | undefined;
 	let later: NodeJS.Timeout | undefined;
 	let stopRead: (() => void) | undefined; // set while a status read is in flight; ends it
@@ -84,11 +88,15 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function refresh() {
-		if (closed || !ui || (!tui && !desk)) return;
+		if (closed || !ui || deskWait || (!tui && !desk)) return;
 		try {
 			if (desk) {
+				unmount();
+				closeOverlay?.();
+				ui.setStatus("sidebar", undefined);
 				if (data.todos.length) ui.setWidget("rpiv-todos", undefined);
 				pi.events.emit("kit:desk:panels", deskPanels(data, Date.now()));
+				tui?.requestRender();
 				return;
 			}
 			shown = state();
@@ -126,7 +134,7 @@ export default function (pi: ExtensionAPI) {
 	/** Called on every frame: re-lay out after a tuiMode switch, a resize past MIN_COLUMNS or a lost root. */
 	function watch() {
 		hideTodos();
-		if (closed) return;
+		if (closed || desk || deskWait) return;
 		if (state() !== shown || (fullscreen() && column && layoutRoot() !== root)) {
 			shown = state();
 			setTimeout(refresh, 0); // not from inside a render
@@ -183,6 +191,14 @@ export default function (pi: ExtensionAPI) {
 			});
 	}
 
+	function setDesk(panels: boolean) {
+		clearTimeout(deskWait);
+		deskWait = undefined;
+		desk = panels;
+		refresh();
+	}
+	pi.events.on("kit:desk:mode", (panels) => !closed && ui && setDesk(panels === true));
+
 	pi.registerCommand("sidebar", {
 		description: "Show or hide the sidebar: subagents, todos, background shells",
 		handler: async (_args, ctx) => {
@@ -207,9 +223,9 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.mode !== "tui") return;
 		ui = ctx.ui;
 		setTodos(todosFromBranch(ctx.sessionManager.getBranch()), true);
-		desk = inDesk();
+		if (inDesk()) deskWait = setTimeout(() => setDesk(false), DESK_WAIT_MS); // no bridge answer: the sidebar as usual
 		// A widget with no rows: its factory hands over the TUI, its render watches the layout.
-		if (!desk) ui.setWidget("kit-sidebar", (t) => {
+		ui.setWidget("kit-sidebar", (t) => {
 			tui = t;
 			return { render: () => (watch(), []), invalidate() {}, dispose: unmount };
 		}, { placement: "belowEditor" });
@@ -250,6 +266,7 @@ export default function (pi: ExtensionAPI) {
 		clearTimeout(subTimer);
 		clearTimeout(later);
 		clearTimeout(hideTimer);
+		clearTimeout(deskWait);
 		stopRead?.();
 		try {
 			closeOverlay?.();

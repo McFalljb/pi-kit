@@ -28,7 +28,7 @@ instructions for an agent, including what to ask you and what never to touch.
   background shells, monitors and timers sit in a column on the right instead of in panels under
   the transcript. Narrower, or in regular `tuiMode`, a one-line footer summary stands in.
   `/sidebar` shows or hides it (or opens it as an overlay). Completed todos drop off at your next
-  message, like rpiv-todo's own panel. In a pi-desk tab the same sections show as pi-desk panels instead.
+  message, like rpiv-todo's own panel. In a pi-desk tab that draws panels, the same sections show there instead.
 - **Workers and a reviewer.** `kit.worker` does delegated work in its own git worktree;
   `kit.reviewer` reviews read-only, ideally on another provider. The parent session plans and
   talks to you (`AGENTS.md`, skills `delegate` and `adversarial-review`).

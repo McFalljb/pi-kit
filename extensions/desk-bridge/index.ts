@@ -9,8 +9,10 @@
  * - Reports `pi.session` (id, file, cwd) after each handshake; a session switch or reload starts a
  *   new extension runtime, which connects again and reports the new session.
  * - Reports `pi.status {agent, waiting, question, blockers}` when it changes (see status() in protocol.ts).
- * - Publishes the sidebar's sections (subagents, shells, todos) as panels (`panel.set`, or
- *   `panel.remove` once a section empties), at most once a second and only when they changed.
+ * - If the hello result's `capabilities` include `panels`, publishes the sidebar's sections
+ *   (subagents, shells, todos) as panels (`panel.set`, or `panel.remove` once a section empties),
+ *   at most once a second and only when they changed. `kit:desk:mode` tells the sidebar whether
+ *   pi-desk draws panels (after each handshake; false while the bridge has never connected).
  * - Answers `pi.prompt` (a user message; follow-up while a run is going), `pi.wait_idle` (when
  *   pi is idle with nothing queued and no blockers, or a timeout) and `pi.reload` (refused unless
  *   that same idle holds: a reload kills the kit's background shells; the result comes after it).
@@ -36,6 +38,8 @@ export default function (pi: ExtensionAPI) {
 	let ctx: ExtensionContext | undefined; // set while active
 	let sock: net.Socket | undefined;
 	let ready = false; // handshake done on the current connection
+	let panelsOn = false; // the current connection's pi-desk draws panels
+	let connected = false; // a handshake has succeeded in this runtime
 	let closed = false;
 	let attempt = 0;
 	let retry: NodeJS.Timeout | undefined;
@@ -90,7 +94,7 @@ export default function (pi: ExtensionAPI) {
 
 	function flushPanels() {
 		panelTimer = undefined;
-		if (!ready || closed) return;
+		if (!ready || closed || !panelsOn) return;
 		for (const p of panels) {
 			const msg = p.rows.length ? { type: "panel.set", panel: p.panel, title: p.title, rows: p.rows } : { type: "panel.remove", panel: p.panel };
 			const key = JSON.stringify(msg);
@@ -99,7 +103,7 @@ export default function (pi: ExtensionAPI) {
 			send(msg);
 		}
 	}
-	const panelsChanged = () => void (ready && !closed && (panelTimer ??= setTimeout(flushPanels, PANEL_EVERY_MS)));
+	const panelsChanged = () => void (ready && panelsOn && !closed && (panelTimer ??= setTimeout(flushPanels, PANEL_EVERY_MS)));
 
 	function sendSession() {
 		const sm = ctx!.sessionManager;
@@ -157,7 +161,9 @@ export default function (pi: ExtensionAPI) {
 						clearTimeout(helloTimer);
 						if (!m.result?.ok) return void s.destroy(); // wrong token or version: retried with backoff
 						keepReconnectToken(m.result.data?.reconnect_token);
-						ready = true;
+						panelsOn = Array.isArray(m.result.data?.capabilities) && m.result.data.capabilities.includes("panels");
+						pi.events.emit("kit:desk:mode", panelsOn);
+						ready = connected = true;
 						attempt = 0;
 						sent = "";
 						panelSent.clear();
@@ -177,6 +183,7 @@ export default function (pi: ExtensionAPI) {
 			for (const t of waiters.values()) clearTimeout(t); // their connection is gone
 			waiters.clear();
 			reloadId = undefined; // a reload still running answers nobody
+			if (!connected && !closed) pi.events.emit("kit:desk:mode", false); // no pi-desk: the sidebar draws as usual
 			if (!closed) retry = setTimeout(connect, backoff(attempt++));
 		});
 	}

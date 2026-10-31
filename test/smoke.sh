@@ -340,6 +340,11 @@ check "desk: shell commands do not see the token" 'desk-ran token=\[\]' "$T/mock
 nocheck "desk: no sidebar column in pi-desk" "No subagents, todos or shells" "$T/desk.screen"
 node "$KIT/test/desk-fake.mjs" plain "$T/plain.screen"
 check "desk: sidebar column outside pi-desk" "No subagents, todos or shells" "$T/plain.screen"
+node "$KIT/test/desk-fake.mjs" nopanels "$T/nopanels.log" "$T/nopanels.screen" > "$T/nopanels.out" 2>&1 || fail=1
+sed -e 's/^OK /PASS desk without panels: /' -e 's/^FAIL /FAIL desk without panels: /' "$T/nopanels.out"
+check "desk without panels: sidebar column stays" "No subagents, todos or shells" "$T/nopanels.screen"
+PI_DESK_SOCKET="$T/no-such-desk.sock" PI_DESK_TOKEN=unused node "$KIT/test/desk-fake.mjs" plain "$T/nodesk.screen"
+check "desk: sidebar column when pi-desk is not there" "No subagents, todos or shells" "$T/nodesk.screen"
 
 if ls -d "$TMPDIR"/pi-shell-* >/dev/null 2>&1; then echo "FAIL shell temp dirs left behind"; fail=1; else echo "PASS shell temp dirs removed at shutdown"; fi
 

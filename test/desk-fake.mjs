@@ -2,7 +2,9 @@
 // python3) and plays pi-desk's side of the protocol (pi-desk docs/PROTOCOL.md §2, §4, §5).
 // Prints "OK <step>" or "FAIL <step>" per step; every message goes to <log>, the screen to <screen>.
 //
-//   node test/desk-fake.mjs desk <log> <screen>   pi with PI_DESK_SOCKET/PI_DESK_TOKEN: the scenario
+//   node test/desk-fake.mjs desk <log> <screen>   pi with PI_DESK_SOCKET/PI_DESK_TOKEN: the scenario;
+//                                                 the hello result advertises the panels capability
+//   node test/desk-fake.mjs nopanels <log> <screen>  the same pi, panels not advertised: a short run
 //   node test/desk-fake.mjs plain <screen>        pi without them, for a few seconds (sidebar check)
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -45,6 +47,7 @@ if (mode === "plain") {
 }
 
 const [logFile, screen] = args;
+const capabilities = mode === "desk" ? ["panels"] : [];
 const TOKEN = "tok-desk-smoke"; // single use: the first hello with it revokes it and issues RECONNECT
 const RECONNECT = "tok-desk-reconnect";
 const valid = new Set([TOKEN]);
@@ -76,7 +79,7 @@ const server = net.createServer((sock) => {
 			else if (m.type === "hello") {
 				const ok = valid.has(m.token) && m.v === 1;
 				if (ok) valid.delete(TOKEN), valid.add(RECONNECT);
-				sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: ok ? { ok, data: { v: 1, app: "pi-desk", caller: "panel", tab_id: 1, reconnect_token: RECONNECT } } : { ok, error: "unknown token" } })}\n`);
+				sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: ok ? { ok, data: { v: 1, app: "pi-desk", caller: "panel", tab_id: 1, reconnect_token: RECONNECT, capabilities } } : { ok, error: "unknown token" } })}\n`);
 				if (!ok) sock.end();
 			} else if (m.id !== undefined) sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: { ok: true } })}\n`);
 		}
@@ -116,6 +119,14 @@ try {
 	const s = await until("pi.session reported", (m) => m.type === "pi.session" && /^[0-9a-f-]{8,}$/.test(m.pi_session_id) && m.session_file.endsWith(".jsonl") && m.cwd === process.cwd(), 10_000);
 	const sessionId = s >= 0 ? got[s].m.pi_session_id : "";
 	await until("status idle after start", (m) => isStatus(m, "idle") && !m.waiting && m.blockers.length === 0, 10_000);
+	if (mode === "nopanels") {
+		await request("pi.prompt", { text: `Steps:\n${step("bash_bg", { command: "sleep 2; echo bg-done" })}` });
+		await until("background shell reported as a blocker", (m) => m.type === "pi.status" && m.blockers.some((b) => b.startsWith("shell sh1:")), 20_000);
+		const r = await request("pi.wait_idle", { timeout_ms: 30_000 }, 40_000);
+		result("wait_idle answers", r.ok === true, JSON.stringify(r));
+		result("no panels sent when pi-desk does not advertise them", !got.some((g) => g.m.type?.startsWith("panel.")));
+		throw "done";
+	}
 
 	let mark = got.length;
 	let r = await request("pi.prompt", { text: `Steps:\n${step("bash", { command: "sleep 1; echo desk-ran token=[$PI_DESK_TOKEN]" })}` });
@@ -162,7 +173,7 @@ try {
 	result("reload answered ok after the reload", r.ok === true, JSON.stringify(r));
 	await until("the reloaded runtime connects and reports the same session", (m, n) => m.type === "pi.session" && n >= n0 && m.pi_session_id === sessionId, 15_000, mark);
 } catch (e) {
-	result("scenario", false, e?.stack ?? String(e));
+	if (e !== "done") result("scenario", false, e?.stack ?? String(e));
 }
 await stop(proc);
 server.close();
