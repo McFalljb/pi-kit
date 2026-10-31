@@ -82,7 +82,7 @@ removes the kit entirely.
 | `extensions/guardrails` | Confirms dangerous commands, redacts secret-shaped output; read-only mode |
 | `extensions/shell` | `bash_bg`, `monitor`, `shell_stop`, `shell_list`, `wake_later`, `/shells` |
 | `extensions/sidebar` | Right-hand column with background subagents, todos and shells instead of widgets under the transcript; `/sidebar` |
-| `extensions/desk-bridge` | In a pi-desk tab: reports session, status (idle/working, waiting, blockers) and the sidebar's sections as panels; answers prompt, reload and wait-idle requests; `inDesk()` |
+| `extensions/desk-bridge` | In a pi-desk tab: reports session, status (idle/working, waiting on a dialog, question, blockers) and the sidebar's sections as panels; answers prompt, reload and wait-idle requests; `inDesk()` |
 | `extensions/notes` | Once the context is 75% full, reminds the session to update its session note before compaction |
 | `extensions/model-rules` | On OpenAI GPT models only, adds `rules/gpt.md` (less testing, exploring and reporting) to the system prompt; `<agent-dir>/rules/gpt.md` overrides it |
 | `extensions/versions` | At the start of an interactive session, warns once if pi or a recommended package is older than its pin or unpinned |

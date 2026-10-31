@@ -8,7 +8,7 @@
  *   in memory (see deskToken) for every later hello, also after a reload or session switch.
  * - Reports `pi.session` (id, file, cwd) after each handshake; a session switch or reload starts a
  *   new extension runtime, which connects again and reports the new session.
- * - Reports `pi.status {agent, waiting, blockers}` when it changes (see status() in protocol.ts).
+ * - Reports `pi.status {agent, waiting, question, blockers}` when it changes (see status() in protocol.ts).
  * - Publishes the sidebar's sections (subagents, shells, todos) as panels (`panel.set`, or
  *   `panel.remove` once a section empties), at most once a second and only when they changed.
  * - Answers `pi.prompt` (a user message; follow-up while a run is going), `pi.wait_idle` (when

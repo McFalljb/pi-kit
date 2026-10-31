@@ -140,6 +140,12 @@ try {
 	await until("shells panel removed", (m) => m.type === "panel.remove" && m.panel === "shells", 5000, mark);
 	r = await request("pi.wait_idle", { timeout_ms: 1000 });
 	result("wait_idle answers at once when idle", r.ok === true, JSON.stringify(r));
+	mark = got.length;
+	await request("pi.prompt", { text: `Steps:\n${step("bash", { command: "echo which one?" })}` });
+	await until("a final answer ending in ? is a question, not waiting", (m) => isStatus(m, "idle") && m.question === true && m.waiting === false, 20_000, mark);
+	mark = got.length;
+	await request("pi.prompt", { text: `Steps:\n${step("bash", { command: "echo done." })}` });
+	await until("the next run clears the question", (m) => isStatus(m, "idle") && m.question === false, 20_000, mark);
 	r = await request("pi.nonsense");
 	result("unknown type refused", r.ok === false && /unknown/.test(r.error), JSON.stringify(r));
 

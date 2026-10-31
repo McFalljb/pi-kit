@@ -380,13 +380,13 @@ test("desk bridge: messages carry v and type; replies echo the id; bad lines are
 
 test("desk bridge: status from idle, run outcome, dialogs and blockers", () => {
 	const base = { idle: true, error: false, dialog: false, question: false, shells: [], runs: [] };
-	assert.deepEqual(status(base), { agent: "idle", waiting: false, blockers: [] });
+	assert.deepEqual(status(base), { agent: "idle", waiting: false, question: false, blockers: [] });
 	assert.equal(status({ ...base, idle: false }).agent, "working");
 	assert.equal(status({ ...base, error: true }).agent, "error");
 	assert.equal(status({ ...base, idle: false, error: true }).agent, "working", "a retry after an error is still working");
 	assert.equal(status({ ...base, dialog: true, idle: false }).waiting, true, "a dialog waits even mid-run");
-	assert.equal(status({ ...base, question: true }).waiting, true);
-	assert.equal(status({ ...base, question: true, idle: false }).waiting, false, "a question mid-run is not waiting");
+	assert.deepEqual([status({ ...base, question: true }).question, status({ ...base, question: true }).waiting], [true, false], "a final question is `question`, not `waiting` (only dialogs wait)");
+	assert.equal(status({ ...base, question: true, idle: false }).question, false, "a question mid-run is not reported");
 	const ask = (text: string, stopReason = "stop") => [{ role: "user", content: "x" }, { role: "assistant", stopReason, content: [{ type: "text", text }] }];
 	assert.deepEqual(runOutcome(ask("Which branch should I use?  ")), { error: false, question: true });
 	assert.deepEqual(runOutcome(ask("Done.")), { error: false, question: false });

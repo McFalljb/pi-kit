@@ -152,7 +152,7 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   `working` while pi's `isIdle()` is false (a run, retry, compaction or queued continuation;
   `agent_end` alone is not idle), else `error` if the last run ended in a provider error, else
   `idle`; `waiting` while a dialog is open (`ui_prompt_start`/`end`, e.g. ask_user or a
-  guardrail confirm) or when pi is idle after a final answer ending in `?`; `blockers` are the
+  guardrail confirm); `question` when pi is idle after a final answer ending in `?`; `blockers` are the
   kit's background shells and timers and running background subagents. It answers
   `pi.prompt` (a follow-up if a run is going; refused while a dialog is open), `pi.wait_idle`
   (idle for 250 ms with nothing queued and no blockers) and `pi.reload` (refused with the

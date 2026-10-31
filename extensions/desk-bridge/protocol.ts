@@ -33,7 +33,8 @@ export const inDesk = () => !!process.env.PI_DESK_SOCKET && !!deskToken();
 export type Agent = "idle" | "working" | "error";
 export interface Status {
 	agent: Agent;
-	waiting: boolean;
+	waiting: boolean; // a pi dialog is open
+	question: boolean; // idle after a final answer ending with "?"
 	blockers: string[];
 }
 
@@ -69,11 +70,11 @@ export function runOutcome(messages: unknown): { error: boolean; question: boole
 
 /**
  * The pi-tab status. `idle`: pi's own isIdle() (no run, retry, compaction or queued continuation
- * left; agent_end alone is not idle). `waiting`: a dialog is open, or pi is idle after a final
- * answer that ends with a question.
+ * left; agent_end alone is not idle). `waiting`: a dialog is open. `question`: pi is idle after a
+ * final answer that ends with a question.
  */
 export function status(s: { idle: boolean; error: boolean; dialog: boolean; question: boolean; shells: ShellRow[]; runs: Run[] }): Status {
-	return { agent: !s.idle ? "working" : s.error ? "error" : "idle", waiting: s.dialog || (s.idle && s.question), blockers: blockers(s.shells, s.runs) };
+	return { agent: !s.idle ? "working" : s.error ? "error" : "idle", waiting: s.dialog, question: s.idle && s.question, blockers: blockers(s.shells, s.runs) };
 }
 
 /** Background work a reload would kill or that will start another run: kit shells and timers, running subagents. Redacted. */
