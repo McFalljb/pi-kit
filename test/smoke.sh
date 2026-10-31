@@ -331,6 +331,16 @@ $(step bash '{"command":"echo one"}')"
 nocheck "notes reminder disabled by 0" "compacted soon" "$T/p24b.log"
 nocheck "no notes reminder below the threshold" "will be compacted soon" "$T/p1.log"
 
+# 25. pi-desk bridge: pi in its TUI (a pseudo-terminal) against a fake pi-desk: handshake, session,
+# status across runs, blockers, panels, wait_idle, reload, reconnect; the sidebar column only outside pi-desk
+node "$KIT/test/desk-fake.mjs" desk "$T/desk.log" "$T/desk.screen" > "$T/desk.out" 2>&1 || fail=1
+sed -e 's/^OK /PASS desk: /' -e 's/^FAIL /FAIL desk: /' "$T/desk.out"
+check "desk: prompt ran through the model" '"text":"FINAL: desk-ran' "$T/mock.log"
+check "desk: shell commands do not see the token" 'desk-ran token=\[\]' "$T/mock.log"
+nocheck "desk: no sidebar column in pi-desk" "No subagents, todos or shells" "$T/desk.screen"
+node "$KIT/test/desk-fake.mjs" plain "$T/plain.screen"
+check "desk: sidebar column outside pi-desk" "No subagents, todos or shells" "$T/plain.screen"
+
 if ls -d "$TMPDIR"/pi-shell-* >/dev/null 2>&1; then echo "FAIL shell temp dirs left behind"; fail=1; else echo "PASS shell temp dirs removed at shutdown"; fi
 
 echo "artifacts: $T"

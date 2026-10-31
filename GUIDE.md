@@ -143,6 +143,24 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     closes the overlay, the next `/sidebar` only notices that; run it again to reopen. The widgets stay hidden while the extension is loaded, also with the column off
     (the footer summary stands in). With the column on, pi's layout renders the transcript once
     more per frame to measure it, which a very long transcript may feel.
+  - In a pi-desk tab (`PI_DESK_SOCKET` and `PI_DESK_TOKEN` set) there is no column, footer
+    summary or overlay: the desk bridge publishes the same sections as pi-desk panels, and
+    `/sidebar` says so.
+- **pi-desk bridge** (`extensions/desk-bridge`): when pi runs in a pi-desk tab (both variables
+  set, interactive TUI), it is the tab's control plane over pi-desk's socket (pi-desk's
+  `docs/PROTOCOL.md` §4–5). It reports the session (id, file, cwd) and a status: `agent`
+  `working` while pi's `isIdle()` is false (a run, retry, compaction or queued continuation;
+  `agent_end` alone is not idle), else `error` if the last run ended in a provider error, else
+  `idle`; `waiting` while a dialog is open (`ui_prompt_start`/`end`, e.g. ask_user or a
+  guardrail confirm) or when pi is idle after a final answer ending in `?`; `blockers` are the
+  kit's background shells and timers and running background subagents. It answers
+  `pi.prompt` (a follow-up if a run is going; refused while a dialog is open), `pi.wait_idle`
+  (idle for 250 ms with nothing queued and no blockers) and `pi.reload` (refused with the
+  reasons unless that idle holds, since a reload kills background shells; it runs the
+  `/desk-reload` command and answers after the reload). It takes the token out of the
+  environment, so the agent's commands and child processes do not inherit it, and reconnects
+  with backoff if pi-desk restarts. Other extensions can call `inDesk()` from
+  `extensions/desk-bridge/protocol.ts`. Panel actions (`panel.action`) are not handled yet.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
   the first two.

@@ -28,7 +28,7 @@ instructions for an agent, including what to ask you and what never to touch.
   background shells, monitors and timers sit in a column on the right instead of in panels under
   the transcript. Narrower, or in regular `tuiMode`, a one-line footer summary stands in.
   `/sidebar` shows or hides it (or opens it as an overlay). Completed todos drop off at your next
-  message, like rpiv-todo's own panel.
+  message, like rpiv-todo's own panel. In a pi-desk tab the same sections show as pi-desk panels instead.
 - **Workers and a reviewer.** `kit.worker` does delegated work in its own git worktree;
   `kit.reviewer` reviews read-only, ideally on another provider. The parent session plans and
   talks to you (`AGENTS.md`, skills `delegate` and `adversarial-review`).
@@ -82,6 +82,7 @@ removes the kit entirely.
 | `extensions/guardrails` | Confirms dangerous commands, redacts secret-shaped output; read-only mode |
 | `extensions/shell` | `bash_bg`, `monitor`, `shell_stop`, `shell_list`, `wake_later`, `/shells` |
 | `extensions/sidebar` | Right-hand column with background subagents, todos and shells instead of widgets under the transcript; `/sidebar` |
+| `extensions/desk-bridge` | In a pi-desk tab: reports session, status (idle/working, waiting, blockers) and the sidebar's sections as panels; answers prompt, reload and wait-idle requests; `inDesk()` |
 | `extensions/notes` | Once the context is 75% full, reminds the session to update its session note before compaction |
 | `extensions/model-rules` | On OpenAI GPT models only, adds `rules/gpt.md` (less testing, exploring and reporting) to the system prompt; `<agent-dir>/rules/gpt.md` overrides it |
 | `extensions/versions` | At the start of an interactive session, warns once if pi or a recommended package is older than its pin or unpinned |

@@ -7,6 +7,8 @@
  * - Regular tuiMode, or a narrower terminal: a one-line footer summary, and `/sidebar` opens the
  *   same rows as an overlay on the right (it does not take keyboard focus).
  * - `/sidebar` shows or hides the column (wide fullscreen) or the overlay (otherwise).
+ * - In a pi-desk tab (inDesk()): no column, footer or overlay; the same sections go to pi-desk as
+ *   panels through the desk bridge (`kit:desk:panels` event).
  *
  * While loaded with a UI, the rpiv-todo widget and the kit shell widget are hidden for good.
  * Data: pi-subagents' event-bus status RPC, re-read when its job events fire; rpiv-todo's state on
@@ -16,11 +18,11 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, HStack, isViewportTUI, ScrollView, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { type Data, hideCompleted, type Line, type Run, sidebarLines, subagentTask, summary, type TodoState, todosFromBranch, todoView, trackTodos } from "./rows.ts";
+import { inDesk } from "../desk-bridge/protocol.ts";
+import { type Data, deskPanels, hideCompleted, type Line, type Run, SUBAGENT_EVENTS, sidebarLines, subagentTask, summary, type TodoState, todosFromBranch, todoView, trackTodos } from "./rows.ts";
 
 const WIDTH = 34; // columns, border included
 const MIN_COLUMNS = 120; // narrower terminals get the footer summary instead of the column
-const SUBAGENT_EVENTS = ["subagent:jobs-changed", "subagent:async-started", "subagent:child-status", "subagent:async-complete", "subagent:process-terminal", "subagents:rpc:v1:ready"];
 const arr = (v: unknown) => (Array.isArray(v) ? v : []);
 
 export default function (pi: ExtensionAPI) {
@@ -36,6 +38,7 @@ export default function (pi: ExtensionAPI) {
 	let root: HStack | undefined; // ours: pi's root plus the column
 	let shown = ""; // the layout state last seen, so a render can notice a mode or width change
 	let closed = false;
+	let desk = false; // in a pi-desk tab: panels instead of the column
 	let subTimer: NodeJS.Timeout | undefined;
 	let later: NodeJS.Timeout | undefined;
 	let stopRead: (() => void) | undefined; // set while a status read is in flight; ends it
@@ -81,8 +84,13 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function refresh() {
-		if (closed || !ui || !tui) return;
+		if (closed || !ui || (!tui && !desk)) return;
 		try {
+			if (desk) {
+				if (data.todos.length) ui.setWidget("rpiv-todos", undefined);
+				pi.events.emit("kit:desk:panels", deskPanels(data, Date.now()));
+				return;
+			}
 			shown = state();
 			if (fullscreen() && column) mount();
 			else unmount();
@@ -90,7 +98,7 @@ export default function (pi: ExtensionAPI) {
 			if (inColumn) closeOverlay?.(); // the column shows the same rows
 			ui.setStatus("sidebar", inColumn || closeOverlay ? undefined : summary(data));
 			if (data.todos.length) ui.setWidget("rpiv-todos", undefined); // rpiv-todo re-adds it after a reload or an empty list
-			tui.requestRender();
+			tui?.requestRender();
 		} catch {}
 	}
 	const refreshSoon = (ms = 250) => {
@@ -178,6 +186,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("sidebar", {
 		description: "Show or hide the sidebar: subagents, todos, background shells",
 		handler: async (_args, ctx) => {
+			if (desk) return ctx.ui.notify("The sidebar is shown in pi-desk's panels.", "info");
 			if (!tui) return ctx.ui.notify("The sidebar needs the interactive TUI.", "warning");
 			if (fullscreen() && wide()) column = !column;
 			else if (closeOverlay) closeOverlay();
@@ -198,8 +207,9 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.mode !== "tui") return;
 		ui = ctx.ui;
 		setTodos(todosFromBranch(ctx.sessionManager.getBranch()), true);
+		desk = inDesk();
 		// A widget with no rows: its factory hands over the TUI, its render watches the layout.
-		ui.setWidget("kit-sidebar", (t) => {
+		if (!desk) ui.setWidget("kit-sidebar", (t) => {
 			tui = t;
 			return { render: () => (watch(), []), invalidate() {}, dispose: unmount };
 		}, { placement: "belowEditor" });
