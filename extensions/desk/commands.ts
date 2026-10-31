@@ -77,3 +77,17 @@ export function sameCommand(theirs: unknown, ours: Record<string, unknown>): boo
 	const t = theirs as Record<string, unknown>;
 	return Object.keys(ours).every((k) => k === "confirm" || JSON.stringify(t[k]) === JSON.stringify(ours[k]));
 }
+
+/**
+ * The command pi-desk parked for our confirmation (its canonical fields), from the snapshot: the
+ * control caller's pending entry whose fields all equal ours (fields the model added are ignored).
+ */
+export function parkedFor(state: any, ours: Record<string, unknown>): Record<string, unknown> | undefined {
+	const list = Array.isArray(state?.pending_confirmations) ? state.pending_confirmations : [];
+	return list.find((c: any) => c?.caller === "control" && c.command && sameCommand(ours, c.command))?.command;
+}
+
+/** Whether a `command` event is the user's confirmed run of the parked command (not another try that needs confirmation). */
+export function confirmedBy(ev: any, parked: Record<string, unknown>): boolean {
+	return ev?.caller === "ui" && sameCommand(ev.command, parked) && ev.result?.error !== "needs_confirmation";
+}

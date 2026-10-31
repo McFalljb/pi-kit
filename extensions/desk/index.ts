@@ -13,8 +13,12 @@
  * - desk_run waits for long-running commands (`finished`) and, when a command needs the user's
  *   confirmation, for the user's confirmed resend or the confirmation's disappearance.
  * - Notices: another pi tab turning waiting, error, question or finished is queued and delivered
- *   as one short message when this pi is idle (coalesced per tab). pi-desk never sends a caller
- *   its own events; tabs a desk_prompt/desk_wait call is waiting on are skipped.
+ *   as one short message when this pi is idle (coalesced over 10 s, latest per tab, at most one
+ *   notice-triggered turn a minute). pi-desk never sends a caller its own events; Home's own tabs
+ *   and tabs a desk_prompt/desk_wait call is waiting on are skipped too.
+ * - Home's own tabs (the control hello's `tab_id`, and the bridge's tab via `kit:desk:tab`) are
+ *   never targeted: desk_run, desk_prompt and desk_wait refuse them; desk_run also refuses
+ *   send_text into a pi tab or a tab waiting for the user (see refusal in state.ts).
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
  */
@@ -23,12 +27,11 @@ import net from "node:net";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { backoff, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
-import { type Cmd, COMMANDS, parseCommands, runDescription, sameCommand } from "./commands.ts";
-import { filterState, findTab, type Notice, noticeFor, noticeText, piTabOf, type Seen, seenFrom, summarize, tabLine } from "./state.ts";
+import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
+import { filterState, findTab, type Notice, noticeDelay, noticeFor, noticeText, piTabOf, refusal, type Seen, seenFrom, stateText, tabLine } from "./state.ts";
 
 const ENV = "PI_DESK_CONTROL_TOKEN";
 const HELLO_TIMEOUT_MS = 5000;
-const NOTICE_DELAY_MS = 2000; // notices arriving within this are sent as one message
 const WAIT_S = 600; // default wait for long-running commands, confirmations and idle tabs
 const MAX_WAIT_S = 3600;
 type R = Record<string, any>;
@@ -52,6 +55,12 @@ export default function (pi: ExtensionAPI) {
 	let seen = new Map<number, Seen>();
 	let queued: Notice[] = [];
 	let noticeTimer: NodeJS.Timeout | undefined;
+	let lastNotice: number | undefined; // when the last notice message went out
+	let controlTab = 0; // Home's tab, from the control hello (0: none)
+	let bridgeTab = 0; // Home's tab, from its desk bridge
+	const own = () => new Set([controlTab, bridgeTab].filter((t) => t > 0));
+	const skipped = () => new Set([...own(), ...watching.keys()]);
+	const rechecks = new Set<() => void>(); // confirmation waits: look at the state again
 	const watching = new Map<number, number>(); // tab -> tool calls waiting on it
 	let described = ""; // desk_run's current description
 
@@ -73,6 +82,7 @@ export default function (pi: ExtensionAPI) {
 
 	/** Resolves with a result object: `setup`'s, or an error one on timeout, abort or a closed connection. */
 	function wait(ms: number, signal: AbortSignal | undefined, onTimeout: string, setup: (done: (r: R) => void) => (() => void) | void): Promise<R> {
+		if (signal?.aborted) return Promise.resolve({ ok: false, error: "cancelled" });
 		return new Promise((resolve) => {
 			let cleanup: (() => void) | void;
 			const done = (r: R) => {
@@ -107,22 +117,34 @@ export default function (pi: ExtensionAPI) {
 		return { result, waited: true };
 	}
 
-	/** After `needs_confirmation` by the user: the user's confirmed resend, or the confirmation gone (cancelled, dropped). */
+	/**
+	 * After `needs_confirmation` by the user: the user's confirmed run of the parked command, or the
+	 * confirmation gone from the state (checked at the start, on the user's and pi-desk's own
+	 * events, and after a `dropped` event stream).
+	 */
 	function confirmation(cmd: R, ms: number, signal?: AbortSignal): Promise<R> {
 		const timeout = `the user has not answered in pi-desk after ${ms / 1000}s; the confirmation stays pending there. Do not resend; check desk_state later`;
 		return wait(ms, signal, timeout, (done) => {
-			const listen = (ev: R) => {
-				if (ev.caller === "ui" && sameCommand(ev.command, cmd)) return done({ ok: ev.result?.ok === true, outcome: "the user confirmed it in pi-desk", result: ev.result });
-				if (ev.caller !== "ui" && ev.caller !== "internal") return;
-				getState()
+			let parked: R = cmd; // pi-desk's own copy once seen: the fields to match
+			const check = () =>
+				void getState()
 					.then((st) => {
-						const parked = (Array.isArray(st?.pending_confirmations) ? st.pending_confirmations : []).some((c: R) => c?.caller === "control" && sameCommand(c.command, cmd));
-						if (!parked) done({ ok: false, outcome: "the confirmation was cancelled or dropped in pi-desk; the command did not run" });
+						const p = parkedFor(st, cmd);
+						if (p) parked = p;
+						else done({ ok: false, outcome: "the confirmation is no longer pending in pi-desk and no confirmed run was seen (most likely cancelled); check desk_state, do not resend" });
 					})
 					.catch(() => {});
+			const listen = (ev: R) => {
+				if (confirmedBy(ev, parked)) return done({ ok: ev.result?.ok === true, outcome: "the user confirmed it in pi-desk", result: ev.result });
+				if (ev.caller === "ui" || ev.caller === "internal") check();
 			};
 			listeners.add(listen);
-			return () => listeners.delete(listen);
+			rechecks.add(check);
+			check();
+			return () => {
+				listeners.delete(listen);
+				rechecks.delete(check);
+			};
 		});
 	}
 
@@ -134,18 +156,22 @@ export default function (pi: ExtensionAPI) {
 			else early.set(m.request_id, m.result ?? {});
 			return;
 		}
-		if (m.event === "dropped") return void setup(); // fell behind: subscribe again, re-read statuses
+		if (m.event === "dropped") {
+			// Fell behind: subscribe again, re-read statuses, and re-check confirmations whose outcome event may be lost.
+			// `finished` events go to the requester whether subscribed or not, so long-running waits keep waiting.
+			return void setup().then(() => rechecks.forEach((check) => check()));
+		}
 		if (m.event !== "command") return;
 		for (const l of [...listeners]) l(m);
 		const n = noticeFor(m, seen);
-		if (n && !watching.has(n.tab)) {
+		if (n && !skipped().has(n.tab)) {
 			queued.push(n);
 			scheduleNotices();
 		}
 	}
 
 	function scheduleNotices() {
-		if (queued.length && ctx && !closed && ctx.isIdle()) noticeTimer ??= setTimeout(flushNotices, NOTICE_DELAY_MS);
+		if (queued.length && ctx && !closed && ctx.isIdle()) noticeTimer ??= setTimeout(flushNotices, noticeDelay(Date.now(), lastNotice));
 	}
 	async function flushNotices() {
 		noticeTimer = undefined;
@@ -158,8 +184,9 @@ export default function (pi: ExtensionAPI) {
 		} catch {}
 		if (!ctx || closed) return;
 		if (!ctx.isIdle()) return void (queued = [...batch, ...queued]);
-		const msg = noticeText(batch.filter((n) => !watching.has(n.tab)), state);
+		const msg = noticeText(batch, state, skipped());
 		if (!msg) return;
+		lastNotice = Date.now();
 		try {
 			pi.sendMessage({ customType: "kit-desk", content: msg, display: true, details: undefined }, { triggerTurn: true, deliverAs: "followUp" });
 		} catch {}
@@ -200,6 +227,7 @@ export default function (pi: ExtensionAPI) {
 						if (m.id !== helloId) continue;
 						clearTimeout(helloTimer);
 						if (!helloOk) return void s.destroy(); // wrong token or version: retried with backoff
+						controlTab = Number(m.result.data?.tab_id) || 0;
 						ready = true;
 						attempt = 0;
 						void setup();
@@ -233,6 +261,13 @@ export default function (pi: ExtensionAPI) {
 		if (typeof p.session !== "number") throw new Error("Give tab_id or session.");
 		const tab = piTabOf(await getState(), p.session);
 		if (tab === undefined) throw new Error(`Open session ${p.session} has no pi tab (desk_state lists them).`);
+		return tab;
+	}
+	/** piTab, refusing Home's own tab. */
+	async function otherPiTab(p: { tab_id?: number; session?: number }): Promise<number> {
+		const tab = await piTab(p);
+		const why = refusal({ tab_id: tab }, undefined, own());
+		if (why) throw new Error(why);
 		return tab;
 	}
 	async function tabStatus(tab: number): Promise<string> {
@@ -284,6 +319,8 @@ export default function (pi: ExtensionAPI) {
 			async execute(_id, p, signal, onUpdate) {
 				const cmd = p.command as R;
 				if (typeof cmd?.type !== "string" || !cmd.type) throw new Error("command.type is required.");
+				const why = refusal(cmd, cmd.type === "send_text" ? await getState() : undefined, own());
+				if (why) throw new Error(why);
 				const ms = seconds(p.timeout_s) * 1000;
 				const { result, waited } = await run(cmd, ms, signal);
 				const nc = result.needs_confirmation;
@@ -316,7 +353,7 @@ export default function (pi: ExtensionAPI) {
 			}),
 			async execute(_id, p) {
 				const st = filterState(await getState(), { project: p.project, session: p.session });
-				return text(p.full ? JSON.stringify(st) : summarize(st));
+				return text(stateText(st, !!p.full));
 			},
 		});
 
@@ -329,7 +366,7 @@ export default function (pi: ExtensionAPI) {
 			promptSnippet: "Send a prompt to another pi session in pi-desk, optionally waiting until it is idle",
 			parameters: Type.Object({ ...target, text: Type.String({ description: "The prompt" }), wait: Type.Optional(Type.Boolean({ description: "Wait until it is idle" })), timeout_s }),
 			async execute(_id, p, signal) {
-				const tab = await piTab(p);
+				const tab = await otherPiTab(p);
 				const go = async () => {
 					const { result } = await run({ type: "pi_prompt", tab_id: tab, text: p.text }, 60_000, signal);
 					if (!result.ok) throw new Error(`pi-desk did not deliver the prompt to tab ${tab}: ${result.error ?? "unknown"}`);
@@ -346,7 +383,7 @@ export default function (pi: ExtensionAPI) {
 			promptSnippet: "Wait until another pi session in pi-desk is idle",
 			parameters: Type.Object({ ...target, timeout_s }),
 			async execute(_id, p, signal) {
-				const tab = await piTab(p);
+				const tab = await otherPiTab(p);
 				return text(await watch(tab, () => waitIdle(tab, seconds(p.timeout_s), signal)));
 			},
 		});
@@ -359,6 +396,7 @@ export default function (pi: ExtensionAPI) {
 		connect();
 	});
 	pi.on("agent_settled", () => scheduleNotices());
+	pi.events.on("kit:desk:tab", (id) => void (bridgeTab = Number(id) || 0));
 	pi.on("session_shutdown", () => {
 		if (closed || !ctx) return;
 		closed = true;
