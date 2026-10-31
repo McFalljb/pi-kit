@@ -142,7 +142,9 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     the agent. A paused run is listed as paused and not counted as running. If something else
     closes the overlay, the next `/sidebar` only notices that; run it again to reopen. The widgets stay hidden while the extension is loaded, also with the column off
     (the footer summary stands in). With the column on, pi's layout renders the transcript once
-    more per frame to measure it, which a very long transcript may feel.
+    more per frame to measure it, which a very long transcript may feel. Only one sidebar draws per pi
+    process: a second copy (a checkout loaded with `-e` next to the installed kit) stays inert;
+    kit versions before this rule wrap each other's layout and fill the screen with columns.
   - In a pi-desk tab (`PI_DESK_SOCKET` and `PI_DESK_TOKEN` set) whose pi-desk advertises the
     `panels` capability, there is no column, footer summary or overlay: the desk bridge
     publishes the same sections as pi-desk panels, and `/sidebar` says so. Without that

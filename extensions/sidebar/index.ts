@@ -12,6 +12,9 @@
  *   bridge (`kit:desk:panels` event). In a pi-desk tab nothing is drawn until the bridge answers
  *   (at most DESK_WAIT_MS), so a tab with panels never shows the column.
  *
+ * One sidebar per process: a second copy (e.g. a checkout loaded with -e next to the installed kit)
+ * stays inert, since two would keep wrapping each other's layout root.
+ *
  * While loaded with a UI, the rpiv-todo widget and the kit shell widget are hidden for good.
  * Data: pi-subagents' event-bus status RPC, re-read when its job events fire; rpiv-todo's state on
  * the session branch and `todo` tool results; the shell extension's `kit:shell:rows` event.
@@ -27,6 +30,8 @@ const WIDTH = 34; // columns, border included
 const MIN_COLUMNS = 120; // narrower terminals get the footer summary instead of the column
 const DESK_WAIT_MS = 3000; // in a pi-desk tab, how long to wait for the bridge before drawing the sidebar
 const arr = (v: unknown) => (Array.isArray(v) ? v : []);
+const OWNER = Symbol.for("pi-kit.sidebar.owner"); // the sidebar instance drawing in this process
+const owners = globalThis as { [OWNER]?: object };
 
 export default function (pi: ExtensionAPI) {
 	const tasks = new Map<string, string[]>(); // run id -> task line per step, from this session's own subagent calls
@@ -219,8 +224,10 @@ export default function (pi: ExtensionAPI) {
 		data.hiddenTodos = view.hidden;
 	}
 
+	const me = {};
 	pi.on("session_start", (_e, ctx) => {
-		if (ctx.mode !== "tui") return;
+		if (ctx.mode !== "tui" || (owners[OWNER] && owners[OWNER] !== me)) return;
+		owners[OWNER] = me;
 		ui = ctx.ui;
 		setTodos(todosFromBranch(ctx.sessionManager.getBranch()), true);
 		if (inDesk()) deskWait = setTimeout(() => setDesk(false), DESK_WAIT_MS); // no bridge answer: the sidebar as usual
@@ -263,6 +270,7 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => {
 		if (closed || !ui) return;
 		closed = true;
+		if (owners[OWNER] === me) delete owners[OWNER];
 		clearTimeout(subTimer);
 		clearTimeout(later);
 		clearTimeout(hideTimer);
