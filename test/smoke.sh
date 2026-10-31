@@ -348,6 +348,25 @@ sed -e 's/^OK /PASS desk reload before the first hello is answered: /' -e 's/^FA
 PI_DESK_SOCKET="$T/no-such-desk.sock" PI_DESK_TOKEN=unused node "$KIT/test/desk-fake.mjs" plain "$T/nodesk.screen"
 check "desk: sidebar column when pi-desk is not there" "No subagents, todos or shells" "$T/nodesk.screen"
 
+# 25b. pi-desk Home: pi with a control token against the fake pi-desk's control side; the mock
+# model calls desk_state, desk_run (a confirmation the user gives), desk_prompt, desk_wait; other
+# tabs' events arrive as one coalesced notice once Home is idle; reconnect with the reconnect token
+nocheck "desk control: no desk tools without the control token" '"deskRun"' "$T/mock.log.system"
+node "$KIT/test/desk-fake.mjs" control "$T/control.log" "$T/control.screen" > "$T/control.out" 2>&1 || fail=1
+sed -e 's/^OK /PASS desk control: /' -e 's/^FAIL /FAIL desk control: /' "$T/control.out"
+check "desk control: desk_run described from list_commands" '"deskRun":"[^"]*fake_cmd {x}: listed by the fake pi-desk' "$T/mock.log.system"
+check "desk control: desk_state summary" '"text":"pi-desk state v1\\nProjects:\\n- project 1 Alpha' "$T/mock.log"
+check "desk control: desk_run waited for the user's confirmation" "the user confirmed it in pi-desk. Result: {" "$T/mock.log"
+check "desk control: desk_prompt waited until idle" '"text":"Prompt delivered. Tab 2 is idle.' "$T/mock.log"
+check "desk control: desk_wait by session" '"text":"Tab 2 is idle.' "$T/mock.log"
+check "desk control: desk_run returns pi-desk's error" 'unknown command nope' "$T/mock.log"
+check "desk control: shell commands do not see the control token" 'desk-control token=\[\]' "$T/mock.log"
+check "desk control: one notice for other tabs, labelled" 'GOT DESK: pi-desk: [^"]*Beta (session 11, tab 7): waiting for you[^"]*Gamma (session 12, tab 8): finished its run' "$T/mock.log"
+N="$(grep -c '"text":"GOT DESK' "$T/mock.log")"
+if [ "$N" = 1 ]; then echo "PASS desk control: notices coalesced into one message"; else echo "FAIL desk control: $N notice replies (want 1)"; fail=1; fi
+nocheck "desk control: no notice for the tab Home was waiting on" 'GOT DESK: [^"]*Alpha' "$T/mock.log"
+nocheck "desk control: tokens never logged by the fake" 'tok-control' "$T/control.log"
+
 # 26. the sidebar is one column of normal width with the editor on screen, across /reload and
 # /new, outside and inside pi-desk (no panels), also with a second copy of the sidebar loaded
 # (another path, as when trying a checkout with -e next to the installed kit)

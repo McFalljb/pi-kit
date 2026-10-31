@@ -7,6 +7,10 @@
 //   node test/desk-fake.mjs nopanels <log> <screen>  the same pi, panels not advertised: a short run
 //   node test/desk-fake.mjs earlyreload <log> <screen>  /reload typed in pi before its first hello
 //                                                 is answered: the old runtime must keep the token
+//   node test/desk-fake.mjs control <log> <screen>  pi as pi-desk's Home: also PI_DESK_CONTROL_TOKEN;
+//                                                 plays a control server (state, list_commands, a
+//                                                 confirmation, pi_prompt/pi_wait_idle, events) and
+//                                                 prompts Home through its bridge to call the desk tools
 //   node test/desk-fake.mjs plain <screen>        pi without them, for a few seconds (sidebar check)
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -89,7 +93,9 @@ const [logFile, screen] = args;
 const capabilities = mode === "desk" ? ["panels"] : [];
 const TOKEN = "tok-desk-smoke"; // single use: the first hello with it revokes it and issues RECONNECT
 const RECONNECT = "tok-desk-reconnect";
-const valid = new Set([TOKEN]);
+const CTL = "tok-control-smoke"; // the Home's control token: single use too, swapped for CTL_RE
+const CTL_RE = "tok-control-reconnect";
+const valid = new Set(mode === "control" ? [TOKEN, CTL] : [TOKEN]);
 const dir = fs.mkdtempSync("/tmp/desk-"); // short: Unix socket paths are limited to ~104 bytes
 const sockPath = path.join(dir, "desk.sock");
 const log = (s) => fs.appendFileSync(logFile, `${s}\n`);
@@ -103,9 +109,78 @@ const held = []; // [connection, hello]
 
 function answerHello(c, m) {
 	const ok = valid.has(m.token) && m.v === 1;
-	if (ok) valid.delete(TOKEN), valid.add(RECONNECT);
+	if (ok && (m.token === CTL || m.token === CTL_RE)) {
+		c.caller = "control";
+		const reconnect = m.token === CTL ? CTL_RE : undefined;
+		if (reconnect) valid.delete(CTL), valid.add(CTL_RE);
+		c.sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: { ok, data: { v: 1, app: "pi-desk", caller: "control", tab_id: 0, capabilities: ["commands", "state", "events"], ...(reconnect && { reconnect_token: reconnect }) } } })}\n`);
+		return;
+	}
+	if (ok) valid.delete(TOKEN), valid.add(RECONNECT), (c.caller = "panel");
 	c.sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: ok ? { ok, data: { v: 1, app: "pi-desk", caller: "panel", tab_id: 1, reconnect_token: RECONNECT, capabilities } } : { ok, error: "unknown token" } })}\n`);
 	if (!ok || c.ended) c.sock.end();
+}
+
+// The control side (pi-desk docs/PROTOCOL.md §3) for the Home's desk extension: three projects with
+// a pi tab each (tab 2 also has shell tab 5); close_tab needs the user's confirmation, which the
+// "user" gives 1.5 s later; pi_wait_idle on tab 2 emits pi.status events for tabs 2, 7 and 8 first.
+let reqN = 100;
+const parked = [];
+const piTab = (id, agent = "idle") => ({ id, kind: "pi", title: "pi", status: "running", agent, waiting: false, question: false, blockers: [], panels: [] });
+const deskState = () => ({
+	version: 1,
+	projects: [1, 2, 3].map((id) => ({ id, cwd: `/w/p${id}`, label: `~/w/p${id}`, name: ["Alpha", "Beta", "Gamma"][id - 1] })),
+	selected_project: 1,
+	sessions: [],
+	open_sessions: [
+		{ id: 10, pi_session_id: "s10", project_id: 1, active_tab: 2, tabs: [piTab(2), { id: 5, kind: "shell", title: "shell 1", status: "running" }] },
+		{ id: 11, pi_session_id: "s11", project_id: 2, active_tab: 7, tabs: [piTab(7)] },
+		{ id: 12, pi_session_id: "s12", project_id: 3, active_tab: 8, tabs: [piTab(8)] },
+	],
+	current_session: 10,
+	pending_confirmations: parked,
+});
+function send(c, msg) {
+	const text = JSON.stringify({ v: 1, ...msg });
+	log(`${c.n} > ${text}`);
+	c.sock.write(`${text}\n`);
+}
+const event = (fields) => conns.filter((c) => c.caller === "control" && c.subscribed && !c.sock.destroyed).forEach((c) => send(c, { type: "event", ...fields }));
+const statusEvent = (tab_id, agent, waiting = false) =>
+	event({ event: "command", request_id: ++reqN, caller: "panel", caller_tab_id: tab_id, version: 1, changed: true, command: { type: "pi.status", tab_id, agent, waiting, question: false, blockers: [] }, result: { ok: true } });
+function control(c, m) {
+	const answer = (result, extra = {}) => send(c, { id: m.id, type: "result", result, ...extra });
+	if (m.type === "subscribe") return (c.subscribed = true), answer({ ok: true });
+	if (m.type !== "command") return answer({ ok: false, error: `unknown type ${m.type}` });
+	const cmd = m.command;
+	const rid = ++reqN;
+	const finish = (result, ms) => setTimeout(() => send(c, { type: "event", event: "finished", request_id: rid, result }), ms);
+	if (cmd.type === "get_state") return answer({ ok: true, data: deskState() });
+	if (cmd.type === "list_commands")
+		return answer({ ok: true, data: { commands: [{ type: "get_state", does: "the state" }, { type: "close_tab", args: "tab_id", does: "close a shell tab", confirm_class: "tab_close" }, { type: "fake_cmd", args: "x", does: "listed by the fake pi-desk" }] } });
+	if (cmd.type === "close_tab" && !cmd.confirm) {
+		parked.push({ summary: "Close shell 1?", caller: "control", class: "tab_close", command: { type: "close_tab", tab_id: cmd.tab_id } });
+		answer({ ok: false, error: "needs_confirmation", needs_confirmation: { summary: "Close shell 1?", by: "user" } }, { request_id: rid });
+		return setTimeout(() => {
+			parked.length = 0;
+			event({ event: "command", request_id: ++reqN, caller: "ui", version: 2, changed: true, command: { type: "close_tab", tab_id: cmd.tab_id, confirm: "<redacted>" }, result: { ok: true } });
+		}, 1500);
+	}
+	if (cmd.type === "pi_prompt") {
+		answer({ ok: true, pending: true }, { request_id: rid });
+		return send(c, { type: "event", event: "finished", request_id: rid, result: { ok: true } }); // at once: before the tool waits for it
+	}
+	if (cmd.type === "pi_wait_idle") {
+		answer({ ok: true, pending: true }, { request_id: rid });
+		if (cmd.tab_id === 2 && !c.emitted) {
+			c.emitted = true;
+			statusEvent(2, "working"), statusEvent(2, "idle"); // muted: Home waits on tab 2
+			statusEvent(7, "idle", true); // waiting
+			statusEvent(8, "working"), statusEvent(8, "idle"); // finished
+		}
+		return finish({ ok: true }, 500);
+	}
+	answer({ ok: false, error: `unknown command ${cmd.type}` }, { request_id: rid });
 }
 
 // Half-open: a client that ends its side can still get the answer to a held hello.
@@ -125,14 +200,15 @@ const server = net.createServer({ allowHalfOpen: true }, (sock) => {
 		while ((nl = buf.indexOf("\n")) >= 0) {
 			const text = buf.slice(0, nl);
 			buf = buf.slice(nl + 1);
-			log(`${c.n} < ${text.replace(TOKEN, "<token>").replace(RECONNECT, "<reconnect>")}`);
+			log(`${c.n} < ${text.replace(TOKEN, "<token>").replace(RECONNECT, "<reconnect>").replace(CTL, "<control token>").replace(CTL_RE, "<control reconnect>")}`);
 			const m = JSON.parse(text);
 			got.push({ n: c.n, m });
 			if (m.type === "result") pending.get(m.id)?.(m.result);
 			else if (m.type === "hello") {
 				if (holdHellos) held.push([c, m]);
 				else answerHello(c, m);
-			} else if (m.id !== undefined) sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: { ok: true } })}\n`);
+			} else if (c.caller === "control") control(c, m);
+			else if (m.id !== undefined) sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: { ok: true } })}\n`);
 		}
 	});
 });
@@ -155,7 +231,7 @@ async function until(name, pred, ms, from = 0) {
 /** Send a request to pi on the newest connection; resolves with its result (or {timeout}). */
 function request(type, fields = {}, ms = 30_000) {
 	const id = `d${++nextId}`;
-	const c = conns[conns.length - 1];
+	const c = conns.findLast((x) => x.caller !== "control"); // the bridge's
 	const line = JSON.stringify({ id, v: 1, type, ...fields });
 	log(`${c.n} > ${line}`);
 	c.sock.write(`${line}\n`);
@@ -164,7 +240,7 @@ function request(type, fields = {}, ms = 30_000) {
 const step = (name, args) => `@@ ${JSON.stringify({ name, arguments: args })}`;
 const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
-const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN });
+const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) });
 try {
 	if (mode === "reloads") {
 		await until("handshake", (m) => m.type === "hello", 30_000);
@@ -181,6 +257,41 @@ try {
 		for (const [c, m] of held.splice(0)) answerHello(c, m); // the first revokes the env token, the second is refused
 		await until("the new runtime reconnects with the reconnect token the old runtime got", (m) => m.type === "hello" && m.token === RECONNECT, 10_000);
 		await until("and reports its session", (m, n) => m.type === "pi.session" && n > 1, 5000);
+		throw "done";
+	}
+	if (mode === "control") {
+		await until("control hello with the control token", (m) => m.type === "hello" && m.token === CTL, 30_000);
+		await until("subscribes to events", (m) => m.type === "subscribe", 5000);
+		await until("asks for list_commands", (m) => m.type === "command" && m.command?.type === "list_commands", 5000);
+		await until("Home's bridge says hello too", (m) => m.type === "hello" && m.token === TOKEN, 30_000);
+		await until("Home idle", (m) => isStatus(m, "idle"), 10_000);
+		const steps = [
+			step("desk_state", {}),
+			step("desk_run", { command: { type: "close_tab", tab_id: 5 }, timeout_s: 20 }),
+			step("desk_prompt", { tab_id: 2, text: "go", wait: true, timeout_s: 5 }),
+			step("desk_wait", { session: 10, timeout_s: 5 }),
+			step("desk_run", { command: { type: "nope" } }),
+			step("bash", { command: "echo desk-control token=[$PI_DESK_CONTROL_TOKEN]" }),
+		];
+		let mark = got.length;
+		const r = await request("pi.prompt", { text: `Steps:\n${steps.join("\n")}` });
+		result("prompt for Home accepted", r.ok === true, JSON.stringify(r));
+		const cmdAt = (type, pred = () => true) => (m) => m.type === "command" && m.command?.type === type && pred(m.command);
+		await until("desk_state reads the state", cmdAt("get_state"), 20_000, mark);
+		await until("desk_run sends close_tab without a confirm token", cmdAt("close_tab", (c) => c.tab_id === 5 && !c.confirm), 20_000, mark);
+		await until("desk_prompt sends pi_prompt to tab 2", cmdAt("pi_prompt", (c) => c.tab_id === 2 && c.text === "go"), 20_000, mark);
+		const w1 = await until("and waits with pi_wait_idle", cmdAt("pi_wait_idle", (c) => c.tab_id === 2 && c.timeout_ms === 5000), 10_000, mark);
+		const w = await until("desk_wait by session waits on its pi tab", cmdAt("pi_wait_idle", (c) => c.tab_id === 2), 20_000, Math.max(w1 + 1, mark));
+		result("close_tab is never resent with a token", !got.some((g) => g.m.command?.type === "close_tab" && g.m.command.confirm));
+		// Home's run ends, then the queued notice starts one more run.
+		const idle1 = await until("Home idle after the steps", (m) => isStatus(m, "idle"), 30_000, Math.max(w, mark));
+		const work2 = await until("the notice starts a Home run", (m) => isStatus(m, "working"), 15_000, Math.max(idle1, mark));
+		await until("which settles", (m) => isStatus(m, "idle"), 15_000, Math.max(work2, mark));
+		mark = got.length;
+		conns.findLast((x) => x.caller === "control").sock.destroy();
+		await until("control reconnects with the reconnect token", (m) => m.type === "hello" && m.token === CTL_RE, 10_000, mark);
+		await until("and subscribes again", (m) => m.type === "subscribe", 5000, mark);
+		result("the env control token was used once", got.filter((g) => g.m.type === "hello" && g.m.token === CTL).length === 1);
 		throw "done";
 	}
 	await until("handshake with the token", (m) => m.type === "hello" && m.token === TOKEN, 30_000);

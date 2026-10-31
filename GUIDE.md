@@ -165,6 +165,18 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   later `hello` (reconnects with backoff, reloads, session switches). Children of pi can still see
   the revoked env token in pi's initial environment, but it no longer opens a connection. Other extensions can call `inDesk()` from
   `extensions/desk-bridge/protocol.ts`. Panel actions (`panel.action`) are not handled yet.
+- **pi-desk Home** (`extensions/desk`, skill `desk`): when pi-desk starts pi as its Home agent with
+  `PI_DESK_SOCKET` and `PI_DESK_CONTROL_TOKEN` (interactive TUI), it connects as caller `control`
+  (pi-desk's `docs/PROTOCOL.md` §2–3; single-use env token swapped for a reconnect token like the
+  bridge's, and removed from `process.env`) and registers `desk_state` (a compact summary, or
+  `full: true`; filters `project`, `session`), `desk_run` (any command `{type, ...}`; its
+  description is generated from pi-desk's `list_commands`, or from a built-in list in
+  `extensions/desk/commands.ts` while pi-desk has none; it waits for long-running commands, and for
+  the user's answer when a command needs confirmation, never resending it), `desk_prompt` (a
+  user message in another pi tab, optionally waiting until it is idle) and `desk_wait`. Other pi
+  tabs turning waiting, error, question or finished are sent as one short `pi-desk:` message when
+  Home is idle (coalesced over 2 s, latest per tab, at most 8 lines; not for tabs a
+  desk_prompt/desk_wait call is waiting on). pi-desk itself never sends a caller its own events.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
   the first two.
