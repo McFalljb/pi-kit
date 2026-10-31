@@ -9,6 +9,7 @@
  * - Reports `pi.session` (id, file, cwd) after each handshake; a session switch or reload starts a
  *   new extension runtime, which connects again and reports the new session.
  * - Reports `pi.status {agent, waiting, question, blockers}` when it changes (see status() in protocol.ts).
+ * - Tells other extensions its tab id (`kit:desk:tab`, after each handshake).
  * - If the hello result's `capabilities` include `panels`, publishes the sidebar's sections
  *   (subagents, shells, todos) as panels (`panel.set`, or `panel.remove` once a section empties),
  *   at most once a second and only when they changed. `kit:desk:mode` tells the sidebar whether
@@ -167,6 +168,7 @@ export default function (pi: ExtensionAPI) {
 						if (!helloOk) return void s.destroy(); // wrong token or version: retried with backoff
 						panelsOn = Array.isArray(m.result.data?.capabilities) && m.result.data.capabilities.includes("panels");
 						pi.events.emit("kit:desk:mode", panelsOn);
+						pi.events.emit("kit:desk:tab", m.result.data?.tab_id); // Home's desk extension never targets its own tab
 						ready = connected = true;
 						attempt = 0;
 						sent = "";

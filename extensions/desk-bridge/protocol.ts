@@ -4,28 +4,33 @@
 import { one, type Run, runningLeaves, type ShellRow } from "../sidebar/rows.ts";
 
 export const V = 1;
-const TOKEN_KEY = Symbol.for("pi-kit.desk-bridge.token"); // the token for the next hello, in memory only
+// Where a connection's token for the next hello is kept, in memory only (globalThis, so it survives
+// a reload or session switch), by the env variable it came from.
+const tokenKey = (env: string) => Symbol.for(env === "PI_DESK_TOKEN" ? "pi-kit.desk-bridge.token" : `pi-kit.desk.token.${env}`);
 
 /**
- * The token for the next `hello`. pi-desk's env token (PI_DESK_TOKEN) is single-use: the first
- * successful hello revokes it and returns a `reconnect_token`, valid until the tab exits, which
- * the bridge keeps here (globalThis, so it survives a reload or session switch) for every later
- * hello. `take` also deletes the env variable; that does not remove it from the process's initial
- * environment (`ps eww` still shows it), which is why the env token must be single-use.
+ * The token for the next `hello` from env variable `env`. pi-desk's env tokens are single-use: the
+ * first successful hello revokes it and returns a `reconnect_token`, valid until the tab exits,
+ * which keepToken stores for every later hello. `take` also deletes the env variable; that does
+ * not remove it from the process's initial environment (`ps eww` still shows it), which is why
+ * the env token must be single-use.
  */
-export function deskToken(take = false): string | undefined {
-	const g = globalThis as { [TOKEN_KEY]?: string };
-	const token = g[TOKEN_KEY] || process.env.PI_DESK_TOKEN;
+export function envToken(env: string, take = false): string | undefined {
+	const g = globalThis as Record<symbol, string | undefined>;
+	const token = g[tokenKey(env)] || process.env[env];
 	if (take && token) {
-		g[TOKEN_KEY] = token;
-		delete process.env.PI_DESK_TOKEN;
+		g[tokenKey(env)] = token;
+		delete process.env[env];
 	}
 	return token;
 }
-/** Keep the hello result's reconnect token for every later hello. */
-export function keepReconnectToken(token: unknown): void {
-	if (typeof token === "string" && token) (globalThis as { [TOKEN_KEY]?: string })[TOKEN_KEY] = token;
+/** Keep a hello result's reconnect token for every later hello with `env`'s token. */
+export function keepToken(env: string, token: unknown): void {
+	if (typeof token === "string" && token) (globalThis as Record<symbol, string | undefined>)[tokenKey(env)] = token;
 }
+/** The pi tab's token (PI_DESK_TOKEN, caller `panel`). */
+export const deskToken = (take = false) => envToken("PI_DESK_TOKEN", take);
+export const keepReconnectToken = (token: unknown) => keepToken("PI_DESK_TOKEN", token);
 
 /** Whether this pi runs in a pi-desk tab (other extensions can drop terminal-only chrome). */
 export const inDesk = () => !!process.env.PI_DESK_SOCKET && !!deskToken();
