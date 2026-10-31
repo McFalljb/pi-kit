@@ -11,6 +11,10 @@
 //                                                 plays a control server (state, list_commands, a
 //                                                 confirmation, pi_prompt/pi_wait_idle, events) and
 //                                                 prompts Home through its bridge to call the desk tools
+//   node test/desk-fake.mjs rpccontrol <log> <events>  Home in RPC mode (pi-desk's native chat):
+//                                                 the same control server; prompts over RPC stdin
+//                                                 for desk_offer/desk_report and a notice; RPC
+//                                                 events go to <events>
 //   node test/desk-fake.mjs plain <screen>        pi without them, for a few seconds (sidebar check)
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -95,7 +99,7 @@ const TOKEN = "tok-desk-smoke"; // single use: the first hello with it revokes i
 const RECONNECT = "tok-desk-reconnect";
 const CTL = "tok-control-smoke"; // the Home's control token: single use too, swapped for CTL_RE
 const CTL_RE = "tok-control-reconnect";
-const valid = new Set(mode === "control" ? [TOKEN, CTL] : [TOKEN]);
+const valid = new Set(mode === "control" || mode === "rpccontrol" ? [TOKEN, CTL] : [TOKEN]);
 const dir = fs.mkdtempSync("/tmp/desk-"); // short: Unix socket paths are limited to ~104 bytes
 const sockPath = path.join(dir, "desk.sock");
 const log = (s) => fs.appendFileSync(logFile, `${s}\n`);
@@ -252,7 +256,38 @@ function request(type, fields = {}, ms = 30_000) {
 const step = (name, args) => `@@ ${JSON.stringify({ name, arguments: args })}`;
 const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
-const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) });
+// RPC mode: pi on pipes, every stdout record kept in `rpc` and appended to <events> (args[1]).
+const rpc = [];
+function startRpc(env) {
+	const p = spawn("pi", ["--mode", "rpc", "--no-session"], { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "inherit"] });
+	let buf = "";
+	p.stdout.on("data", (chunk) => {
+		buf += chunk.toString("utf8");
+		let nl;
+		while ((nl = buf.indexOf("\n")) >= 0) {
+			const text = buf.slice(0, nl);
+			buf = buf.slice(nl + 1);
+			if (!text.trim()) continue;
+			fs.appendFileSync(screen, `${text}\n`);
+			try {
+				rpc.push(JSON.parse(text));
+			} catch {}
+		}
+	});
+	return p;
+}
+/** Wait for an RPC record matching `pred` at index `from` or later; its index, or -1 on timeout. */
+async function untilRpc(name, pred, ms, from = 0) {
+	const end = Date.now() + ms;
+	for (;;) {
+		const i = rpc.findIndex((e, j) => j >= from && pred(e));
+		if (i >= 0 || Date.now() > end) return result(name, i >= 0) ? i : -1;
+		await sleep(50);
+	}
+}
+
+const deskEnv = { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, ...((mode === "control" || mode === "rpccontrol") && { PI_DESK_CONTROL_TOKEN: CTL }) };
+const proc = mode === "rpccontrol" ? startRpc(deskEnv) : startPi(screen, deskEnv);
 try {
 	if (mode === "reloads") {
 		await until("handshake", (m) => m.type === "hello", 30_000);
@@ -269,6 +304,32 @@ try {
 		for (const [c, m] of held.splice(0)) answerHello(c, m); // the first revokes the env token, the second is refused
 		await until("the new runtime reconnects with the reconnect token the old runtime got", (m) => m.type === "hello" && m.token === RECONNECT, 10_000);
 		await until("and reports its session", (m, n) => m.type === "pi.session" && n > 1, 5000);
+		throw "done";
+	}
+	if (mode === "rpccontrol") {
+		await until("control hello with the control token", (m) => m.type === "hello" && m.token === CTL, 30_000);
+		await until("asks for list_commands", (m) => m.type === "command" && m.command?.type === "list_commands", 5000);
+		const steps = [
+			step("desk_offer", { text: "Pick one", buttons: [{ label: "Close shell 1", command: { type: "close_tab", tab_id: 5 } }, { label: "Fake", command: { type: "fake_cmd", x: 1 } }] }),
+			step("desk_offer", { buttons: [{ label: "Rescan", command: { type: "rescan" } }] }),
+			step("desk_offer", { buttons: [{ label: "Close", command: { type: "close_tab", tab_id: 1 } }] }),
+			step("desk_report", { title: "Nightly", lines: ["3 passed", "0 failed"], details: "all green" }),
+			step("desk_report", { title: "Too long", lines: ["1", "2", "3", "4", "5", "6"] }),
+			step("desk_wait", { tab_id: 2, timeout_s: 5 }),
+			step("bash", { command: "echo desk-rpc token=[$PI_DESK_CONTROL_TOKEN]" }),
+		];
+		proc.stdin.write(`${JSON.stringify({ id: "p1", type: "prompt", message: `Steps:\n${steps.join("\n")}` })}\n`);
+		const ends = (name) => rpc.filter((e) => e.type === "tool_execution_end" && e.toolName === name);
+		await untilRpc("the steps run", (e) => e.type === "tool_execution_end" && e.toolName === "bash", 30_000);
+		const start = rpc.find((e) => e.type === "tool_execution_start" && e.toolName === "desk_offer");
+		result("desk_offer's buttons are in the tool-call event's args", start?.args?.buttons?.[1]?.command?.type === "fake_cmd" && start.args.text === "Pick one", JSON.stringify(start?.args));
+		const offers = ends("desk_offer").map((e) => [e.isError, e.result?.content?.[0]?.text ?? ""]);
+		result("desk_offer: listed commands shown, an unlisted type and Home's own tab refused", offers.length === 3 && !offers[0][0] && /^Shown to the user/.test(offers[0][1]) && offers[1][0] && /"rescan" is not a pi-desk command/.test(offers[1][1]) && offers[2][0] && /your own tab/.test(offers[2][1]), JSON.stringify(offers));
+		const reports = ends("desk_report").map((e) => e.isError);
+		result("desk_report: shown; six lines refused", JSON.stringify(reports) === "[false,true]", JSON.stringify(reports));
+		const notice = await untilRpc("the notice arrives as a custom message event", (e) => e.type === "message_end" && e.message?.role === "custom" && e.message.customType === "kit-desk" && /^pi-desk: /.test(e.message.content), 30_000);
+		await untilRpc("and starts a run that settles", (e) => e.type === "agent_settled", 30_000, Math.max(notice, 0));
+		result("no desk-bridge hello in RPC mode", !got.some((g) => g.m.type === "hello" && g.m.token === TOKEN));
 		throw "done";
 	}
 	if (mode === "control") {

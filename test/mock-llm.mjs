@@ -3,7 +3,7 @@
 // tool calls (one per assistant turn); then the mock answers "FINAL: <last tool result>".
 // Each request is logged as one JSON line: model, every tool result so far, every shell notice so
 // far, the last message, the reply. Shell notices are answered "GOT SHELL: <first line>".
-// Each request's system prompt (and desk_run's description, if offered) goes to <log>.system as one JSON line.
+// Each request's system prompt (desk_run's description and the desk_* tool names, if offered) goes to <log>.system as one JSON line.
 // A "pi-desk: " notice is answered "GOT DESK: <its lines joined by |>".
 // "$ID" in arguments is replaced by the last pi-subagents run id ("<agent> [<id>]") seen in tool results,
 // "$OUT" by the last shell output file ("Output: <path>.log").
@@ -58,7 +58,7 @@ http.createServer((req, res) => {
 		const j = JSON.parse(body || "{}");
 		const msgs = j.messages || [];
 		const d = decide(msgs);
-		if (log !== "/dev/null") fs.appendFileSync(`${log}.system`, JSON.stringify({ model: j.model, system: msgs.filter((m) => m.role === "system" || m.role === "developer").map((m) => textOf(m.content)).join("\n"), deskRun: (j.tools || []).find((t) => t.function?.name === "desk_run")?.function?.description }) + "\n");
+		if (log !== "/dev/null") fs.appendFileSync(`${log}.system`, JSON.stringify({ model: j.model, system: msgs.filter((m) => m.role === "system" || m.role === "developer").map((m) => textOf(m.content)).join("\n"), deskRun: (j.tools || []).find((t) => t.function?.name === "desk_run")?.function?.description, desk: (j.tools || []).map((t) => t.function?.name).filter((n) => /^desk_/.test(n)) }) + "\n");
 		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), notices: msgs.filter((m) => m.role === "user" && SHELL_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 2000)), reminders: msgs.filter((m) => m.role === "user" && REMINDER.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 60)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
 		const base = { id: "mock", object: "chat.completion.chunk", created: 0, model: j.model };
 		const chunk = (delta, finish = null) => `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;

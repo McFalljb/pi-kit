@@ -375,6 +375,17 @@ if [ "$N" = 1 ]; then echo "PASS desk control: notices coalesced into one messag
 nocheck "desk control: no notice for the tab Home was waiting on" 'GOT DESK: [^"]*Alpha' "$T/mock.log"
 nocheck "desk control: tokens never logged by the fake" 'tok-control' "$T/control.log"
 
+# 25c. pi-desk Home in RPC mode (pi-desk's native chat): the desk tools plus desk_offer and
+# desk_report (validated; pi-desk draws them from the tool-call events), notices as custom messages
+nocheck "desk rpc: no desk_offer outside RPC mode" '"desk_offer"' "$T/mock.log.system"
+node "$KIT/test/desk-fake.mjs" rpccontrol "$T/rpcdesk.log" "$T/rpcdesk.events" > "$T/rpcdesk.out" 2>&1 || fail=1
+sed -e 's/^OK /PASS desk rpc: /' -e 's/^FAIL /FAIL desk rpc: /' "$T/rpcdesk.out"
+check "desk rpc: desk_offer offered" '"desk":\[[^]]*"desk_offer"' "$T/mock.log.system"
+check "desk rpc: desk_report offered" '"desk":\[[^]]*"desk_report"' "$T/mock.log.system"
+check "desk rpc: the notice reached the model" 'GOT DESK: pi-desk: [^"]*Beta (session 11, tab 7): waiting for you' "$T/mock.log"
+check "desk rpc: shell commands do not see the control token" 'desk-rpc token=\[\]' "$T/mock.log"
+nocheck "desk rpc: tokens never logged by the fake" 'tok-control' "$T/rpcdesk.log"
+
 # 26. the sidebar is one column of normal width with the editor on screen, across /reload and
 # /new, outside and inside pi-desk (no panels), also with a second copy of the sidebar loaded
 # (another path, as when trying a checkout with -e next to the installed kit)

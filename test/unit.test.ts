@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
 import { backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
-import { COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
+import { COMMANDS, confirmedBy, offerRefusal, parkedFor, parseCommands, reportRefusal, runDescription, sameCommand } from "../extensions/desk/commands.ts";
 import { DATA_NOTE, filterState, noticeDelay, noticeFor, noticeText, piTabOf, refusal, seenFrom, stateText, summarize } from "../extensions/desk/state.ts";
 import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
@@ -485,6 +485,32 @@ test("desk: sameCommand matches the same type and target, ignoring confirm and e
 	assert.ok(!sameCommand({ type: "close_tab", tab_id: 6 }, ours));
 	assert.ok(!sameCommand({ type: "focus_tab", tab_id: 5 }, ours));
 	assert.ok(!sameCommand(undefined, ours));
+});
+
+test("desk: desk_offer takes 1-4 short-labelled buttons with listed commands, no confirm token, not on Home's own tab", () => {
+	const own = new Set([1]);
+	const b = (label: string, command: object) => ({ label, command });
+	assert.equal(offerRefusal([b("Close shell 5", { type: "close_tab", tab_id: 5 }), b("Rescan", { type: "rescan" })], COMMANDS, own), undefined);
+	assert.match(offerRefusal([], COMMANDS, own) ?? "", /1 to 4 buttons/);
+	assert.match(offerRefusal(Array(5).fill(b("Rescan", { type: "rescan" })), COMMANDS, own) ?? "", /1 to 4 buttons/);
+	assert.match(offerRefusal(undefined, COMMANDS, own) ?? "", /1 to 4 buttons/);
+	assert.match(offerRefusal([b("  ", { type: "rescan" })], COMMANDS, own) ?? "", /Button 1 has no label/);
+	assert.equal(offerRefusal([b("x".repeat(40), { type: "rescan" })], COMMANDS, own), undefined);
+	assert.match(offerRefusal([b("x".repeat(41), { type: "rescan" })], COMMANDS, own) ?? "", /longer than 40/);
+	assert.match(offerRefusal([b("Rescan", { type: "rescan" }), b("Nope", { type: "nope" })], COMMANDS, own) ?? "", /Button 2's command type "nope" is not a pi-desk command/);
+	assert.match(offerRefusal([b("Odd", {})], COMMANDS, own) ?? "", /is not a pi-desk command/);
+	assert.match(offerRefusal([b("Close", { type: "close_tab", tab_id: 5, confirm: "tok" })], COMMANDS, own) ?? "", /confirm token/);
+	assert.match(offerRefusal([b("Focus", { type: "focus_tab", tab_id: 1 })], COMMANDS, own) ?? "", /your own tab/);
+	assert.match(offerRefusal([b("Fake", { type: "fake_cmd" })], COMMANDS, own) ?? "", /not a pi-desk command/);
+	assert.equal(offerRefusal([b("Fake", { type: "fake_cmd" })], [{ type: "fake_cmd", does: "" }], own), undefined, "checked against pi-desk's listed commands");
+});
+
+test("desk: desk_report takes a title and at most 5 lines", () => {
+	assert.equal(reportRefusal({ title: "Nightly", lines: ["ok"], details: "more" }), undefined);
+	assert.equal(reportRefusal({ title: "Nightly", lines: [] }), undefined);
+	assert.match(reportRefusal({ title: " ", lines: [] }) ?? "", /title/);
+	assert.match(reportRefusal({ title: "T", lines: Array(6).fill("x") }) ?? "", /At most 5 lines/);
+	assert.match(reportRefusal({ title: "T", lines: [1] }) ?? "", /list of strings/);
 });
 
 const deskState = {

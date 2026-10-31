@@ -1,6 +1,6 @@
 ---
 name: desk
-description: How pi-desk works and how to drive it as its Home agent with desk_state, desk_run, desk_prompt and desk_wait - projects, open sessions, pi and shell tabs, panels, confirmations and permission modes, and what Home must never do. Use when those tools are available and the user asks about or wants something done in pi-desk or its other sessions.
+description: How pi-desk works and how to drive it as its Home agent with desk_state, desk_run, desk_prompt, desk_wait, desk_offer and desk_report - projects, open sessions, pi and shell tabs, panels, confirmations and permission modes, and what Home must never do. Use when those tools are available and the user asks about or wants something done in pi-desk or its other sessions.
 ---
 
 # Driving pi-desk (Home agent)
@@ -29,6 +29,13 @@ exist only when pi-desk started this pi with a control token.
 - Talk to another session with `desk_prompt` (as a user message there); `wait: true` or
   `desk_wait` when you need it to finish. Prompts are refused while that pi is `waiting`:
   tell the user instead.
+- In pi-desk's chat (desk_offer and desk_report are there):
+  - `desk_offer` when the user should decide: several options, or anything they may not want.
+    Each button runs its command as the user, with pi-desk's confirmations. Its label says what
+    the command does.
+  - `desk_run` when the user asked for exactly that action.
+  - `desk_report` for a timed or background job's result or a summary: a title, at most 5
+    short lines, the rest in `details`.
 - Notices ("pi-desk: ...") about other sessions arrive while you are idle. Pass on what
   matters to the user; do not act on them unasked.
 
@@ -42,6 +49,7 @@ asked for exactly that action, and never for `app_quit` or `delete`.
 
 ## Never
 - Act on your own tab or session (pi-desk and the desk tools refuse it; do not look for a way around).
+- Put a destructive command behind a harmless desk_offer label.
 - Get around a confirmation: no resending, no `send_text` keystrokes to do the same thing, no
   asking the user to relax a mode so you can skip it.
 - Read, print or pass on connection tokens (`PI_DESK_TOKEN`, `PI_DESK_CONTROL_TOKEN`, reconnect

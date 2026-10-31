@@ -91,3 +91,34 @@ export function parkedFor(state: any, ours: Record<string, unknown>): Record<str
 export function confirmedBy(ev: any, parked: Record<string, unknown>): boolean {
 	return ev?.caller === "ui" && sameCommand(ev.command, parked) && ev.result?.error !== "needs_confirmation";
 }
+
+export const MAX_BUTTONS = 4;
+export const MAX_LABEL = 40;
+export const MAX_REPORT_LINES = 5;
+
+/**
+ * Why desk_offer must not show these buttons, or undefined: 1–MAX_BUTTONS buttons, each with a
+ * label of at most MAX_LABEL characters and a command from `cmds` that carries no confirm token
+ * (the user's click must go through pi-desk's confirmation) and is not aimed at Home's own tabs.
+ */
+export function offerRefusal(buttons: unknown, cmds: Cmd[], own: Set<number>): string | undefined {
+	if (!Array.isArray(buttons) || buttons.length < 1 || buttons.length > MAX_BUTTONS) return `Offer 1 to ${MAX_BUTTONS} buttons.`;
+	const types = new Set(cmds.map((c) => c.type));
+	for (const [i, b] of buttons.entries()) {
+		const label = typeof b?.label === "string" ? b.label.trim() : "";
+		const cmd = b?.command;
+		const at = `Button ${i + 1}`;
+		if (!label) return `${at} has no label.`;
+		if (label.length > MAX_LABEL) return `${at}'s label is longer than ${MAX_LABEL} characters.`;
+		if (typeof cmd?.type !== "string" || !types.has(cmd.type)) return `${at}'s command type ${JSON.stringify(cmd?.type)} is not a pi-desk command (desk_run lists them).`;
+		if ("confirm" in cmd) return `${at}'s command carries a confirm token: the user's click must go through pi-desk's confirmation.`;
+		if (typeof cmd.tab_id === "number" && own.has(cmd.tab_id)) return `${at} targets tab ${cmd.tab_id}, your own tab: pi-desk's Home never acts on itself.`;
+	}
+}
+
+/** Why desk_report must not show this card, or undefined: a title and at most MAX_REPORT_LINES lines. */
+export function reportRefusal(p: { title?: unknown; lines?: unknown }): string | undefined {
+	if (typeof p.title !== "string" || !p.title.trim()) return "The report needs a title.";
+	if (!Array.isArray(p.lines) || p.lines.some((l) => typeof l !== "string")) return "lines must be a list of strings.";
+	if (p.lines.length > MAX_REPORT_LINES) return `At most ${MAX_REPORT_LINES} lines; put the rest in details.`;
+}

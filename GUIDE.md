@@ -166,7 +166,8 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   the revoked env token in pi's initial environment, but it no longer opens a connection. Other extensions can call `inDesk()` from
   `extensions/desk-bridge/protocol.ts`. Panel actions (`panel.action`) are not handled yet.
 - **pi-desk Home** (`extensions/desk`, skill `desk`): when pi-desk starts pi as its Home agent with
-  `PI_DESK_SOCKET` and `PI_DESK_CONTROL_TOKEN` (interactive TUI), it connects as caller `control`
+  `PI_DESK_SOCKET` and `PI_DESK_CONTROL_TOKEN` (interactive TUI, or RPC mode for pi-desk's native
+  chat; never print or json mode), it connects as caller `control`
   (pi-desk's `docs/PROTOCOL.md` §2–3; single-use env token swapped for a reconnect token like the
   bridge's, and removed from `process.env`) and registers `desk_state` (a compact summary, or
   `full: true`; filters `project`, `session`), `desk_run` (any command `{type, ...}`; its
@@ -180,7 +181,13 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   one short `pi-desk:` message when Home is idle (coalesced over 10 s, latest per tab, at most 8
   lines, at most one such turn a minute; not for Home's own tabs or tabs a desk_prompt/desk_wait
   call is waiting on). pi-desk itself never sends a caller its own events. After a `dropped`
-  event stream the extension subscribes again and re-checks pending confirmations.
+  event stream the extension subscribes again and re-checks pending confirmations. In RPC mode
+  notices reach pi-desk as `kit-desk` custom message events, and two more tools exist, which only
+  validate and return: `desk_offer` (1–4 buttons, each a label of at most 40 characters and a
+  command from the list, without a confirm token, not on Home's own tab; clicking runs it as the
+  user) and `desk_report` (title, at most 5 lines, optional details). pi-desk draws them from the
+  `tool_execution_start` args once `tool_execution_end` (same `toolCallId`) says it succeeded.
+  The bridge and sidebar stay TUI-only: in RPC mode pi-desk reads status from the RPC stream.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
   the first two.

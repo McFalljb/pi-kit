@@ -2,7 +2,8 @@
  * pi-desk control for the Home agent: tools to read pi-desk's state, run any pi-desk command,
  * prompt and wait for other pi tabs, and short notices about other sessions. Per pi-desk's
  * docs/PROTOCOL.md (§2 handshake, §3 commands, confirmation, events). Inert unless PI_DESK_SOCKET
- * and PI_DESK_CONTROL_TOKEN are set and pi runs in the interactive TUI.
+ * and PI_DESK_CONTROL_TOKEN are set and pi runs in the interactive TUI or in RPC mode (pi-desk's
+ * native chat); never in print or json mode.
  *
  * - Connects as caller `control` with PI_DESK_CONTROL_TOKEN, reconnects with backoff. A single-use
  *   env token is swapped for the hello result's `reconnect_token` (kept in memory, see envToken);
@@ -15,10 +16,14 @@
  * - Notices: another pi tab turning waiting, error, question or finished is queued and delivered
  *   as one short message when this pi is idle (coalesced over 10 s, latest per tab, at most one
  *   notice-triggered turn a minute). pi-desk never sends a caller its own events; Home's own tabs
- *   and tabs a desk_prompt/desk_wait call is waiting on are skipped too.
- * - Home's own tabs (the control hello's `tab_id`, and the bridge's tab via `kit:desk:tab`) are
- *   never targeted: desk_run, desk_prompt and desk_wait refuse them; desk_run also refuses
- *   send_text into a pi tab or a tab waiting for the user (see refusal in state.ts).
+ *   and tabs a desk_prompt/desk_wait call is waiting on are skipped too. In RPC mode the message
+ *   reaches pi-desk as a `kit-desk` custom message event.
+ * - Home's own tabs (the control hello's `tab_id`, and in the TUI the bridge's tab via
+ *   `kit:desk:tab`) are never targeted: desk_run, desk_prompt, desk_wait and desk_offer refuse
+ *   them; desk_run also refuses send_text into a pi tab or a tab waiting for the user (see
+ *   refusal in state.ts).
+ * - In RPC mode only: desk_offer (buttons) and desk_report (a report card). They only validate;
+ *   pi-desk draws them in its chat from the RPC tool-call events' arguments.
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
  */
@@ -27,7 +32,7 @@ import net from "node:net";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { backoff, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
-import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
+import { type Cmd, COMMANDS, confirmedBy, MAX_BUTTONS, MAX_LABEL, MAX_REPORT_LINES, offerRefusal, parkedFor, parseCommands, reportRefusal, runDescription } from "./commands.ts";
 import { filterState, findTab, type Notice, noticeDelay, noticeFor, noticeText, piTabOf, refusal, type Seen, seenFrom, stateText, tabLine } from "./state.ts";
 
 const ENV = "PI_DESK_CONTROL_TOKEN";
@@ -63,6 +68,7 @@ export default function (pi: ExtensionAPI) {
 	const rechecks = new Set<() => void>(); // confirmation waits: look at the state again
 	const watching = new Map<number, number>(); // tab -> tool calls waiting on it
 	let described = ""; // desk_run's current description
+	let commands: Cmd[] = COMMANDS; // pi-desk's commands, for desk_offer's check
 
 	function request(msg: R): Promise<R> {
 		if (!sock || !ready || sock.destroyed) return Promise.reject(new Error("Not connected to pi-desk (it reconnects on its own; try again shortly)."));
@@ -334,11 +340,12 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 	function setCommands(list: Cmd[]) {
+		commands = list;
 		const desc = runDescription(list);
 		if (desc !== described && ctx && !closed) registerRun(desc);
 	}
 
-	function registerTools() {
+	function registerTools(rpc: boolean) {
 		pi.registerTool({
 			name: "desk_state",
 			label: "pi-desk state",
@@ -387,12 +394,57 @@ export default function (pi: ExtensionAPI) {
 				return text(await watch(tab, () => waitIdle(tab, seconds(p.timeout_s), signal)));
 			},
 		});
+
+		if (!rpc) return; // the TUI cannot draw buttons or cards
+		pi.registerTool({
+			name: "desk_offer",
+			label: "Offer choices",
+			description: `Show the user 1-${MAX_BUTTONS} buttons in pi-desk's chat, with optional text above them. Clicking a button runs its pi-desk command as the user (pi-desk asks for confirmation where its settings say so). Each command is {type, ...fields} from desk_run's list, without a confirm token, not aimed at your own tab. Returns once the buttons are shown; the click does not come back to you.`,
+			promptSnippet: "Show the user buttons that run pi-desk commands, so they decide",
+			promptGuidelines: [
+				"When the user should decide (several options, or anything they may not want), offer desk_offer buttons instead of acting with desk_run.",
+				"A desk_offer button's label must say what its command does; never put a destructive command behind a harmless label.",
+			],
+			parameters: Type.Object({
+				text: Type.Optional(Type.String({ description: "A short line above the buttons" })),
+				buttons: Type.Array(
+					Type.Object({
+						label: Type.String({ maxLength: MAX_LABEL, description: `What the button does (at most ${MAX_LABEL} characters)` }),
+						command: Type.Object({ type: Type.String({ description: "The command type" }) }, { additionalProperties: true, description: "{type, ...fields}, as for desk_run" }),
+					}),
+					{ minItems: 1, maxItems: MAX_BUTTONS },
+				),
+			}),
+			async execute(_id, p) {
+				const why = offerRefusal(p.buttons, commands, own());
+				if (why) throw new Error(why);
+				return text("Shown to the user. Do not run these commands yourself; the user decides.");
+			},
+		});
+
+		pi.registerTool({
+			name: "desk_report",
+			label: "Report card",
+			description: `Show a compact report card in pi-desk's chat: a title, up to ${MAX_REPORT_LINES} short lines, and optional details the user can expand. For results of timed or background jobs and summaries.`,
+			promptSnippet: "Show a compact report card (title, a few lines, details) in pi-desk's chat",
+			promptGuidelines: [`Use desk_report for job results and summaries the user should take in at a glance; keep it to ${MAX_REPORT_LINES} lines and put the rest in details.`],
+			parameters: Type.Object({
+				title: Type.String({ description: "The card's title" }),
+				lines: Type.Array(Type.String(), { maxItems: MAX_REPORT_LINES, description: `Up to ${MAX_REPORT_LINES} short lines` }),
+				details: Type.Optional(Type.String({ description: "Longer text, shown when expanded" })),
+			}),
+			async execute(_id, p) {
+				const why = reportRefusal(p);
+				if (why) throw new Error(why);
+				return text("Shown.");
+			},
+		});
 	}
 
 	pi.on("session_start", (_e, c) => {
-		if (c.mode !== "tui" || !process.env.PI_DESK_SOCKET || !envToken(ENV, true)) return;
+		if ((c.mode !== "tui" && c.mode !== "rpc") || !process.env.PI_DESK_SOCKET || !envToken(ENV, true)) return;
 		ctx = c;
-		registerTools();
+		registerTools(c.mode === "rpc");
 		connect();
 	});
 	pi.on("agent_settled", () => scheduleNotices());
