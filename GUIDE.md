@@ -142,7 +142,29 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     the agent. A paused run is listed as paused and not counted as running. If something else
     closes the overlay, the next `/sidebar` only notices that; run it again to reopen. The widgets stay hidden while the extension is loaded, also with the column off
     (the footer summary stands in). With the column on, pi's layout renders the transcript once
-    more per frame to measure it, which a very long transcript may feel.
+    more per frame to measure it, which a very long transcript may feel. Only one sidebar draws per pi
+    process: a second copy (a checkout loaded with `-e` next to the installed kit) stays inert;
+    kit versions before this rule wrap each other's layout and fill the screen with columns.
+  - In a pi-desk tab (`PI_DESK_SOCKET` and `PI_DESK_TOKEN` set) whose pi-desk advertises the
+    `panels` capability, there is no column, footer summary or overlay: the desk bridge
+    publishes the same sections as pi-desk panels, and `/sidebar` says so. Without that
+    capability, or if the bridge cannot connect within 3 s, the sidebar draws as usual.
+- **pi-desk bridge** (`extensions/desk-bridge`): when pi runs in a pi-desk tab (both variables
+  set, interactive TUI), it is the tab's control plane over pi-desk's socket (pi-desk's
+  `docs/PROTOCOL.md` §4–5). It reports the session (id, file, cwd) and a status: `agent`
+  `working` while pi's `isIdle()` is false (a run, retry, compaction or queued continuation;
+  `agent_end` alone is not idle), else `error` if the last run ended in a provider error, else
+  `idle`; `waiting` while a dialog is open (`ui_prompt_start`/`end`, e.g. ask_user or a
+  guardrail confirm); `question` when pi is idle after a final answer ending in `?`; `blockers` are the
+  kit's background shells and timers and running background subagents. It answers
+  `pi.prompt` (a follow-up if a run is going; refused while a dialog is open or a manual `/compact` runs, since pi would drop it), `pi.wait_idle`
+  (idle for 250 ms with no dialog open, nothing queued and no blockers) and `pi.reload` (refused with the
+  reasons unless that idle holds, since a reload kills background shells; it runs the
+  `/desk-reload` command and answers after the reload). pi-desk's env token is single-use: the first
+  `hello` revokes it and returns a reconnect token, which the bridge keeps in memory for every
+  later `hello` (reconnects with backoff, reloads, session switches). Children of pi can still see
+  the revoked env token in pi's initial environment, but it no longer opens a connection. Other extensions can call `inDesk()` from
+  `extensions/desk-bridge/protocol.ts`. Panel actions (`panel.action`) are not handled yet.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
   the first two.

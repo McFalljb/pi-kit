@@ -43,8 +43,11 @@ export interface Data {
 	tasks?: ReadonlyMap<string, string[]>; // run id -> task line per step, from the parent's own subagent calls
 }
 
+/** pi-subagents' events that mean its status may have changed (re-read it with the status RPC). */
+export const SUBAGENT_EVENTS = ["subagent:jobs-changed", "subagent:async-started", "subagent:child-status", "subagent:async-complete", "subagent:process-terminal", "subagents:rpc:v1:ready"];
+
 /** Untrusted text as one line: escapes stripped, secrets redacted, whitespace collapsed. */
-const one = (s: unknown) => clip(String(s ?? "")).replace(/\s+/g, " ").trim();
+export const one = (s: unknown) => clip(String(s ?? "")).replace(/\s+/g, " ").trim();
 const RUNNING = new Set(["queued", "running"]); // a paused run is listed, but not counted as running
 const RUN_ICON: Record<string, [string, Tone]> = { queued: ["…", "muted"], running: ["●", "accent"], paused: ["‖", "warning"], complete: ["✓", "success"] };
 const MAX_STEPS = 6; // steps listed per run, then "+N more"
@@ -52,7 +55,7 @@ const MAX_STEPS = 6; // steps listed per run, then "+N more"
 /** Steps listed under a run: only when there are several (a single step is the run itself). */
 const steps = (r: Run) => (Array.isArray(r.children) && r.children.length > 1 ? r.children : []);
 /** Running agents, counted like pi-subagents' own "N active agents": each running step, else the run. */
-const runningLeaves = (r: Run): number => (steps(r).length ? steps(r).reduce((n, c) => n + runningLeaves(c), 0) : RUNNING.has(r?.state ?? "") ? 1 : 0);
+export const runningLeaves = (r: Run): number => (steps(r).length ? steps(r).reduce((n, c) => n + runningLeaves(c), 0) : RUNNING.has(r?.state ?? "") ? 1 : 0);
 const runningCount = (d: Data) => d.runs.reduce((n, r) => n + runningLeaves(r), 0);
 
 function runRow(r: Run, name: unknown, task: unknown, indent: string, now: number): Line[] {
@@ -121,6 +124,20 @@ export function sidebarLines(d: Data, now: number): Line[] {
 	const parts = [section("subagents", () => runLines(d, now)), section("shells", () => shellLines(d.shells)), section("todos", () => todoLines(d.todos, d.hiddenTodos ?? new Set()))].filter((p) => p.length);
 	if (!parts.length) return [{ text: "No subagents, todos or shells", tone: "muted" }];
 	return parts.flatMap((p, i) => (i ? [{ text: "" }, ...p] : p));
+}
+
+export interface Panel {
+	panel: string;
+	title: string;
+	rows: Line[]; // empty: the section has nothing to show
+}
+/** The same sections as pi-desk panels (its PROTOCOL.md §5), for the desk bridge to publish. */
+export function deskPanels(d: Data, now: number): Panel[] {
+	return [
+		{ panel: "subagents", title: "Subagents", rows: section("subagents", () => runLines(d, now)) },
+		{ panel: "shells", title: "Shells", rows: section("shells", () => shellLines(d.shells)) },
+		{ panel: "todos", title: "Todos", rows: section("todos", () => todoLines(d.todos, d.hiddenTodos ?? new Set())) },
+	];
 }
 
 /** Footer text for when the sidebar is not on screen, e.g. "2 subagents · todos 1/4 · 1 shell · /sidebar". */

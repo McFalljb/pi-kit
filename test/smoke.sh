@@ -331,6 +331,41 @@ $(step bash '{"command":"echo one"}')"
 nocheck "notes reminder disabled by 0" "compacted soon" "$T/p24b.log"
 nocheck "no notes reminder below the threshold" "will be compacted soon" "$T/p1.log"
 
+# 25. pi-desk bridge: pi in its TUI (a pseudo-terminal) against a fake pi-desk: handshake, session,
+# status across runs, blockers, panels, wait_idle, reload, reconnect; the sidebar column only outside pi-desk
+node "$KIT/test/desk-fake.mjs" desk "$T/desk.log" "$T/desk.screen" > "$T/desk.out" 2>&1 || fail=1
+sed -e 's/^OK /PASS desk: /' -e 's/^FAIL /FAIL desk: /' "$T/desk.out"
+check "desk: prompt ran through the model" '"text":"FINAL: desk-ran' "$T/mock.log"
+check "desk: shell commands do not see the token" 'desk-ran token=\[\]' "$T/mock.log"
+nocheck "desk: no sidebar column in pi-desk" "No subagents, todos or shells" "$T/desk.screen"
+node "$KIT/test/desk-fake.mjs" plain "$T/plain.screen"
+check "desk: sidebar column outside pi-desk" "No subagents, todos or shells" "$T/plain.screen"
+node "$KIT/test/desk-fake.mjs" nopanels "$T/nopanels.log" "$T/nopanels.screen" > "$T/nopanels.out" 2>&1 || fail=1
+sed -e 's/^OK /PASS desk without panels: /' -e 's/^FAIL /FAIL desk without panels: /' "$T/nopanels.out"
+check "desk without panels: sidebar column stays" "No subagents, todos or shells" "$T/nopanels.screen"
+node "$KIT/test/desk-fake.mjs" earlyreload "$T/earlyreload.log" "$T/earlyreload.screen" > "$T/earlyreload.out" 2>&1 || fail=1
+sed -e 's/^OK /PASS desk reload before the first hello is answered: /' -e 's/^FAIL /FAIL desk reload before the first hello is answered: /' "$T/earlyreload.out"
+PI_DESK_SOCKET="$T/no-such-desk.sock" PI_DESK_TOKEN=unused node "$KIT/test/desk-fake.mjs" plain "$T/nodesk.screen"
+check "desk: sidebar column when pi-desk is not there" "No subagents, todos or shells" "$T/nodesk.screen"
+
+# 26. the sidebar is one column of normal width with the editor on screen, across /reload and
+# /new, outside and inside pi-desk (no panels), also with a second copy of the sidebar loaded
+# (another path, as when trying a checkout with -e next to the installed kit)
+sidebar_ok() { # <name> <snaps file> <min snaps>
+	local bad; bad="$(grep '^SNAP ' "$2" | grep -v 'columns=1 at=106 editor=yes')"
+	if [ "$(grep -c '^SNAP ' "$2")" -ge "$3" ] && [ -z "$bad" ]; then echo "PASS $1"; else echo "FAIL $1: $(tr '\n' ' ' < "$2")"; fail=1; fi
+}
+node "$KIT/test/desk-fake.mjs" plain "$T/side1.screen" /reload /reload /new > "$T/side1.out" 2>&1
+sidebar_ok "sidebar: one column across reloads and /new" "$T/side1.out" 4
+node "$KIT/test/desk-fake.mjs" reloads "$T/side2.log" "$T/side2.screen" /reload /reload /new > "$T/side2.out" 2>&1
+sidebar_ok "sidebar: one column across reloads and /new in pi-desk without panels" "$T/side2.out" 4
+mkdir -p "$T/agent2" && cp "$PI_CODING_AGENT_DIR/models.json" "$T/agent2/" && cp -R "$KIT/extensions" "$T/kit2-extensions"
+node -e 'const fs=require("fs"),s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));s.extensions=[process.argv[2]];fs.writeFileSync(process.argv[3],JSON.stringify(s))' "$PI_CODING_AGENT_DIR/settings.json" "$T/kit2-extensions/sidebar/index.ts" "$T/agent2/settings.json"
+PI_CODING_AGENT_DIR="$T/agent2" node "$KIT/test/desk-fake.mjs" plain "$T/side3.screen" /reload /new > "$T/side3.out" 2>&1
+sidebar_ok "sidebar loaded twice: one column" "$T/side3.out" 3
+PI_CODING_AGENT_DIR="$T/agent2" node "$KIT/test/desk-fake.mjs" reloads "$T/side4.log" "$T/side4.screen" /reload /new > "$T/side4.out" 2>&1
+sidebar_ok "sidebar loaded twice: one column in pi-desk without panels" "$T/side4.out" 3
+
 if ls -d "$TMPDIR"/pi-shell-* >/dev/null 2>&1; then echo "FAIL shell temp dirs left behind"; fail=1; else echo "PASS shell temp dirs removed at shutdown"; fi
 
 echo "artifacts: $T"

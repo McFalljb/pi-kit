@@ -7,6 +7,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { addRules } from "../extensions/model-rules/match.ts";
+import { SUBAGENT_EVENTS } from "../extensions/sidebar/rows.ts";
 
 const KIT = fileURLToPath(new URL("..", import.meta.url));
 const NM = path.join(KIT, "test/ci/node_modules");
@@ -43,8 +44,7 @@ test("pi-subagents: events, status RPC and snapshot run shape (extensions/sideba
 	const rpc = await load("pi-subagents/src/extension/rpc.js");
 	const types = await load("pi-subagents/src/shared/types.js");
 	const known = new Set([...Object.values(types), ...Object.values(rpc)]);
-	const used = JSON.parse(read("extensions/sidebar/index.ts").match(/SUBAGENT_EVENTS = (\[[^\]]*\])/)![1]);
-	for (const e of used) assert.ok(known.has(e), `pi-subagents no longer defines event ${e}: extensions/sidebar/index.ts SUBAGENT_EVENTS listens for it`);
+	for (const e of SUBAGENT_EVENTS) assert.ok(known.has(e), `pi-subagents no longer defines event ${e}: extensions/sidebar/rows.ts SUBAGENT_EVENTS (sidebar, desk-bridge) listens for it`);
 	assert.equal(rpc.SUBAGENT_RPC_REQUEST_EVENT, "subagents:rpc:v1:request", "pi-subagents RPC request event changed: extensions/sidebar/index.ts readSubagents emits it");
 	assert.equal(rpc.SUBAGENT_RPC_REPLY_EVENT_PREFIX, "subagents:rpc:v1:reply:", "pi-subagents RPC reply event changed: extensions/sidebar/index.ts readSubagents listens for it");
 	assert.ok(rpc.SUBAGENT_RPC_METHODS.includes("status"), "pi-subagents RPC has no status method: extensions/sidebar/index.ts readSubagents calls it");
@@ -82,4 +82,16 @@ test("pi: getAgentDir, VERSION and system prompt sections (extensions/model-rule
 	const options = sp.normalizeBuildSystemPromptOptions({ cwd: "/x" });
 	addRules(options, "gpt-6", "RULES");
 	assert.match(sp.buildSystemPrompt(options), /<gpt_rules>\nRULES\n<\/gpt_rules>/, "pi no longer renders systemPromptOptions.sections: extensions/model-rules adds gpt_rules there");
+});
+
+test("pi: idle, dialog and command-dispatch internals (extensions/desk-bridge/index.ts)", () => {
+	const types = readFileSync(path.join(NM, "@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts"), "utf8");
+	for (const e of ["ui_prompt_start", "ui_prompt_end", "agent_settled", "session_compact_failed"]) assert.match(types, new RegExp(`on\\(event: "${e}"`), `pi no longer has the ${e} event: extensions/desk-bridge/index.ts derives pi.status from it`);
+	const session = source("@earendil-works/pi-coding-agent/dist/core");
+	assert.match(session, /get isIdle\(\) \{\s*return !this\._isAgentRunActive && !this\.isCompacting;/, "pi's isIdle no longer spans the whole run (retries, queued continuations) and compaction: extensions/desk-bridge treats it as 'not working'");
+	assert.match(session, /this\._isAgentRunActive = false;[\s\S]{0,200}type: "agent_settled"/, "pi no longer clears the run flag before agent_settled: extensions/desk-bridge reads isIdle() there");
+	assert.match(session, /if \(this\._compactionAbortController !== undefined\) \{\s*throw new Error\("Cannot submit a prompt while compaction is in progress/, "pi no longer rejects prompts only during manual compaction: extensions/desk-bridge promptRefusal refuses pi.prompt then");
+	assert.match(session, /async compact\(customInstructions\) \{[\s\S]{0,1500}type: "session_before_compact",[\s\S]{0,200}reason: "manual"[\s\S]*?_emitSessionCompactFailed\(\{\s*reason: "manual"/, "manual compaction no longer emits session_before_compact / session_compact_failed with reason manual: extensions/desk-bridge tracks /compact with them");
+	assert.match(session, /async sendUserMessage\([\s\S]{0,900}expandPromptTemplates: options\?\.expandPromptTemplates \?\? false/, "sendUserMessage no longer passes expandPromptTemplates on: extensions/desk-bridge runs /desk-reload that way for pi.reload");
+	assert.match(session, /if \(expandPromptTemplates && text\.startsWith\("\/"\)\) \{\s*const handled = await this\._tryExecuteExtensionCommand\(text\);/, "sendUserMessage with expandPromptTemplates no longer runs extension commands: extensions/desk-bridge runs /desk-reload that way for pi.reload");
 });

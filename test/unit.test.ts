@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
+import { backoff, blockers, busyReasons, deskToken, promptRefusal, inDesk, keepReconnectToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
+import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { drift } from "../extensions/versions/drift.ts";
 import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
@@ -367,4 +368,82 @@ test("version drift: older or unpinned warns, newer and equal are silent", () =>
 		"npm:pi-ask-user (kit tested with npm:pi-ask-user@0.17.0)",
 		"npm:@juicesharp/rpiv-todo@^2.15.0 (kit tested with npm:@juicesharp/rpiv-todo@2.15.0)",
 	]);
+});
+
+test("desk bridge: messages carry v and type; replies echo the id; bad lines are dropped", () => {
+	assert.equal(line({ id: "b1", type: "pi.status", agent: "idle" }), '{"v":1,"id":"b1","type":"pi.status","agent":"idle"}\n');
+	assert.deepEqual(JSON.parse(reply("7", { ok: false, error: "timeout" })), { v: 1, id: "7", type: "result", result: { ok: false, error: "timeout" } });
+	assert.deepEqual(parse('{"v":1,"id":"3","type":"pi.prompt","text":"hi"}'), { v: 1, id: "3", type: "pi.prompt", text: "hi" });
+	for (const bad of ["", "nope", "[1]", "null", '{"v":2,"type":"pi.prompt"}']) assert.equal(parse(bad), undefined, bad);
+	assert.deepEqual([0, 1, 2, 6, 20].map(backoff), [500, 1000, 2000, 30_000, 30_000]);
+});
+
+test("desk bridge: status from idle, run outcome, dialogs and blockers", () => {
+	const base = { idle: true, error: false, dialogs: 0, question: false, shells: [], runs: [] };
+	assert.deepEqual(status(base), { agent: "idle", waiting: false, question: false, blockers: [] });
+	assert.equal(status({ ...base, idle: false }).agent, "working");
+	assert.equal(status({ ...base, error: true }).agent, "error");
+	assert.equal(status({ ...base, idle: false, error: true }).agent, "working", "a retry after an error is still working");
+	assert.equal(status({ ...base, dialogs: 1, idle: false }).waiting, true, "a dialog waits even mid-run");
+	assert.equal(status({ ...base, dialogs: 2 }).waiting, true, "overlapping dialogs: still waiting while one is open");
+	assert.deepEqual(busyReasons(status(base), false), []);
+	assert.deepEqual(busyReasons(status({ ...base, idle: false, dialogs: 1, shells: [{ id: "sh1", status: "1s", label: "make" }] }), true), ["agent working", "a dialog is open", "messages queued", "shell sh1: make"]);
+	assert.deepEqual(busyReasons(status({ ...base, question: true, error: true }), false), [], "a question or an error is idle");
+	assert.deepEqual([status({ ...base, question: true }).question, status({ ...base, question: true }).waiting], [true, false], "a final question is `question`, not `waiting` (only dialogs wait)");
+	assert.equal(status({ ...base, question: true, idle: false }).question, false, "a question mid-run is not reported");
+	const ask = (text: string, stopReason = "stop") => [{ role: "user", content: "x" }, { role: "assistant", stopReason, content: [{ type: "text", text }] }];
+	assert.deepEqual(runOutcome(ask("Which branch should I use?  ")), { error: false, question: true });
+	assert.deepEqual(runOutcome(ask("Done.")), { error: false, question: false });
+	assert.deepEqual(runOutcome(ask("", "error")), { error: true, question: false });
+	assert.deepEqual(runOutcome(ask("Why?", "aborted")), { error: false, question: false });
+	assert.deepEqual(runOutcome(undefined), { error: false, question: false });
+});
+
+test("desk bridge: blockers list shells, timers and running subagents, redacted", () => {
+	const shells = [
+		{ id: "sh1", status: "3s", label: "TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789AB npm run dev" },
+		{ id: "wk1", status: "wakes in 1m", label: "check\nthe deploy" },
+		{ id: "", status: "+2 more · /shells", label: "" },
+	];
+	const runs = [{ id: "a1", label: "kit.worker", state: "running" }, { id: "a2", label: "kit.reviewer", state: "complete" }, { id: "a3", kind: "workflow", state: "paused" }];
+	const b = blockers(shells, runs);
+	assert.deepEqual(b.slice(1), ["timer wk1: check the deploy", "+2 more · /shells", "subagent kit.worker"]);
+	assert.match(b[0], /^shell sh1: TOKEN=\[REDACTED\] npm run dev$/);
+	assert.ok(!b.join(" ").includes("ghp_"));
+	assert.deepEqual(blockers(null as never, [null as never]), []);
+});
+
+test("desk bridge: the token leaves process.env but stays readable, then the reconnect token replaces it; inDesk needs socket and token", () => {
+	const saved = { s: process.env.PI_DESK_SOCKET, t: process.env.PI_DESK_TOKEN };
+	try {
+		delete process.env.PI_DESK_SOCKET;
+		process.env.PI_DESK_TOKEN = "tok-1";
+		assert.equal(inDesk(), false);
+		process.env.PI_DESK_SOCKET = "/tmp/x.sock";
+		assert.equal(inDesk(), true);
+		assert.equal(deskToken(true), "tok-1");
+		assert.equal(process.env.PI_DESK_TOKEN, undefined);
+		assert.equal(deskToken(), "tok-1");
+		assert.equal(inDesk(), true);
+		keepReconnectToken("tok-2");
+		process.env.PI_DESK_TOKEN = "tok-1"; // still in the initial environment of a reloaded runtime
+		assert.equal(deskToken(true), "tok-2", "the reconnect token wins over the revoked env token");
+	} finally {
+		(globalThis as any)[Symbol.for("pi-kit.desk-bridge.token")] = undefined;
+		for (const [k, v] of [["PI_DESK_SOCKET", saved.s], ["PI_DESK_TOKEN", saved.t]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
+	}
+});
+
+test("deskPanels: one panel per sidebar section, empty rows when it has nothing", () => {
+	const d = { runs: [{ id: "a1", label: "kit.worker", state: "running", startedAt: 0 }], todos: [], shells: [{ id: "sh1", status: "5s", label: "npm test" }] };
+	const p = deskPanels(d, 65_000);
+	assert.deepEqual(p.map((x) => [x.panel, x.title, x.rows.length > 0]), [["subagents", "Subagents", true], ["shells", "Shells", true], ["todos", "Todos", false]]);
+	assert.deepEqual(p[1].rows, [{ text: "Shells", head: true }, { text: "sh1 5s", tone: "accent" }, { text: "  npm test", tone: "muted" }]);
+	assert.deepEqual(p[0].rows[0], { text: "Subagents · 1 running", head: true });
+});
+
+test("desk bridge: pi.prompt is refused while a dialog is open or a manual /compact runs", () => {
+	assert.equal(promptRefusal({ dialogs: 0, compacting: false }), undefined);
+	assert.equal(promptRefusal({ dialogs: 1, compacting: false }), "pi is waiting on the user (a dialog is open)");
+	assert.equal(promptRefusal({ dialogs: 0, compacting: true }), "pi is compacting the session; retry when it is idle");
 });

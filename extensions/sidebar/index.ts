@@ -7,6 +7,13 @@
  * - Regular tuiMode, or a narrower terminal: a one-line footer summary, and `/sidebar` opens the
  *   same rows as an overlay on the right (it does not take keyboard focus).
  * - `/sidebar` shows or hides the column (wide fullscreen) or the overlay (otherwise).
+ * - In a pi-desk tab that draws panels (the desk bridge's `kit:desk:mode` event says so after its
+ *   handshake): no column, footer or overlay; the same sections go to pi-desk as panels through the
+ *   bridge (`kit:desk:panels` event). In a pi-desk tab nothing is drawn until the bridge answers
+ *   (at most DESK_WAIT_MS), so a tab with panels never shows the column.
+ *
+ * One sidebar per process: a second copy (e.g. a checkout loaded with -e next to the installed kit)
+ * stays inert, since two would keep wrapping each other's layout root.
  *
  * While loaded with a UI, the rpiv-todo widget and the kit shell widget are hidden for good.
  * Data: pi-subagents' event-bus status RPC, re-read when its job events fire; rpiv-todo's state on
@@ -16,12 +23,15 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, HStack, isViewportTUI, ScrollView, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { type Data, hideCompleted, type Line, type Run, sidebarLines, subagentTask, summary, type TodoState, todosFromBranch, todoView, trackTodos } from "./rows.ts";
+import { inDesk } from "../desk-bridge/protocol.ts";
+import { type Data, deskPanels, hideCompleted, type Line, type Run, SUBAGENT_EVENTS, sidebarLines, subagentTask, summary, type TodoState, todosFromBranch, todoView, trackTodos } from "./rows.ts";
 
 const WIDTH = 34; // columns, border included
 const MIN_COLUMNS = 120; // narrower terminals get the footer summary instead of the column
-const SUBAGENT_EVENTS = ["subagent:jobs-changed", "subagent:async-started", "subagent:child-status", "subagent:async-complete", "subagent:process-terminal", "subagents:rpc:v1:ready"];
+const DESK_WAIT_MS = 3000; // in a pi-desk tab, how long to wait for the bridge before drawing the sidebar
 const arr = (v: unknown) => (Array.isArray(v) ? v : []);
+const OWNER = Symbol.for("pi-kit.sidebar.owner"); // the sidebar instance drawing in this process
+const owners = globalThis as { [OWNER]?: object };
 
 export default function (pi: ExtensionAPI) {
 	const tasks = new Map<string, string[]>(); // run id -> task line per step, from this session's own subagent calls
@@ -36,6 +46,8 @@ export default function (pi: ExtensionAPI) {
 	let root: HStack | undefined; // ours: pi's root plus the column
 	let shown = ""; // the layout state last seen, so a render can notice a mode or width change
 	let closed = false;
+	let desk = false; // pi-desk draws panels: they replace the column
+	let deskWait: NodeJS.Timeout | undefined; // in a pi-desk tab, until the bridge says whether it draws panels
 	let subTimer: NodeJS.Timeout | undefined;
 	let later: NodeJS.Timeout | undefined;
 	let stopRead: (() => void) | undefined; // set while a status read is in flight; ends it
@@ -81,8 +93,17 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function refresh() {
-		if (closed || !ui || !tui) return;
+		if (closed || !ui || deskWait || (!tui && !desk)) return;
 		try {
+			if (desk) {
+				unmount();
+				closeOverlay?.();
+				ui.setStatus("sidebar", undefined);
+				if (data.todos.length) ui.setWidget("rpiv-todos", undefined);
+				pi.events.emit("kit:desk:panels", deskPanels(data, Date.now()));
+				tui?.requestRender();
+				return;
+			}
 			shown = state();
 			if (fullscreen() && column) mount();
 			else unmount();
@@ -90,7 +111,7 @@ export default function (pi: ExtensionAPI) {
 			if (inColumn) closeOverlay?.(); // the column shows the same rows
 			ui.setStatus("sidebar", inColumn || closeOverlay ? undefined : summary(data));
 			if (data.todos.length) ui.setWidget("rpiv-todos", undefined); // rpiv-todo re-adds it after a reload or an empty list
-			tui.requestRender();
+			tui?.requestRender();
 		} catch {}
 	}
 	const refreshSoon = (ms = 250) => {
@@ -118,7 +139,7 @@ export default function (pi: ExtensionAPI) {
 	/** Called on every frame: re-lay out after a tuiMode switch, a resize past MIN_COLUMNS or a lost root. */
 	function watch() {
 		hideTodos();
-		if (closed) return;
+		if (closed || desk || deskWait) return;
 		if (state() !== shown || (fullscreen() && column && layoutRoot() !== root)) {
 			shown = state();
 			setTimeout(refresh, 0); // not from inside a render
@@ -175,9 +196,18 @@ export default function (pi: ExtensionAPI) {
 			});
 	}
 
+	function setDesk(panels: boolean) {
+		clearTimeout(deskWait);
+		deskWait = undefined;
+		desk = panels;
+		refresh();
+	}
+	pi.events.on("kit:desk:mode", (panels) => !closed && ui && setDesk(panels === true));
+
 	pi.registerCommand("sidebar", {
 		description: "Show or hide the sidebar: subagents, todos, background shells",
 		handler: async (_args, ctx) => {
+			if (desk) return ctx.ui.notify("The sidebar is shown in pi-desk's panels.", "info");
 			if (!tui) return ctx.ui.notify("The sidebar needs the interactive TUI.", "warning");
 			if (fullscreen() && wide()) column = !column;
 			else if (closeOverlay) closeOverlay();
@@ -194,10 +224,13 @@ export default function (pi: ExtensionAPI) {
 		data.hiddenTodos = view.hidden;
 	}
 
+	const me = {};
 	pi.on("session_start", (_e, ctx) => {
-		if (ctx.mode !== "tui") return;
+		if (ctx.mode !== "tui" || (owners[OWNER] && owners[OWNER] !== me)) return;
+		owners[OWNER] = me;
 		ui = ctx.ui;
 		setTodos(todosFromBranch(ctx.sessionManager.getBranch()), true);
+		if (inDesk()) deskWait = setTimeout(() => setDesk(false), DESK_WAIT_MS); // no bridge answer: the sidebar as usual
 		// A widget with no rows: its factory hands over the TUI, its render watches the layout.
 		ui.setWidget("kit-sidebar", (t) => {
 			tui = t;
@@ -237,9 +270,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_shutdown", () => {
 		if (closed || !ui) return;
 		closed = true;
+		if (owners[OWNER] === me) delete owners[OWNER];
 		clearTimeout(subTimer);
 		clearTimeout(later);
 		clearTimeout(hideTimer);
+		clearTimeout(deskWait);
 		stopRead?.();
 		try {
 			closeOverlay?.();
