@@ -45,7 +45,9 @@ if (mode === "plain") {
 }
 
 const [logFile, screen] = args;
-const TOKEN = "tok-desk-smoke";
+const TOKEN = "tok-desk-smoke"; // single use: the first hello with it revokes it and issues RECONNECT
+const RECONNECT = "tok-desk-reconnect";
+const valid = new Set([TOKEN]);
 const dir = fs.mkdtempSync("/tmp/desk-"); // short: Unix socket paths are limited to ~104 bytes
 const sockPath = path.join(dir, "desk.sock");
 const log = (s) => fs.appendFileSync(logFile, `${s}\n`);
@@ -67,13 +69,15 @@ const server = net.createServer((sock) => {
 		while ((nl = buf.indexOf("\n")) >= 0) {
 			const text = buf.slice(0, nl);
 			buf = buf.slice(nl + 1);
-			log(`${c.n} < ${text.replace(TOKEN, "<token>")}`);
+			log(`${c.n} < ${text.replace(TOKEN, "<token>").replace(RECONNECT, "<reconnect>")}`);
 			const m = JSON.parse(text);
 			got.push({ n: c.n, m });
 			if (m.type === "result") pending.get(m.id)?.(m.result);
 			else if (m.type === "hello") {
-				const ok = m.token === TOKEN && m.v === 1;
-				sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: ok ? { ok, data: { v: 1, app: "pi-desk", caller: "panel", tab_id: 1 } } : { ok, error: "unknown token" } })}\n`);
+				const ok = valid.has(m.token) && m.v === 1;
+				if (ok) valid.delete(TOKEN), valid.add(RECONNECT);
+				sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: ok ? { ok, data: { v: 1, app: "pi-desk", caller: "panel", tab_id: 1, reconnect_token: RECONNECT } } : { ok, error: "unknown token" } })}\n`);
+				if (!ok) sock.end();
 			} else if (m.id !== undefined) sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: { ok: true } })}\n`);
 		}
 	});
@@ -142,7 +146,7 @@ try {
 	mark = got.length;
 	const before = conns.length;
 	conns[conns.length - 1].sock.destroy();
-	await until("reconnects after pi-desk drops the connection", (m, n) => m.type === "hello" && n === before, 10_000, mark);
+	await until("reconnects with the reconnect token after pi-desk drops the connection", (m, n) => m.type === "hello" && n === before && m.token === RECONNECT, 10_000, mark);
 	await until("session reported again on the new connection", (m, n) => m.type === "pi.session" && n === before && m.pi_session_id === sessionId, 5000, mark);
 	await until("status reported again on the new connection", (m, n) => m.type === "pi.status" && n === before, 5000, mark);
 

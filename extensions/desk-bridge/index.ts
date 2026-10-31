@@ -3,8 +3,9 @@
  * per pi-desk's docs/PROTOCOL.md §4. Inert unless PI_DESK_SOCKET and PI_DESK_TOKEN are set and pi
  * runs in the interactive TUI.
  *
- * - Connects to the socket, sends `hello` with the token, reconnects with backoff if pi-desk goes
- *   away. The token is taken out of process.env, so shell commands and child processes do not see it.
+ * - Connects to the socket, sends `hello`, reconnects with backoff if pi-desk goes away. The env
+ *   token is single-use: pi-desk revokes it on the first hello and returns a reconnect token, kept
+ *   in memory (see deskToken) for every later hello, also after a reload or session switch.
  * - Reports `pi.session` (id, file, cwd) after each handshake; a session switch or reload starts a
  *   new extension runtime, which connects again and reports the new session.
  * - Reports `pi.status {agent, waiting, blockers}` when it changes (see status() in protocol.ts).
@@ -21,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Panel, type Run, type ShellRow, SUBAGENT_EVENTS } from "../sidebar/rows.ts";
-import { backoff, deskToken, line, parse, reply, runOutcome, status } from "./protocol.ts";
+import { backoff, deskToken, keepReconnectToken, line, parse, reply, runOutcome, status } from "./protocol.ts";
 
 export { inDesk } from "./protocol.ts";
 
@@ -157,6 +158,7 @@ export default function (pi: ExtensionAPI) {
 						if (m.id !== helloId) continue;
 						clearTimeout(helloTimer);
 						if (!m.result?.ok) return void s.destroy(); // wrong token or version: retried with backoff
+						keepReconnectToken(m.result.data?.reconnect_token);
 						ready = true;
 						attempt = 0;
 						sent = "";

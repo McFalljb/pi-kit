@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { backoff, blockers, deskToken, inDesk, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
+import { backoff, blockers, deskToken, inDesk, keepReconnectToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
 import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { drift } from "../extensions/versions/drift.ts";
@@ -409,7 +409,7 @@ test("desk bridge: blockers list shells, timers and running subagents, redacted"
 	assert.deepEqual(blockers(null as never, [null as never]), []);
 });
 
-test("desk bridge: the token leaves process.env but stays readable; inDesk needs socket and token", () => {
+test("desk bridge: the token leaves process.env but stays readable, then the reconnect token replaces it; inDesk needs socket and token", () => {
 	const saved = { s: process.env.PI_DESK_SOCKET, t: process.env.PI_DESK_TOKEN };
 	try {
 		delete process.env.PI_DESK_SOCKET;
@@ -421,6 +421,9 @@ test("desk bridge: the token leaves process.env but stays readable; inDesk needs
 		assert.equal(process.env.PI_DESK_TOKEN, undefined);
 		assert.equal(deskToken(), "tok-1");
 		assert.equal(inDesk(), true);
+		keepReconnectToken("tok-2");
+		process.env.PI_DESK_TOKEN = "tok-1"; // still in the initial environment of a reloaded runtime
+		assert.equal(deskToken(true), "tok-2", "the reconnect token wins over the revoked env token");
 	} finally {
 		(globalThis as any)[Symbol.for("pi-kit.desk-bridge.token")] = undefined;
 		for (const [k, v] of [["PI_DESK_SOCKET", saved.s], ["PI_DESK_TOKEN", saved.t]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);

@@ -157,9 +157,10 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   `pi.prompt` (a follow-up if a run is going; refused while a dialog is open), `pi.wait_idle`
   (idle for 250 ms with nothing queued and no blockers) and `pi.reload` (refused with the
   reasons unless that idle holds, since a reload kills background shells; it runs the
-  `/desk-reload` command and answers after the reload). It takes the token out of the
-  environment, so the agent's commands and child processes do not inherit it, and reconnects
-  with backoff if pi-desk restarts. Other extensions can call `inDesk()` from
+  `/desk-reload` command and answers after the reload). pi-desk's env token is single-use: the first
+  `hello` revokes it and returns a reconnect token, which the bridge keeps in memory for every
+  later `hello` (reconnects with backoff, reloads, session switches). Children of pi can still see
+  the revoked env token in pi's initial environment, but it no longer opens a connection. Other extensions can call `inDesk()` from
   `extensions/desk-bridge/protocol.ts`. Panel actions (`panel.action`) are not handled yet.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start

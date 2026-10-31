@@ -4,20 +4,27 @@
 import { one, type Run, runningLeaves, type ShellRow } from "../sidebar/rows.ts";
 
 export const V = 1;
-const TOKEN_KEY = Symbol.for("pi-kit.desk-bridge.token"); // the token, kept after it leaves process.env
+const TOKEN_KEY = Symbol.for("pi-kit.desk-bridge.token"); // the token for the next hello, in memory only
 
 /**
- * pi-desk's connection token. The bridge takes it out of process.env on start, so the agent's
- * shell commands and child processes do not inherit it; this keeps it for later runtimes (reload).
+ * The token for the next `hello`. pi-desk's env token (PI_DESK_TOKEN) is single-use: the first
+ * successful hello revokes it and returns a `reconnect_token`, valid until the tab exits, which
+ * the bridge keeps here (globalThis, so it survives a reload or session switch) for every later
+ * hello. `take` also deletes the env variable; that does not remove it from the process's initial
+ * environment (`ps eww` still shows it), which is why the env token must be single-use.
  */
 export function deskToken(take = false): string | undefined {
 	const g = globalThis as { [TOKEN_KEY]?: string };
-	const token = process.env.PI_DESK_TOKEN || g[TOKEN_KEY];
+	const token = g[TOKEN_KEY] || process.env.PI_DESK_TOKEN;
 	if (take && token) {
 		g[TOKEN_KEY] = token;
 		delete process.env.PI_DESK_TOKEN;
 	}
 	return token;
+}
+/** Keep the hello result's reconnect token for every later hello. */
+export function keepReconnectToken(token: unknown): void {
+	if (typeof token === "string" && token) (globalThis as { [TOKEN_KEY]?: string })[TOKEN_KEY] = token;
 }
 
 /** Whether this pi runs in a pi-desk tab (other extensions can drop terminal-only chrome). */
