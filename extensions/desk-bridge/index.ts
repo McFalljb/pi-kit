@@ -22,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Panel, type Run, type ShellRow, SUBAGENT_EVENTS } from "../sidebar/rows.ts";
-import { backoff, busyReasons, deskToken, keepReconnectToken, line, parse, reply, runOutcome, status } from "./protocol.ts";
+import { backoff, busyReasons, deskToken, keepReconnectToken, line, parse, promptRefusal, reply, runOutcome, status } from "./protocol.ts";
 
 export { inDesk } from "./protocol.ts";
 
@@ -44,6 +44,7 @@ export default function (pi: ExtensionAPI) {
 	let shells: ShellRow[] = [];
 	let runs: Run[] = [];
 	let dialogs = 0; // open pi dialogs (they can overlap)
+	let compacting = false; // a manual /compact is running
 	let error = false;
 	let question = false;
 	let subTimer: NodeJS.Timeout | undefined;
@@ -110,7 +111,8 @@ export default function (pi: ExtensionAPI) {
 		if (m.id === undefined) return; // events: none expected yet
 		if (m.type === "pi.prompt") {
 			if (typeof m.text !== "string" || !m.text.trim()) return answer(m.id, { ok: false, error: "text is required" });
-			if (dialogs) return answer(m.id, { ok: false, error: "pi is waiting on the user" });
+			const refused = promptRefusal({ dialogs, compacting });
+			if (refused) return answer(m.id, { ok: false, error: refused });
 			pi.sendUserMessage(m.text, ctx!.isIdle() ? undefined : { deliverAs: "followUp" });
 			return answer(m.id, { ok: true });
 		}
@@ -244,10 +246,13 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.on("agent_settled", () => update());
 	// Compaction outside a run (/compact) also makes pi busy; isIdle() flips around these events.
-	const later = () => void setTimeout(update, 0);
-	pi.on("session_before_compact", later);
-	pi.on("session_compact", later);
-	pi.on("session_compact_failed", later);
+	const compaction = (start: boolean) => (e: { reason: string }) => {
+		if (e.reason === "manual") compacting = start; // automatic compaction runs inside a run: prompts queue
+		setTimeout(update, 0);
+	};
+	pi.on("session_before_compact", compaction(true));
+	pi.on("session_compact", compaction(false));
+	pi.on("session_compact_failed", compaction(false));
 
 	pi.on("session_shutdown", () => {
 		if (closed || !ctx) return;

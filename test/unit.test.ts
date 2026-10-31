@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
-import { backoff, blockers, busyReasons, deskToken, inDesk, keepReconnectToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
+import { backoff, blockers, busyReasons, deskToken, promptRefusal, inDesk, keepReconnectToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
 import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { drift } from "../extensions/versions/drift.ts";
@@ -440,4 +440,10 @@ test("deskPanels: one panel per sidebar section, empty rows when it has nothing"
 	assert.deepEqual(p.map((x) => [x.panel, x.title, x.rows.length > 0]), [["subagents", "Subagents", true], ["shells", "Shells", true], ["todos", "Todos", false]]);
 	assert.deepEqual(p[1].rows, [{ text: "Shells", head: true }, { text: "sh1 5s", tone: "accent" }, { text: "  npm test", tone: "muted" }]);
 	assert.deepEqual(p[0].rows[0], { text: "Subagents · 1 running", head: true });
+});
+
+test("desk bridge: pi.prompt is refused while a dialog is open or a manual /compact runs", () => {
+	assert.equal(promptRefusal({ dialogs: 0, compacting: false }), undefined);
+	assert.equal(promptRefusal({ dialogs: 1, compacting: false }), "pi is waiting on the user (a dialog is open)");
+	assert.equal(promptRefusal({ dialogs: 0, compacting: true }), "pi is compacting the session; retry when it is idle");
 });

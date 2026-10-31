@@ -82,6 +82,15 @@ export function busyReasons(s: Status, queued: boolean): string[] {
 	return [...(s.agent === "working" ? ["agent working"] : []), ...(s.waiting ? ["a dialog is open"] : []), ...(queued ? ["messages queued"] : []), ...s.blockers];
 }
 
+/**
+ * Why pi.prompt must be refused, or undefined. pi rejects a prompt during a manual /compact (it
+ * throws inside sendUserMessage, where the error never reaches the caller), so it is refused here.
+ */
+export function promptRefusal(s: { dialogs: number; compacting: boolean }): string | undefined {
+	if (s.dialogs) return "pi is waiting on the user (a dialog is open)";
+	if (s.compacting) return "pi is compacting the session; retry when it is idle";
+}
+
 /** Background work a reload would kill or that will start another run: kit shells and timers, running subagents. Redacted. */
 export function blockers(shells: ShellRow[], runs: Run[]): string[] {
 	const out: string[] = [];
