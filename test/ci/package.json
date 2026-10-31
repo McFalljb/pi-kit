@@ -16,5 +16,8 @@
     "@earendil-works/pi-codemode": "$@earendil-works/pi-coding-agent",
     "@earendil-works/pi-agent-core": "$@earendil-works/pi-coding-agent",
     "@earendil-works/pi-telemetry": "$@earendil-works/pi-coding-agent"
+  },
+  "devDependencies": {
+    "@xterm/headless": "6.0.0"
   }
 }

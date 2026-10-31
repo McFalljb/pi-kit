@@ -10,6 +10,7 @@
 //   node test/desk-fake.mjs plain <screen>        pi without them, for a few seconds (sidebar check)
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import net from "node:net";
 import path from "node:path";
 
@@ -51,9 +52,35 @@ const stop = async (proc) => {
 };
 
 const [mode, ...args] = process.argv.slice(2);
+/**
+ * What the terminal shows now (pi's output replayed into a headless xterm): how many sidebar
+ * columns, the column of the first one's border (normal: 140 - 34 = 106), whether the editor's
+ * border is on screen. Prints "SNAP <label> columns=N at=X editor=yes|no".
+ */
+async function snap(label, screen) {
+	const { Terminal } = createRequire(import.meta.url)("./ci/node_modules/@xterm/headless");
+	const t = new Terminal({ cols: 140, rows: 40, allowProposedApi: true });
+	await new Promise((r) => t.write(fs.readFileSync(screen), r));
+	const b = t.buffer.active;
+	const lines = Array.from({ length: t.rows }, (_, i) => b.getLine(b.viewportY + i)?.translateToString(true) ?? "");
+	const columns = Math.max(...lines.map((l) => l.split("No subagents").length - 1));
+	const at = lines.map((l) => l.indexOf("│ No subagents")).find((i) => i >= 0) ?? -1;
+	console.log(`SNAP ${label} columns=${columns} at=${at} editor=${lines.some((l) => /─{40}/.test(l)) ? "yes" : "no"}`);
+}
+/** Type each command into pi, wait, and snap the screen. */
+async function typeAll(proc, screen, commands) {
+	for (const c of commands) {
+		proc.stdin.write(`${c}\r`);
+		await sleep(5000);
+		await snap(c, screen);
+	}
+}
+
 if (mode === "plain") {
 	const proc = startPi(args[0], {});
 	await sleep(8000);
+	await snap("start", args[0]);
+	await typeAll(proc, args[0], args.slice(1));
 	await stop(proc);
 	process.exit(0);
 }
@@ -139,6 +166,13 @@ const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
 const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN });
 try {
+	if (mode === "reloads") {
+		await until("handshake", (m) => m.type === "hello", 30_000);
+		await sleep(5000);
+		await snap("start", screen);
+		await typeAll(proc, screen, args.slice(2));
+		throw "done";
+	}
 	if (mode === "earlyreload") {
 		await until("first hello (held)", (m, n) => m.type === "hello" && n === 0, 30_000);
 		proc.stdin.write("/reload\r");

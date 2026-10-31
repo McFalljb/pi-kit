@@ -348,6 +348,24 @@ sed -e 's/^OK /PASS desk reload before the first hello is answered: /' -e 's/^FA
 PI_DESK_SOCKET="$T/no-such-desk.sock" PI_DESK_TOKEN=unused node "$KIT/test/desk-fake.mjs" plain "$T/nodesk.screen"
 check "desk: sidebar column when pi-desk is not there" "No subagents, todos or shells" "$T/nodesk.screen"
 
+# 26. the sidebar is one column of normal width with the editor on screen, across /reload and
+# /new, outside and inside pi-desk (no panels), also with a second copy of the sidebar loaded
+# (another path, as when trying a checkout with -e next to the installed kit)
+sidebar_ok() { # <name> <snaps file> <min snaps>
+	local bad; bad="$(grep '^SNAP ' "$2" | grep -v 'columns=1 at=106 editor=yes')"
+	if [ "$(grep -c '^SNAP ' "$2")" -ge "$3" ] && [ -z "$bad" ]; then echo "PASS $1"; else echo "FAIL $1: $(tr '\n' ' ' < "$2")"; fail=1; fi
+}
+node "$KIT/test/desk-fake.mjs" plain "$T/side1.screen" /reload /reload /new > "$T/side1.out" 2>&1
+sidebar_ok "sidebar: one column across reloads and /new" "$T/side1.out" 4
+node "$KIT/test/desk-fake.mjs" reloads "$T/side2.log" "$T/side2.screen" /reload /reload /new > "$T/side2.out" 2>&1
+sidebar_ok "sidebar: one column across reloads and /new in pi-desk without panels" "$T/side2.out" 4
+mkdir -p "$T/agent2" && cp "$PI_CODING_AGENT_DIR/models.json" "$T/agent2/" && cp -R "$KIT/extensions" "$T/kit2-extensions"
+node -e 'const fs=require("fs"),s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));s.extensions=[process.argv[2]];fs.writeFileSync(process.argv[3],JSON.stringify(s))' "$PI_CODING_AGENT_DIR/settings.json" "$T/kit2-extensions/sidebar/index.ts" "$T/agent2/settings.json"
+PI_CODING_AGENT_DIR="$T/agent2" node "$KIT/test/desk-fake.mjs" plain "$T/side3.screen" /reload /new > "$T/side3.out" 2>&1
+sidebar_ok "sidebar loaded twice: one column" "$T/side3.out" 3
+PI_CODING_AGENT_DIR="$T/agent2" node "$KIT/test/desk-fake.mjs" reloads "$T/side4.log" "$T/side4.screen" /reload /new > "$T/side4.out" 2>&1
+sidebar_ok "sidebar loaded twice: one column in pi-desk without panels" "$T/side4.out" 3
+
 if ls -d "$TMPDIR"/pi-shell-* >/dev/null 2>&1; then echo "FAIL shell temp dirs left behind"; fail=1; else echo "PASS shell temp dirs removed at shutdown"; fi
 
 echo "artifacts: $T"
