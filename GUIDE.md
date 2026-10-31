@@ -173,10 +173,14 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   description is generated from pi-desk's `list_commands`, or from a built-in list in
   `extensions/desk/commands.ts` while pi-desk has none; it waits for long-running commands, and for
   the user's answer when a command needs confirmation, never resending it), `desk_prompt` (a
-  user message in another pi tab, optionally waiting until it is idle) and `desk_wait`. Other pi
-  tabs turning waiting, error, question or finished are sent as one short `pi-desk:` message when
-  Home is idle (coalesced over 2 s, latest per tab, at most 8 lines; not for tabs a
-  desk_prompt/desk_wait call is waiting on). pi-desk itself never sends a caller its own events.
+  user message in another pi tab, optionally waiting until it is idle) and `desk_wait`. Home's own
+  tabs (the control hello's `tab_id`, and its bridge's tab) are never targeted, and desk_run
+  refuses `send_text` into a pi tab or a tab waiting for the user. desk_state output is marked as
+  data, not instructions. Other pi tabs turning waiting, error, question or finished are sent as
+  one short `pi-desk:` message when Home is idle (coalesced over 10 s, latest per tab, at most 8
+  lines, at most one such turn a minute; not for Home's own tabs or tabs a desk_prompt/desk_wait
+  call is waiting on). pi-desk itself never sends a caller its own events. After a `dropped`
+  event stream the extension subscribes again and re-checks pending confirmations.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
   the first two.
