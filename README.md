@@ -67,8 +67,9 @@ session starts without a version warning, and `test/smoke.sh` passes offline.
 **How versions move:** Dependabot opens a weekly PR that bumps `test/ci/package.json`; CI tests
 the new versions, including contract tests for the internals the sidebar and GPT rules rely on.
 Someone reads the changelogs, tries the PR on one machine with the sidebar test prompt, and
-merges; then every machine runs the two commands above. The full checklist and the test prompt
-are in [GUIDE.md → Updating](GUIDE.md#updating).
+merges; then every machine runs the two commands above. A nightly canary runs the same tests
+against the latest releases and opens a `canary` issue when they break. The full checklist and
+the test prompt are in [GUIDE.md → Updating](GUIDE.md#updating).
 
 **Undo:** each run leaves `settings.json.bak.<timestamp>` (and `AGENTS.md.bak.<timestamp>` when
 it appends) in `~/.pi/agent/`; copy one back to restore. [SETUP.md → Uninstall](SETUP.md#uninstall)

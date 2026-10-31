@@ -1,0 +1,95 @@
+# Nightly canary: run test.yml's checks against the LATEST pi and recommended packages instead of
+# the pins, so a breaking upstream release shows up before Dependabot's weekly PR. The pins in
+# test/ci/package.json are not changed. On failure it opens or updates one issue labelled
+# `canary`; the next green run closes it. See GUIDE.md "Updating".
+name: nightly
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      versions: ${{ steps.resolve.outputs.versions }}
+      failed: ${{ steps.summary.outputs.failed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22.19.0
+      - name: Resolve the latest versions (pin vs latest)
+        id: resolve
+        run: |
+          cp -r test/ci "$RUNNER_TEMP/ci"
+          node scripts/canary-versions.mjs --write "$RUNNER_TEMP/ci"
+          echo "versions=$(node -p 'Object.entries(require(process.argv[1]).dependencies).map(([n, v]) => `${n.split("/").pop()}@${v}`).join(", ")' "$RUNNER_TEMP/ci/package.json")" >> "$GITHUB_OUTPUT"
+      - name: Install the latest versions (pi's sibling packages follow pi via overrides)
+        id: install
+        run: |
+          npm install --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/ci"
+          # The tests read test/ci; in this throwaway checkout, point it at the canary install.
+          rm -rf test/ci && ln -s "$RUNNER_TEMP/ci" test/ci
+          echo "$RUNNER_TEMP/ci/node_modules/.bin" >> "$GITHUB_PATH"
+      # Each check runs even if an earlier one failed, so the issue lists every failing check.
+      - name: Typecheck
+        id: typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bash test/typecheck.sh
+      - name: Unit tests
+        id: unit
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node --test test/unit.test.ts
+      - name: Contract tests
+        id: contracts
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node --test test/contracts.test.ts
+      - name: AGENTS.md merge tests
+        id: merge
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bash test/merge.sh
+      - name: Smoke tests
+        id: smoke
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: PI_KIT_RECOMMENDED=1 bash test/smoke.sh
+      - name: List the failed steps
+        id: summary
+        if: ${{ always() }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: echo "failed=$(jq -r '[to_entries[] | select(.value.outcome == "failure") | .key] | join(", ")' <<< "$STEPS")" >> "$GITHUB_OUTPUT"
+
+  report:
+    needs: canary
+    if: ${{ always() && (needs.canary.result == 'success' || needs.canary.result == 'failure') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RESULT: ${{ needs.canary.result }}
+      VERSIONS: ${{ needs.canary.outputs.versions }}
+      FAILED: ${{ needs.canary.outputs.failed }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Open, update or close the canary issue
+        run: |
+          open="$(gh issue list --label canary --state open --json number --jq '.[0].number // empty')"
+          if [ "$RESULT" = success ]; then
+            [ -z "$open" ] || gh issue close "$open" --comment "Nightly canary passes again with ${VERSIONS:-unknown versions}: $RUN_URL"
+            exit 0
+          fi
+          title="Nightly canary failing: ${VERSIONS:-versions not resolved}"
+          body="$(printf 'The nightly canary failed against the latest pi and recommended packages.\n\n- Versions: %s\n- Failed steps: %s\n- Run: %s\n\nThe pins in test/ci/package.json are unchanged. See GUIDE.md "Updating".\n' "${VERSIONS:-not resolved}" "${FAILED:-unknown}" "$RUN_URL")"
+          if [ -n "$open" ]; then
+            gh issue edit "$open" --title "$title"
+            gh issue comment "$open" --body "$body"
+          else
+            gh label create canary --color FBCA04 --description "Nightly canary against the latest packages" 2>/dev/null || true
+            gh issue create --label canary --title "$title" --body "$body"
+          fi

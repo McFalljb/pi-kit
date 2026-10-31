@@ -239,6 +239,12 @@ clear when a pi release bumps it.
    appends missing sections.)
 5. Merge, then run `scripts/install.sh --update` on each machine.
 
+A nightly canary (`.github/workflows/nightly.yml`, 06:00 UTC or run by hand) runs the same checks
+against the latest pi and recommended packages instead of the pins, so a breaking release shows up
+before Dependabot's PR; the pins and installed machines are untouched. When it fails it opens or
+updates one issue labelled `canary` (versions, failed steps, run link), and the next green run closes
+it. `node scripts/canary-versions.mjs` prints pin vs latest locally.
+
 Without `--update`, `install.sh` keeps a package already configured under another spec,
 including an unpinned one such as `npm:pi-ask-user`, and prints `kept:`. With `--update` it backs
 up `settings.json`, moves each recommended package to its pin with `pi install npm:<name>@<version>`
