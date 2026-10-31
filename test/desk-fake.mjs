@@ -5,22 +5,34 @@
 //   node test/desk-fake.mjs desk <log> <screen>   pi with PI_DESK_SOCKET/PI_DESK_TOKEN: the scenario;
 //                                                 the hello result advertises the panels capability
 //   node test/desk-fake.mjs nopanels <log> <screen>  the same pi, panels not advertised: a short run
+//   node test/desk-fake.mjs earlyreload <log> <screen>  /reload typed in pi before its first hello
+//                                                 is answered: the old runtime must keep the token
 //   node test/desk-fake.mjs plain <screen>        pi without them, for a few seconds (sidebar check)
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
 
-// pty.fork with a 140x40 window, the child's output appended to argv[1]; SIGTERM is passed on.
+// pty.fork with a 140x40 window, the child's output appended to argv[1], our stdin typed into it;
+// SIGTERM is passed on.
 const PTY = `
-import os, pty, sys, fcntl, termios, struct, signal
+import os, pty, sys, fcntl, termios, struct, signal, select
 pid, fd = pty.fork()
 if pid == 0:
     fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 140, 0, 0))
     os.execvp(sys.argv[2], sys.argv[2:])
 signal.signal(signal.SIGTERM, lambda *_: os.kill(pid, signal.SIGTERM))
 out = open(sys.argv[1], "ab")
+fds = [fd, 0]
 while True:
+    ready = select.select(fds, [], [])[0]
+    if 0 in ready:
+        typed = os.read(0, 4096)
+        if typed:
+            os.write(fd, typed)
+        else:
+            fds.remove(0)
+        continue
     try:
         data = os.read(fd, 65536)
     except OSError:
@@ -31,7 +43,7 @@ while True:
     out.flush()
 os.waitpid(pid, 0)
 `;
-const startPi = (screen, env) => spawn("python3", ["-c", PTY, screen, "pi"], { env: { ...process.env, ...env }, stdio: ["ignore", "ignore", "inherit"] });
+const startPi = (screen, env) => spawn("python3", ["-c", PTY, screen, "pi"], { env: { ...process.env, ...env }, stdio: ["pipe", "ignore", "inherit"] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stop = async (proc) => {
 	proc.kill("SIGTERM");
@@ -59,9 +71,23 @@ const got = []; // {n (connection), m (message)}
 const pending = new Map(); // our request id -> resolve
 let nextId = 0;
 let failed = false;
+let holdHellos = mode === "earlyreload"; // keep hellos unanswered until released
+const held = []; // [connection, hello]
 
-const server = net.createServer((sock) => {
+function answerHello(c, m) {
+	const ok = valid.has(m.token) && m.v === 1;
+	if (ok) valid.delete(TOKEN), valid.add(RECONNECT);
+	c.sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: ok ? { ok, data: { v: 1, app: "pi-desk", caller: "panel", tab_id: 1, reconnect_token: RECONNECT, capabilities } } : { ok, error: "unknown token" } })}\n`);
+	if (!ok || c.ended) c.sock.end();
+}
+
+// Half-open: a client that ends its side can still get the answer to a held hello.
+const server = net.createServer({ allowHalfOpen: true }, (sock) => {
 	const c = { sock, n: conns.length };
+	sock.on("end", () => {
+		c.ended = true;
+		if (!held.some(([h]) => h === c)) sock.end();
+	});
 	conns.push(c);
 	let buf = "";
 	sock.setEncoding("utf8");
@@ -77,10 +103,8 @@ const server = net.createServer((sock) => {
 			got.push({ n: c.n, m });
 			if (m.type === "result") pending.get(m.id)?.(m.result);
 			else if (m.type === "hello") {
-				const ok = valid.has(m.token) && m.v === 1;
-				if (ok) valid.delete(TOKEN), valid.add(RECONNECT);
-				sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: ok ? { ok, data: { v: 1, app: "pi-desk", caller: "panel", tab_id: 1, reconnect_token: RECONNECT, capabilities } } : { ok, error: "unknown token" } })}\n`);
-				if (!ok) sock.end();
+				if (holdHellos) held.push([c, m]);
+				else answerHello(c, m);
 			} else if (m.id !== undefined) sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: { ok: true } })}\n`);
 		}
 	});
@@ -115,6 +139,16 @@ const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
 const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN });
 try {
+	if (mode === "earlyreload") {
+		await until("first hello (held)", (m, n) => m.type === "hello" && n === 0, 30_000);
+		proc.stdin.write("/reload\r");
+		await until("the reloaded runtime says hello before the first is answered", (m, n) => m.type === "hello" && n > 0, 4000);
+		holdHellos = false;
+		for (const [c, m] of held.splice(0)) answerHello(c, m); // the first revokes the env token, the second is refused
+		await until("the new runtime reconnects with the reconnect token the old runtime got", (m) => m.type === "hello" && m.token === RECONNECT, 10_000);
+		await until("and reports its session", (m, n) => m.type === "pi.session" && n > 1, 5000);
+		throw "done";
+	}
 	await until("handshake with the token", (m) => m.type === "hello" && m.token === TOKEN, 30_000);
 	const s = await until("pi.session reported", (m) => m.type === "pi.session" && /^[0-9a-f-]{8,}$/.test(m.pi_session_id) && m.session_file.endsWith(".jsonl") && m.cwd === process.cwd(), 10_000);
 	const sessionId = s >= 0 ? got[s].m.pi_session_id : "";

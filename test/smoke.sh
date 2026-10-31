@@ -343,6 +343,8 @@ check "desk: sidebar column outside pi-desk" "No subagents, todos or shells" "$T
 node "$KIT/test/desk-fake.mjs" nopanels "$T/nopanels.log" "$T/nopanels.screen" > "$T/nopanels.out" 2>&1 || fail=1
 sed -e 's/^OK /PASS desk without panels: /' -e 's/^FAIL /FAIL desk without panels: /' "$T/nopanels.out"
 check "desk without panels: sidebar column stays" "No subagents, todos or shells" "$T/nopanels.screen"
+node "$KIT/test/desk-fake.mjs" earlyreload "$T/earlyreload.log" "$T/earlyreload.screen" > "$T/earlyreload.out" 2>&1 || fail=1
+sed -e 's/^OK /PASS desk reload before the first hello is answered: /' -e 's/^FAIL /FAIL desk reload before the first hello is answered: /' "$T/earlyreload.out"
 PI_DESK_SOCKET="$T/no-such-desk.sock" PI_DESK_TOKEN=unused node "$KIT/test/desk-fake.mjs" plain "$T/nodesk.screen"
 check "desk: sidebar column when pi-desk is not there" "No subagents, todos or shells" "$T/nodesk.screen"
 

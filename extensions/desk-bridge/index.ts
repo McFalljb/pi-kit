@@ -154,13 +154,17 @@ export default function (pi: ExtensionAPI) {
 			while ((nl = buf.indexOf("\n")) >= 0) {
 				const m = parse(buf.slice(0, nl));
 				buf = buf.slice(nl + 1);
-				if (!m || sock !== s || closed) continue;
+				if (!m) continue;
+				// pi-desk revoked the env token on this hello: keep its reconnect token even if this
+				// runtime closed meanwhile (reload, session switch), or the next runtime cannot connect.
+				const helloOk = !ready && m.id === helloId && m.result?.ok === true;
+				if (helloOk) keepReconnectToken(m.result.data?.reconnect_token);
+				if (sock !== s || closed) continue;
 				try {
 					if (!ready) {
 						if (m.id !== helloId) continue;
 						clearTimeout(helloTimer);
-						if (!m.result?.ok) return void s.destroy(); // wrong token or version: retried with backoff
-						keepReconnectToken(m.result.data?.reconnect_token);
+						if (!helloOk) return void s.destroy(); // wrong token or version: retried with backoff
 						panelsOn = Array.isArray(m.result.data?.capabilities) && m.result.data.capabilities.includes("panels");
 						pi.events.emit("kit:desk:mode", panelsOn);
 						ready = connected = true;
