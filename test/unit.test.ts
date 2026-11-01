@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
 import { backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
 import { COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
-import { DATA_NOTE, eventsText, exited, filterState, fires, noticeFor, type On, piTabOf, refusal, seenFrom, stateText, summarize, tabLabel, watchHits, watchText } from "../extensions/desk/state.ts";
+import { alreadyTrue, DATA_NOTE, eventsText, EVENTS_END, EVENTS_START, exited, filterState, fires, noticeFor, type On, piTabOf, refusal, seenFrom, stateText, summarize, tabLabel, watchHits, watchText } from "../extensions/desk/state.ts";
 import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { drift } from "../extensions/versions/drift.ts";
@@ -550,8 +550,13 @@ test("desk: status changes worth a watch are waiting, error, question and finish
 	assert.deepEqual(noticeFor(ev(2, "idle", false, true), seen), { tab: 2, kind: "question" });
 	assert.equal(noticeFor({ event: "command", command: { type: "close_tab", tab_id: 4 } }, seen), undefined);
 	assert.equal(noticeFor({ event: "finished", request_id: 1 }, seen), undefined);
-	assert.equal(watchText({ tab: 6, kind: "waiting" }, tabLabel(deskState, 6)), "pi-desk: the watch you set fired: ~/w/kit (session 5, tab 6) is waiting for you (a dialog is open). The user asked for this; tell them.");
-	assert.equal(watchText({ tab: 9, kind: "exited" }, tabLabel(deskState, 9)), "pi-desk: the watch you set fired: tab 9 exited or was closed. The user asked for this; tell them.");
+	assert.equal(watchText([{ kind: "waiting", label: tabLabel(deskState, 6) }]), "pi-desk: the watch you set fired: ~/w/kit (session 5, tab 6) is waiting for you (a dialog is open). The user asked for this; tell them.");
+	assert.equal(watchText([{ kind: "exited", label: tabLabel(deskState, 9) }]), "pi-desk: the watch you set fired: tab 9 exited or was closed. The user asked for this; tell them.");
+	assert.equal(
+		watchText([{ kind: "finished", label: "A (session 1, tab 2)" }, { kind: "exited", label: "tab 9" }]),
+		"pi-desk: watches you set fired (the user asked for these; tell them):\n- A (session 1, tab 2) finished its run\n- tab 9 exited or was closed",
+		"hits from one pass: one message",
+	);
 	assert.equal(tabLabel(deskState, 2), "App (session 3, tab 2)");
 });
 
@@ -582,20 +587,41 @@ test("desk: watchHits compares a fresh state with what was seen (reconnects, exi
 	assert.deepEqual(hits, [{ tab: 2, kind: "finished" }, { tab: 4, kind: "exited" }, { tab: 6, kind: "exited" }]);
 	assert.deepEqual(watchHits(later, seen, new Map([[2, w(...all)]])), [], "seen was updated: no second hit");
 	assert.deepEqual(watchHits(deskState, seenFrom(deskState), new Map([[2, w("needs_user")], [6, w("needs_user")]])), [], "no change, no hit");
+	const gen = (g: number) => ({ on: [...all], gen: g });
+	assert.deepEqual(watchHits(later, seenFrom(deskState), new Map([[4, gen(1)], [6, gen(3)]]), 2), [{ tab: 4, kind: "exited" }], "a watch set after the state fetch started is skipped");
 	assert.equal(exited(deskState, 2), false);
 	assert.equal(exited(deskState, 99), true);
 });
 
-test("desk: desk_events lists the latest notifications as data, whatever the list is called", () => {
-	const items = Array.from({ length: 25 }, (_, i) => ({ at: i, text: `n${i}` }));
+test("desk: desk_events lists the latest notifications as fenced data, capped", () => {
+	const n = (i: number, more = {}) => ({ id: i, time: `2026-11-01T10:${String(i).padStart(2, "0")}:00Z`, kind: "finished", title: `t${i}`, read: true, ...more });
+	const items = Array.from({ length: 25 }, (_, i) => n(i));
+	items[24] = n(24, { project: "App", session_id: 3, tab_id: 2, job_id: "j1", status: "ok", summary: "all  green", read: false });
 	const out = eventsText({ notifications: items }).split("\n");
-	assert.equal(out[0], DATA_NOTE);
-	assert.equal(out[1], "pi-desk notifications (25, the latest 20 shown):");
-	assert.equal(out.length, 22);
-	assert.equal(out[21], '- {"at":24,"text":"n24"}');
-	assert.deepEqual(eventsText(["a  b", "c"], 1).split("\n").slice(1), ["pi-desk notifications (2, the latest 1 shown):", "- c"]);
-	assert.equal(eventsText({ items: [] }), "pi-desk has no notifications.");
-	assert.equal(eventsText({ odd: 1 }), `${DATA_NOTE}\n{"odd":1}`);
+	assert.deepEqual(out.slice(0, 3), [DATA_NOTE, "pi-desk notifications (25, the latest 20 shown, oldest first):", EVENTS_START]);
+	assert.equal(out.length, 24);
+	assert.equal(out[3], "- 2026-11-01T10:05:00Z finished: t5");
+	assert.equal(out[22], "- 2026-11-01T10:24:00Z finished: t24 — all green (App, session 3, tab 2, job j1, ok) [unread]");
+	assert.equal(out[23], EVENTS_END);
+	const long = eventsText({ notifications: [n(1, { summary: "x".repeat(1000) })] }).split("\n")[3];
+	assert.ok(long.length <= 300 && long.endsWith("…"), "each entry at most 300 characters");
+	assert.equal(eventsText({ notifications: [] }), "pi-desk has no notifications.");
+	// fallbacks: other list names, plain strings, an unknown shape (at most ~4 KB)
+	assert.deepEqual(eventsText(["a  b", "c"], 1).split("\n").slice(1), ["pi-desk notifications (2, the last 1 shown):", EVENTS_START, "- c", EVENTS_END]);
+	assert.equal(eventsText({ items: [{ x: 1 }] }).split("\n")[3], '- {"x":1}');
+	assert.equal(eventsText({ odd: 1 }), `${DATA_NOTE}\n${EVENTS_START}\n{"odd":1}\n${EVENTS_END}`);
+	const big = eventsText({ odd: "y".repeat(10_000) });
+	assert.ok(big.length < 4096 + 300 && big.endsWith(`…\n${EVENTS_END}`));
+});
+
+test("desk: desk_watch does not arm what is already true", () => {
+	const pi = (agent: string, waiting = false, question = false) => ({ kind: "pi", agent, waiting, question });
+	assert.deepEqual(alreadyTrue(pi("working"), ["finished", "needs_user", "exited"]), []);
+	assert.deepEqual(alreadyTrue(pi("idle"), ["finished", "needs_user", "exited"]), ["finished"], "idle: no run to finish");
+	assert.deepEqual(alreadyTrue(pi("idle", false, true), ["finished", "needs_user"]), ["finished", "needs_user"]);
+	assert.deepEqual(alreadyTrue(pi("working", true), ["needs_user", "exited"]), ["needs_user"]);
+	assert.deepEqual(alreadyTrue(pi("error"), ["finished", "needs_user"]), ["finished"]);
+	assert.deepEqual(alreadyTrue({ kind: "shell", status: "running" }, ["finished", "needs_user", "exited"]), [], "a shell tab only has exits");
 });
 
 test("desk: desk_run refuses send_text into a pi tab or a waiting tab, and anything aimed at Home's own tab", () => {

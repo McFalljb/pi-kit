@@ -33,8 +33,11 @@ exist only when pi-desk started this pi with a control token.
   bell. Do not poll for it.
 - When the user asks to be told about a session ("tell me when it finishes / needs me /
   exits"), set `desk_watch` on it (`on`: `finished`, `needs_user`, `exited`; default all). It
-  sends you one "pi-desk: the watch you set fired: ..." message and ends; pass it on. Cancel
-  with `cancel: true`; `desk_watch {}` lists them. At most 5; they end when this pi reloads.
+  sends you one "pi-desk: ... fired" message and ends; pass it on. What is already true when you
+  set it (idle, already waiting for the user) is not watched: the result says so, so tell the
+  user at once. A shell tab can only fire on its exit. A desk_wait or desk_prompt wait that sees
+  the tab idle ends its watch. Cancel with `cancel: true`; `desk_watch {}` lists them. At most 5;
+  they end when this pi reloads.
 - "What happened while I was away?": `desk_events` (pi-desk's recent notifications, if this
   pi-desk offers them) and `desk_state` for the current status.
 

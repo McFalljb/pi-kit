@@ -134,7 +134,8 @@ let reqN = 100;
 const parked = [];
 const closed = new Set(); // open session ids the "user" closed
 let controlHellos = 0;
-const piTab = (id, agent = "idle") => ({ id, kind: "pi", title: "pi", status: "running", agent, waiting: false, question: false, blockers: [], panels: [] });
+const agents = new Map([[2, "working"]]); // pi tab -> agent status, as the status events set it (default idle)
+const piTab = (id) => ({ id, kind: "pi", title: "pi", status: "running", agent: agents.get(id) ?? "idle", waiting: false, question: false, blockers: [], panels: [] });
 const deskState = () => ({
 	version: 1,
 	projects: [1, 2, 3].map((id) => ({ id, cwd: `/w/p${id}`, label: `~/w/p${id}`, name: ["Alpha", "Beta", "Gamma"][id - 1] })),
@@ -155,6 +156,7 @@ function send(c, msg) {
 }
 const event = (fields) => conns.filter((c) => c.caller === "control" && c.subscribed && !c.sock.destroyed).forEach((c) => send(c, { type: "event", ...fields }));
 const statusEvent = (tab_id, agent, waiting = false) =>
+	agents.set(tab_id, agent) &&
 	event({ event: "command", request_id: ++reqN, caller: "panel", caller_tab_id: tab_id, version: 1, changed: true, command: { type: "pi.status", tab_id, agent, waiting, question: false, blockers: [] }, result: { ok: true } });
 function control(c, m) {
 	const answer = (result, extra = {}) => send(c, { id: m.id, type: "result", result, ...extra });
@@ -170,7 +172,7 @@ function control(c, m) {
 		return answer({ ok: true, data: { commands } });
 	}
 	if (cmd.type === "notifications_list" && c.hello > 1)
-		return answer({ ok: true, data: { notifications: [{ at: "2026-11-01T10:00:00Z", kind: "finished", session: 12, text: "Gamma finished its run" }] } });
+		return answer({ ok: true, data: { notifications: [{ id: 1, time: "2026-11-01T10:00:00Z", kind: "finished", title: "Gamma finished its run", project: "Gamma", session_id: 12, tab_id: 8, read: false }] } });
 	if (cmd.type === "close_tab" && !cmd.confirm) {
 		const entry = { summary: "Close shell 1?", caller: "control", class: "tab_close", command: { type: "close_tab", tab_id: cmd.tab_id } };
 		if (cmd.tab_id !== 9) parked.push(entry);
@@ -182,7 +184,7 @@ function control(c, m) {
 				send(c, { type: "event", event: "dropped", error: "fake: queue full" });
 			}, 300);
 		if (cmd.tab_id === 9) return;
-		if (cmd.tab_id === 5) statusEvent(8, "working"), statusEvent(8, "idle"), statusEvent(7, "error"); // no watch yet: no notice
+		if (cmd.tab_id === 5) statusEvent(8, "working"), statusEvent(8, "idle"), statusEvent(7, "error"), statusEvent(8, "working"); // no watch yet: no notice
 		setTimeout(() => userEvent({ ok: false, error: "needs_confirmation", needs_confirmation: { summary: "Close shell 1?", by: "caller" } }), 300);
 		return setTimeout(() => {
 			parked.splice(parked.indexOf(entry), 1);
@@ -198,7 +200,7 @@ function control(c, m) {
 		c.waits = (c.waits ?? 0) + 1;
 		if (cmd.tab_id === 2 && c.waits === 1) {
 			statusEvent(1, "working"), statusEvent(1, "idle"); // Home's own tab: never a notice
-			statusEvent(2, "working"), statusEvent(2, "idle"); // its watch was cancelled
+			statusEvent(2, "working"), statusEvent(2, "idle"); // watched, but Home is waiting on it: the wait's result says so, the watch ends
 			statusEvent(7, "idle", true); // waiting: tab 7's watch is for exited only
 			statusEvent(8, "working"), statusEvent(8, "idle"); // finished: tab 8's watch fires
 		}
@@ -304,13 +306,16 @@ try {
 			step("desk_prompt", { tab_id: 1, text: "me" }),
 			step("desk_events", {}),
 			step("desk_watch", { session: 12 }),
+			step("desk_watch", { tab_id: 7, on: ["finished"] }),
 			step("desk_watch", { tab_id: 7, on: ["exited"] }),
-			step("desk_watch", { tab_id: 2 }),
+			step("desk_watch", { tab_id: 2, on: ["needs_user"] }),
 			step("desk_watch", { tab_id: 2, cancel: true }),
+			step("desk_watch", { tab_id: 2 }),
 			step("desk_watch", { tab_id: 1 }),
 			step("desk_watch", {}),
 			step("desk_prompt", { tab_id: 2, text: "go", wait: true, timeout_s: 5 }),
 			step("desk_wait", { session: 10, timeout_s: 5 }),
+			step("desk_watch", {}),
 			step("desk_run", { command: { type: "nope" } }),
 			step("bash", { command: "echo desk-control token=[$PI_DESK_CONTROL_TOKEN]" }),
 		];
