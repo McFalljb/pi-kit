@@ -43,6 +43,10 @@ test("commandVerdict: dangerous asks, read-only blocks mutation", () => {
 	assert.match(commandVerdict("touch x", true).block!, /Read-only/);
 	assert.equal(commandVerdict("touch x", false).block, undefined);
 	for (const c of ["ssh nuc uptime", "sudo apt-get update", "ssh nuc 'sudo journalctl -u k3s'"]) assert.deepEqual(commandVerdict(c, false), { confirm: [] }, c);
+
+	// Reviewers may ssh to inspect a host; a mutating remote command is still blocked.
+	for (const c of ["ssh nuc uptime", "ssh nuc 'journalctl -u k3s --since -1h 2>&1 | tail'", "ssh nuc systemctl status traderv3"]) assert.deepEqual(commandVerdict(c, true), { confirm: [] }, c);
+	for (const c of ["ssh nuc 'rm -rf /tmp/x'", "ssh nuc 'echo x > /etc/y'"]) assert.match(commandVerdict(c, true).block!, /Read-only/, c);
 });
 
 test("redact", () => {
