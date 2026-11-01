@@ -1,1 +1,1 @@
-{ "asyncWidget": false, "inlineToolDisplay": "summary" }
+{ "asyncWidget": false, "inlineToolDisplay": "summary", "timeoutMs": 2147483647 }

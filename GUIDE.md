@@ -382,9 +382,13 @@ the column moves only the column.
   child got the message, not that it complied.
 - **Resume is a revival.** It starts a new child from the stored session (new run id). Stopped
   runs cannot be resumed; only one revival of a session runs at a time.
-- **Default deadlines.** Single foreground and background runs stop after 30 minutes unless
-  `options.timeoutMs` (or the agent's `timeoutMs`) says otherwise. For long writers add
-  `checkpointBeforeDeadlineMs`. Do not give writers a hard `toolBudget`.
+- **No run deadline.** pi-subagents stops runs after 30 minutes by default. The kit lifts that:
+  `config/subagent.json` (seeded to `~/.pi/agent/extensions/subagent/config.json`) and the
+  `kit.worker` / `kit.reviewer` frontmatter set `timeoutMs: 2147483647`, the largest value
+  pi-subagents accepts (about 24.8 days; it cannot be switched off). The frontmatter covers async
+  fan-out children, which the global setting does not. An existing seeded config is kept on
+  install, so add the key there by hand. Pass `options.timeoutMs` to cap a run on purpose. Do not
+  give writers a hard `toolBudget`.
 - **Inferred acceptance gates.** pi-subagents infers a `checked` gate for writer agents and asks
   them for a fenced `acceptance-report` JSON block, with review by its builtin `reviewer`. If a
   worker skips the block, the run metadata says `rejected` or `review-required`; the run still
