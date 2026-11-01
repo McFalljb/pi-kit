@@ -9,8 +9,9 @@
 //                                                 is answered: the old runtime must keep the token
 //   node test/desk-fake.mjs control <log> <screen>  pi as pi-desk's Home: also PI_DESK_CONTROL_TOKEN;
 //                                                 plays a control server (state, list_commands, a
-//                                                 confirmation, pi_prompt/pi_wait_idle, events) and
-//                                                 prompts Home through its bridge to call the desk tools
+//                                                 confirmation, pi_prompt/pi_wait_idle, status and
+//                                                 close events, notifications_list after a reconnect)
+//                                                 and prompts Home through its bridge to call the desk tools
 //   node test/desk-fake.mjs plain <screen>        pi without them, for a few seconds (sidebar check)
 import { spawn } from "node:child_process";
 import fs from "node:fs";
@@ -111,6 +112,7 @@ function answerHello(c, m) {
 	const ok = valid.has(m.token) && m.v === 1;
 	if (ok && (m.token === CTL || m.token === CTL_RE)) {
 		c.caller = "control";
+		c.hello = ++controlHellos;
 		const reconnect = m.token === CTL ? CTL_RE : undefined;
 		if (reconnect) valid.delete(CTL), valid.add(CTL_RE);
 		c.sock.write(`${JSON.stringify({ id: m.id, v: 1, type: "result", result: { ok, data: { v: 1, app: "pi-desk", caller: "control", tab_id: 1, capabilities: ["commands", "state", "events"], ...(reconnect && { reconnect_token: reconnect }) } } })}\n`);
@@ -125,9 +127,13 @@ function answerHello(c, m) {
 // a pi tab each (tab 2 also has shell tab 5); close_tab needs the user's confirmation, which the
 // "user" gives 1.5 s later (after a try of their own that needs confirmation); for tab 6 pi-desk
 // drops the confirmation and the event stream instead, and tab 9's is gone before Home looks.
-// pi_wait_idle on tab 2 emits pi.status events for tabs 1 (Home's own), 2, 7 and 8 first.
+// Status events for other tabs come with no watch set (close_tab on tab 5), then during the first
+// pi_wait_idle on tab 2 (tabs 1 = Home's own, 2, 7 and 8) and the second (tab 8 again, and the user
+// closes session 11 with tab 7). notifications_list is listed from the second control connection on.
 let reqN = 100;
 const parked = [];
+const closed = new Set(); // open session ids the "user" closed
+let controlHellos = 0;
 const piTab = (id, agent = "idle") => ({ id, kind: "pi", title: "pi", status: "running", agent, waiting: false, question: false, blockers: [], panels: [] });
 const deskState = () => ({
 	version: 1,
@@ -138,7 +144,7 @@ const deskState = () => ({
 		{ id: 10, pi_session_id: "s10", project_id: 1, active_tab: 2, tabs: [piTab(2), { id: 5, kind: "shell", title: "shell 1", status: "running" }] },
 		{ id: 11, pi_session_id: "s11", project_id: 2, active_tab: 7, tabs: [piTab(7)] },
 		{ id: 12, pi_session_id: "s12", project_id: 3, active_tab: 8, tabs: [piTab(8)] },
-	],
+	].filter((s) => !closed.has(s.id)),
 	current_session: 10,
 	pending_confirmations: parked,
 });
@@ -158,8 +164,13 @@ function control(c, m) {
 	const rid = ++reqN;
 	const finish = (result, ms) => setTimeout(() => send(c, { type: "event", event: "finished", request_id: rid, result }), ms);
 	if (cmd.type === "get_state") return answer({ ok: true, data: deskState() });
-	if (cmd.type === "list_commands")
-		return answer({ ok: true, data: { commands: [{ type: "get_state", does: "the state" }, { type: "close_tab", args: "tab_id", does: "close a shell tab", confirm_class: "tab_close" }, { type: "fake_cmd", args: "x", does: "listed by the fake pi-desk" }] } });
+	if (cmd.type === "list_commands") {
+		const commands = [{ type: "get_state", does: "the state" }, { type: "close_tab", args: "tab_id", does: "close a shell tab", confirm_class: "tab_close" }, { type: "fake_cmd", args: "x", does: "listed by the fake pi-desk" }];
+		if (c.hello > 1) commands.push({ type: "notifications_list", does: "the bell's notifications" });
+		return answer({ ok: true, data: { commands } });
+	}
+	if (cmd.type === "notifications_list" && c.hello > 1)
+		return answer({ ok: true, data: { notifications: [{ at: "2026-11-01T10:00:00Z", kind: "finished", session: 12, text: "Gamma finished its run" }] } });
 	if (cmd.type === "close_tab" && !cmd.confirm) {
 		const entry = { summary: "Close shell 1?", caller: "control", class: "tab_close", command: { type: "close_tab", tab_id: cmd.tab_id } };
 		if (cmd.tab_id !== 9) parked.push(entry);
@@ -171,6 +182,7 @@ function control(c, m) {
 				send(c, { type: "event", event: "dropped", error: "fake: queue full" });
 			}, 300);
 		if (cmd.tab_id === 9) return;
+		if (cmd.tab_id === 5) statusEvent(8, "working"), statusEvent(8, "idle"), statusEvent(7, "error"); // no watch yet: no notice
 		setTimeout(() => userEvent({ ok: false, error: "needs_confirmation", needs_confirmation: { summary: "Close shell 1?", by: "caller" } }), 300);
 		return setTimeout(() => {
 			parked.splice(parked.indexOf(entry), 1);
@@ -183,12 +195,17 @@ function control(c, m) {
 	}
 	if (cmd.type === "pi_wait_idle") {
 		answer({ ok: true, pending: true }, { request_id: rid });
-		if (cmd.tab_id === 2 && !c.emitted) {
-			c.emitted = true;
+		c.waits = (c.waits ?? 0) + 1;
+		if (cmd.tab_id === 2 && c.waits === 1) {
 			statusEvent(1, "working"), statusEvent(1, "idle"); // Home's own tab: never a notice
-			statusEvent(2, "working"), statusEvent(2, "idle"); // muted: Home waits on tab 2
-			statusEvent(7, "idle", true); // waiting
-			statusEvent(8, "working"), statusEvent(8, "idle"); // finished
+			statusEvent(2, "working"), statusEvent(2, "idle"); // its watch was cancelled
+			statusEvent(7, "idle", true); // waiting: tab 7's watch is for exited only
+			statusEvent(8, "working"), statusEvent(8, "idle"); // finished: tab 8's watch fires
+		}
+		if (cmd.tab_id === 2 && c.waits === 2) {
+			statusEvent(8, "working"), statusEvent(8, "idle"); // tab 8's watch already fired
+			closed.add(11); // the user closes session 11: tab 7's watch fires
+			event({ event: "command", request_id: ++reqN, caller: "ui", version: 3, changed: true, command: { type: "close_session", session: 11 }, result: { ok: true } });
 		}
 		return finish({ ok: true }, 500);
 	}
@@ -285,6 +302,13 @@ try {
 			step("desk_run", { command: { type: "send_text", tab_id: 2, text: "x" } }),
 			step("desk_run", { command: { type: "focus_tab", tab_id: 1 } }),
 			step("desk_prompt", { tab_id: 1, text: "me" }),
+			step("desk_events", {}),
+			step("desk_watch", { session: 12 }),
+			step("desk_watch", { tab_id: 7, on: ["exited"] }),
+			step("desk_watch", { tab_id: 2 }),
+			step("desk_watch", { tab_id: 2, cancel: true }),
+			step("desk_watch", { tab_id: 1 }),
+			step("desk_watch", {}),
 			step("desk_prompt", { tab_id: 2, text: "go", wait: true, timeout_s: 5 }),
 			step("desk_wait", { session: 10, timeout_s: 5 }),
 			step("desk_run", { command: { type: "nope" } }),
@@ -301,15 +325,22 @@ try {
 		const w = await until("desk_wait by session waits on its pi tab", cmdAt("pi_wait_idle", (c) => c.tab_id === 2), 20_000, Math.max(w1 + 1, mark));
 		result("close_tab is never resent with a token", !got.some((g) => g.m.command?.type === "close_tab" && g.m.command.confirm));
 		result("nothing aimed at Home's own tab or send_text into a pi tab reaches pi-desk", !got.some((g) => g.m.command?.tab_id === 1 || g.m.command?.type === "send_text"));
-		// Home's run ends, then the queued notice starts one more run.
-		const idle1 = await until("Home idle after the steps", (m) => isStatus(m, "idle"), 30_000, Math.max(w, mark));
-		const work2 = await until("the notice starts a Home run", (m) => isStatus(m, "working"), 30_000, Math.max(idle1, mark));
-		await until("which settles", (m) => isStatus(m, "idle"), 15_000, Math.max(work2, mark));
+		// Home's run ends with the fired watches' messages answered (followed up in the same run, or a run of their own).
+		await until("Home idle after the steps", (m) => isStatus(m, "idle"), 30_000, Math.max(w, mark));
+		await sleep(3000);
+		const lastStatus = () => got.findLast((g) => g.m.type === "pi.status")?.m;
+		await until("Home settled", (m) => m === lastStatus() && isStatus(m, "idle"), 15_000, mark);
 		mark = got.length;
 		conns.findLast((x) => x.caller === "control").sock.destroy();
 		await until("control reconnects with the reconnect token", (m) => m.type === "hello" && m.token === CTL_RE, 10_000, mark);
 		await until("and subscribes again", (m) => m.type === "subscribe", 5000, mark);
+		await until("and asks for list_commands again", (m) => m.type === "command" && m.command?.type === "list_commands", 5000, mark);
 		result("the env control token was used once", got.filter((g) => g.m.type === "hello" && g.m.token === CTL).length === 1);
+		mark = got.length;
+		const r2 = await request("pi.prompt", { text: `Steps:\n${step("desk_events", { limit: 5 })}` });
+		result("second prompt for Home accepted", r2.ok === true, JSON.stringify(r2));
+		await until("desk_events reads notifications_list once pi-desk lists it", cmdAt("notifications_list"), 20_000, mark);
+		await until("Home idle after desk_events", (m) => isStatus(m, "idle"), 20_000, mark);
 		throw "done";
 	}
 	await until("handshake with the token", (m) => m.type === "hello" && m.token === TOKEN, 30_000);
