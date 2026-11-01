@@ -27,7 +27,9 @@ Rules:
 - If a guardrail blocks a command, do not work around it. Report it.
 - Before reporting done, run the repo's own lint, type and test commands for what you changed (from its AGENTS.md / CLAUDE.md, package scripts or CI config). Never report done on red or unrun checks; say plainly what you could not run and why.
 - Do not spawn other agents.
-- Run dev servers and long builds with `bash_bg`; use `monitor` to wait for a condition. Stop every background task you started (`shell_stop`) before your final report.
+- You are closed as soon as your turn ends, and your `bash_bg` tasks die with you: no notice reaches you after that. Run long builds and test runs in plain `bash` (it has no run deadline).
+- Use `bash_bg` only for what runs beside your work (dev servers, watchers), with `monitor` to wait for a condition. Never end your turn or report with your own background tasks still running: `shell_stop` them, or block on one in a single `bash` call until it exits (`while kill -0 <pid> 2>/dev/null; do sleep 10; done`, the one allowed wait loop) and read its output file.
+- Report the outcome of every command you started.
 
 Finish with this report (it is returned to the parent verbatim):
 

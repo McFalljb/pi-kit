@@ -107,18 +107,20 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     reported once as `[private key block redacted]`. Read-only sessions do not register the
     tools, and the read-only guardrails block them by name.
   - All process groups, leftovers included, are killed and the `pi-shell-*` directory is removed
-    when the session ends or reloads. Headless runs (`pi -p`, subagent children) wait at the
+    when the session ends or reloads. A headless top-level run (`pi -p`, json mode) waits at the
     end of a turn for the next notice or until every task and timer is done, with no time limit.
-    After 30 minutes without a notice they send a check-in notice that starts a turn: each running
+    After 30 minutes without a notice it sends a check-in notice that starts a turn: each running
     task with its running time and time since its last output (flagged `no output for ...` past
     30 minutes), and the pending timers. Nothing is stopped; the model ends the turn to keep
     waiting (the next check-in comes 30 minutes later) or stops a stuck task with `shell_stop`.
     Each check-in costs one model turn, so a `pi -p` run whose task never ends keeps going
-    until someone stops it.
+    until someone stops it. Subagent children do not wait: pi-subagents closes a child right
+    after its last turn, and its background tasks die with it. That is why `kit.worker` runs long
+    commands in plain `bash` and never ends its turn with its own `bash_bg` tasks running.
   - `kit.worker` has the tools; `kit.reviewer` does not.
   - Their usage rules sit on the tools (`promptSnippet`, `promptGuidelines`), not in `AGENTS.md`.
     pi adds those only to its default system prompt, so `kit.worker` (`systemPromptMode:
-    replace`) keeps its own one-line background rule. A `~/.pi/agent/AGENTS.md` merged earlier
+    replace`) keeps its own background rules. A `~/.pi/agent/AGENTS.md` merged earlier
     still has the longer "Background work" section; you can cut it to the kit's two lines by hand.
 - **A sidebar replaces the widgets under the transcript** (`extensions/sidebar`). It lists
   background subagents (pi-subagents: agent, state, running time, current tool, and the first
