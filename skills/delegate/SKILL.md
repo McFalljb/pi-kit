@@ -56,8 +56,9 @@ Known facts, file paths, relevant commits, prior findings, data locations, relat
 - Checks: <narrowest test while iterating>; before reporting done, run <the repo's lint, type
   and test commands for what changed> and report each exact command with its result. Never
   report done on red or unrun checks; say what could not run and why.
-- Background work: dev servers and long runs in `bash_bg`/`monitor`, no sleep loops; stop every
-  task you started before the report.
+- Background work: long builds and test runs in plain `bash` (a child is closed when its turn
+  ends, and its `bash_bg` tasks die with it); a server in `bash_bg` only if used within the same
+  turn; stop every task you started before the report.
 
 ## Deliverable
 The report format from your agent prompt, with commit SHAs and commands run with pass/fail.

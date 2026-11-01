@@ -184,6 +184,31 @@ export function short(s: string, n = 48): string {
 	return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 }
 
+export interface CheckinTask {
+	id: string;
+	command: string;
+	started: number;
+	lastOutput?: number; // when its log file last changed; undefined while it is empty
+}
+
+/**
+ * The notice a headless session sends after `waited` ms with no notice: what still runs, how long
+ * each task has been quiet (flagged at `interval` or more), pending timers. Nothing is stopped.
+ */
+export function checkinText(tasks: CheckinTask[], wakes: { id: string; prompt: string; due: number }[], waited: number, now: number, interval: number): string {
+	const lines = [`Background shells check-in: no notice for ${duration(waited)}. Nothing was stopped; still pending:`];
+	for (const t of tasks) {
+		const quiet = now - (t.lastOutput ?? t.started);
+		const out = quiet >= interval ? `nothing written to its log for ${duration(quiet)}` : t.lastOutput === undefined ? "nothing written to its log yet" : `last wrote to its log ${duration(quiet)} ago`;
+		lines.push(`- ${t.id} running ${duration(now - t.started)}, ${out}: \`${clip(t.command)}\``);
+	}
+	for (const w of wakes) lines.push(`- ${w.id} timer, wakes in ${duration(Math.max(0, w.due - now))}: ${short(w.prompt, 200)}`);
+	lines.push(
+		`This headless run cannot finish until every task listed stops. Stop servers, watchers and anything whose result you do not need now with shell_stop <id>, and any task that looks stuck; only wait for work you expect to finish: end your turn and the next check-in comes in ${duration(interval)} unless a notice arrives first.`,
+	);
+	return lines.join("\n");
+}
+
 export interface PanelRow {
 	id: string; // "" for the "+N more" row
 	status: string;

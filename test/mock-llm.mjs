@@ -12,8 +12,8 @@ import http from "node:http";
 import fs from "node:fs";
 const port = Number(process.argv[2] || 18555);
 const log = process.argv[3] || "/dev/null";
-// Notices from the kit's shell extension (bash_bg exits, monitor batches, wake_later timers).
-const SHELL_NOTICE = /^(?:(?:Background shell|Monitor) sh|Wake-up wk)\d+/;
+// Notices from the kit's shell extension (bash_bg exits, monitor batches, wake_later timers, headless check-ins).
+const SHELL_NOTICE = /^(?:(?:Background shell|Monitor) sh\d+|Wake-up wk\d+|Background shells check-in:)/;
 // Notices from the kit's desk extension (pi-desk events for the Home agent).
 const DESK_NOTICE = /^pi-desk: /;
 // The kit's notes reminder: context, not a new request, so the mock keeps playing the user's steps.

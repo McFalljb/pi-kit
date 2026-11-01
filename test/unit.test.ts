@@ -11,7 +11,7 @@ import { alreadyTrue, DATA_NOTE, eventsText, EVENTS_END, EVENTS_START, exited, f
 import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { drift } from "../extensions/versions/drift.ts";
-import { clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
+import { checkinText, clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
 	assert.deepEqual(splitLines("", "a\nb\r\nc"), { lines: ["a", "b"], rest: "c" });
@@ -172,6 +172,34 @@ test("panelRows: shells, monitors, leftovers, timers, cap", () => {
 	assert.deepEqual(many[5], { id: "", status: "+3 more · /shells", label: "" });
 	assert.equal(panelRows([], Array.from({ length: 8 }, (_, i) => ({ id: `wk${i}`, prompt: "p", due: now })), now, Infinity).length, 8);
 	assert.deepEqual(panelRows([], [], now), []);
+});
+
+test("checkinText: headless check-in lists tasks and timers, flags quiet tasks, stops nothing", () => {
+	const now = 10_000_000;
+	const min = 60_000;
+	const text = checkinText(
+		[
+			{ id: "sh1", command: "npm run build", started: now - 62 * min, lastOutput: now - 2 * min },
+			{ id: "sh2", command: "python train.py --token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB", started: now - 45 * min, lastOutput: now - 41 * min },
+			{ id: "sh3", command: "sleep 9999", started: now - 31 * min },
+			{ id: "sh4", command: "make test", started: now - 5 * min },
+		],
+		[{ id: "wk5", prompt: "check\nthe deploy", due: now + 12 * min }],
+		30 * min,
+		now,
+		30 * min,
+	);
+	const lines = text.split("\n");
+	assert.match(lines[0], /^Background shells check-in: no notice for 30m00s\. Nothing was stopped/);
+	assert.equal(lines[1], "- sh1 running 62m00s, last wrote to its log 2m00s ago: `npm run build`");
+	assert.match(lines[2], /^- sh2 running 45m00s, nothing written to its log for 41m00s: `python train\.py --token \[REDACTED\]`$/);
+	assert.equal(lines[3], "- sh3 running 31m00s, nothing written to its log for 31m00s: `sleep 9999`");
+	assert.equal(lines[4], "- sh4 running 5m00s, nothing written to its log yet: `make test`");
+	assert.equal(lines[5], "- wk5 timer, wakes in 12m00s: check the deploy");
+	assert.match(text, /This headless run cannot finish until every task listed stops\./);
+	assert.match(text, /Stop servers, watchers and anything whose result you do not need now with shell_stop <id>/);
+	assert.match(text, /only wait for work you expect to finish: end your turn and the next check-in comes in 30m00s/);
+	assert.ok(!text.includes("ghp_abc"));
 });
 
 test("footerText counts each kind", () => {

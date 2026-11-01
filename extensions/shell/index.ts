@@ -29,6 +29,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 import { checkCommand, redact } from "../guardrails/core.ts";
 import {
 	afterOpenKey,
+	checkinText,
 	clip,
 	compilePattern,
 	duration,
@@ -50,7 +51,9 @@ const POLL_MS = 250; // how often a watch reads new output
 const BATCH_MS = 1000; // a watch sends at most one notice per this window
 const MAX_NOTICES = 50; // per watch; then the watch ends and the task keeps running
 const KEEP_FINISHED = 20;
-const HEADLESS_DRAIN_MS = 30 * 60 * 1000; // headless sessions wait this long for tasks, then kill them
+// A headless session waiting on tasks or timers sends a check-in notice after this long with no
+// notice; it never kills them on a deadline. PI_KIT_SHELL_CHECKIN_MS is for tests.
+const HEADLESS_CHECKIN_MS = Math.max(500, Number(process.env.PI_KIT_SHELL_CHECKIN_MS) || 30 * 60 * 1000);
 const READ_CAP = 1 << 20; // bytes a watch reads per poll; a flood is read over several polls
 const BACKLOG_CAP = 8 << 20; // unread bytes beyond which a watch skips ahead to the newest output
 const TAIL_BYTES = 64 << 10; // bytes of the end of the output read for the exit notice's last lines
@@ -121,8 +124,11 @@ export default function (pi: ExtensionAPI) {
 	let rows: ReturnType<typeof panelRows> = [];
 	let closed = false;
 	let sidebar = false; // the kit sidebar shows the rows and counts instead of the widget and footer
-	let noticesThisRun = 0;
-	let wake: (() => void) | undefined; // resolves the headless drain wait
+	// Notices sent and notices that reached the conversation: while sent > delivered a notice is
+	// queued and will start a turn. A notice consumed inside the run that sent it counts as delivered.
+	let sent = 0;
+	let delivered = 0;
+	let wake: (() => void) | undefined; // resolves the headless wait
 
 	const running = () => [...tasks.values()].filter((t) => t.ended === undefined);
 	const busy = () => running().length + wakes.size;
@@ -157,10 +163,12 @@ export default function (pi: ExtensionAPI) {
 
 	function notify(text: string) {
 		if (closed) return;
-		noticesThisRun++;
+		sent++;
 		try {
 			pi.sendMessage({ customType: "kit-shell", content: redact(text, true), display: true, details: undefined }, { triggerTurn: true, deliverAs: "followUp" });
-		} catch {}
+		} catch {
+			sent--;
+		}
 		wake?.();
 	}
 
@@ -475,7 +483,7 @@ export default function (pi: ExtensionAPI) {
 		name: "bash_bg",
 		label: "Background shell",
 		description:
-			"Run a shell command in the background (dev servers, long builds, test suites). Returns at once with an id and an output file. When the command exits, a notice with its exit code, last lines and output path arrives on its own: do not sleep, poll or re-read the file in a loop. Stop it with shell_stop when you no longer need it.",
+			"Run a shell command in the background (dev servers, long builds, test suites). Returns at once with an id and an output file. When the command exits, a notice with its exit code, last lines and output path arrives on its own: do not sleep, poll or re-read the file in a loop. Stop it with shell_stop when you no longer need it. In a subagent child the task dies when your turn ends and no notice reaches you, so there run anything whose result you need with bash.",
 		promptSnippet: "Run a long command in the background; a notice arrives when it exits",
 		promptGuidelines: ["Run dev servers, watchers and long builds or test runs with bash_bg, not bash."],
 		parameters: Type.Object({ command: Type.String({ description: "Bash command" }), cwd, timeout }),
@@ -519,7 +527,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "wake_later",
 		label: "Wake later",
-		description: `Wake this session once after \`seconds\` (clamped to ${WAKE_MIN}-${WAKE_MAX}; headless sessions at most ${HEADLESS_DRAIN_MS / 1000}) with \`prompt\` as a notice. Only for checks no shell command can observe; when the check is a command, use monitor or bash_bg instead. Cancel with shell_stop.`,
+		description: `Wake this session once after \`seconds\` (clamped to ${WAKE_MIN}-${WAKE_MAX}) with \`prompt\` as a notice. Only for checks no shell command can observe; when the check is a command, use monitor or bash_bg instead. Cancel with shell_stop.`,
 		promptSnippet: "Wake this session once later, for checks no shell command can observe",
 		parameters: Type.Object({
 			seconds: Type.Number({ description: `Delay in seconds (${WAKE_MIN}-${WAKE_MAX})` }),
@@ -528,9 +536,7 @@ export default function (pi: ExtensionAPI) {
 		async execute(_id, p, _signal, _onUpdate, ctx) {
 			ui = ctx.ui;
 			mode = ctx.mode;
-			// Headless sessions wait at most HEADLESS_DRAIN_MS for a notice, so a later timer would never fire.
-			const max = ctx.hasUI ? WAKE_MAX : Math.min(WAKE_MAX, HEADLESS_DRAIN_MS / 1000);
-			const sec = Math.min(max, Math.max(WAKE_MIN, Math.round(p.seconds)));
+			const sec = Math.min(WAKE_MAX, Math.max(WAKE_MIN, Math.round(p.seconds)));
 			const id = `wk${++seq}`;
 			const timer = setTimeout(() => {
 				wakes.delete(id);
@@ -593,31 +599,45 @@ export default function (pi: ExtensionAPI) {
 		sidebar = on === true;
 		refresh();
 	});
-	pi.on("agent_start", () => {
-		noticesThisRun = 0;
+	pi.on("message_end", (e) => {
+		const m = e.message as { role?: string; customType?: string };
+		if (m.role === "custom" && m.customType === "kit-shell") delivered++;
 	});
 
 	// Headless (print/json, subagent children): pi would exit with tasks or timers pending, so wait
-	// for the next notice (it starts a follow-up run) or for all of them to end.
+	// for the next notice (it starts a follow-up run) or for all of them to end. There is no
+	// deadline: after HEADLESS_CHECKIN_MS with no notice and a task still running, a check-in notice
+	// lists what still runs and starts a turn, so the model can stop a stuck task. That turn's own
+	// agent_end waits again. Timers alone get no check-in: they fire on their own.
+	// pi's hasPendingMessages() does not count extension follow-ups, so queued notices are counted here.
+	const pending = (ctx: ExtensionContext) => sent > delivered || ctx.hasPendingMessages();
+	const lastOutput = (t: Task) => {
+		try {
+			const st = fs.statSync(t.out, { throwIfNoEntry: false });
+			return st?.size ? st.mtimeMs : undefined;
+		} catch {
+			return undefined;
+		}
+	};
 	pi.on("agent_end", async (_e, ctx) => {
-		if (ctx.hasUI || noticesThisRun > 0 || busy() === 0) return;
-		const deadline = Date.now() + HEADLESS_DRAIN_MS;
-		while (busy() > 0 && noticesThisRun === 0 && Date.now() < deadline) {
+		if (ctx.hasUI || pending(ctx) || busy() === 0) return;
+		let since = Date.now();
+		while (!closed && busy() > 0 && !pending(ctx)) {
+			const left = since + HEADLESS_CHECKIN_MS - Date.now();
+			if (left <= 0) {
+				const now = Date.now();
+				if (!running().length) {
+					since = now;
+					continue;
+				}
+				notify(checkinText(running().map((t) => ({ ...t, lastOutput: lastOutput(t) })), [...wakes.values()], now - since, now, HEADLESS_CHECKIN_MS));
+				break;
+			}
 			await new Promise<void>((resolve) => {
 				wake = resolve;
-				setTimeout(resolve, 1000).unref();
+				setTimeout(resolve, Math.min(1000, left)).unref();
 			});
 			wake = undefined;
-		}
-		if (busy() > 0 && noticesThisRun === 0) {
-			const killed = [...running().map((t) => `${t.id} \`${clip(t.command)}\``), ...[...wakes.keys()].map((id) => `timer ${id}`)];
-			for (const w of wakes.values()) clearTimeout(w.timer);
-			wakes.clear();
-			for (const t of running()) {
-				t.quiet = true;
-				stop(t, "killed: headless session ended");
-			}
-			notify(`Background shells: no notice for ${duration(HEADLESS_DRAIN_MS)}, so the headless session killed what was left: ${killed.join(", ")}.`);
 		}
 	});
 
