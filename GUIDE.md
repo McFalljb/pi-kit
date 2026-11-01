@@ -90,9 +90,8 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     exit notice; `watch_only` ends only the monitor. On a task that has exited it kills the
     processes left in its group. It also cancels a timer. A group known to be empty is never
     signalled again, since its id may by then belong to an unrelated process.
-  - `wake_later { seconds, prompt }`: a one-shot timer, clamped to 60-3600 s (headless: at most
-    1800 s, the drain window), that wakes the session with the prompt. For checks no shell
-    command can observe.
+  - `wake_later { seconds, prompt }`: a one-shot timer, clamped to 60-3600 s, that wakes the
+    session with the prompt. For checks no shell command can observe.
   - `shell_list {}` and `/shells` list running and the last 20 finished tasks and pending
     timers; in the TUI, `/shells` then offers a picker that stops the chosen task (the same
     path as `shell_stop`). A widget above the editor (the sidebar instead, when it is loaded)
@@ -109,8 +108,13 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     tools, and the read-only guardrails block them by name.
   - All process groups, leftovers included, are killed and the `pi-shell-*` directory is removed
     when the session ends or reloads. Headless runs (`pi -p`, subagent children) wait at the
-    end of a turn for the next notice or until every task and timer is done, up to 30 minutes,
-    then kill what is left and send one notice listing it.
+    end of a turn for the next notice or until every task and timer is done, with no time limit.
+    After 30 minutes without a notice they send a check-in notice that starts a turn: each running
+    task with its running time and time since its last output (flagged `no output for ...` past
+    30 minutes), and the pending timers. Nothing is stopped; the model ends the turn to keep
+    waiting (the next check-in comes 30 minutes later) or stops a stuck task with `shell_stop`.
+    Each check-in costs one model turn, so a `pi -p` run whose task never ends keeps going
+    until someone stops it.
   - `kit.worker` has the tools; `kit.reviewer` does not.
   - Their usage rules sit on the tools (`promptSnippet`, `promptGuidelines`), not in `AGENTS.md`.
     pi adds those only to its default system prompt, so `kit.worker` (`systemPromptMode:
