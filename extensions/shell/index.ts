@@ -53,7 +53,7 @@ const MAX_NOTICES = 50; // per watch; then the watch ends and the task keeps run
 const KEEP_FINISHED = 20;
 // A headless session waiting on tasks or timers sends a check-in notice after this long with no
 // notice; it never kills them on a deadline. PI_KIT_SHELL_CHECKIN_MS is for tests.
-const HEADLESS_CHECKIN_MS = Number(process.env.PI_KIT_SHELL_CHECKIN_MS) || 30 * 60 * 1000;
+const HEADLESS_CHECKIN_MS = Math.max(500, Number(process.env.PI_KIT_SHELL_CHECKIN_MS) || 30 * 60 * 1000);
 const READ_CAP = 1 << 20; // bytes a watch reads per poll; a flood is read over several polls
 const BACKLOG_CAP = 8 << 20; // unread bytes beyond which a watch skips ahead to the newest output
 const TAIL_BYTES = 64 << 10; // bytes of the end of the output read for the exit notice's last lines
@@ -124,7 +124,10 @@ export default function (pi: ExtensionAPI) {
 	let rows: ReturnType<typeof panelRows> = [];
 	let closed = false;
 	let sidebar = false; // the kit sidebar shows the rows and counts instead of the widget and footer
-	let noticesThisRun = 0;
+	// Notices sent and notices that reached the conversation: while sent > delivered a notice is
+	// queued and will start a turn. A notice consumed inside the run that sent it counts as delivered.
+	let sent = 0;
+	let delivered = 0;
 	let wake: (() => void) | undefined; // resolves the headless wait
 
 	const running = () => [...tasks.values()].filter((t) => t.ended === undefined);
@@ -160,10 +163,12 @@ export default function (pi: ExtensionAPI) {
 
 	function notify(text: string) {
 		if (closed) return;
-		noticesThisRun++;
+		sent++;
 		try {
 			pi.sendMessage({ customType: "kit-shell", content: redact(text, true), display: true, details: undefined }, { triggerTurn: true, deliverAs: "followUp" });
-		} catch {}
+		} catch {
+			sent--;
+		}
 		wake?.();
 	}
 
@@ -478,7 +483,7 @@ export default function (pi: ExtensionAPI) {
 		name: "bash_bg",
 		label: "Background shell",
 		description:
-			"Run a shell command in the background (dev servers, long builds, test suites). Returns at once with an id and an output file. When the command exits, a notice with its exit code, last lines and output path arrives on its own: do not sleep, poll or re-read the file in a loop. Stop it with shell_stop when you no longer need it.",
+			"Run a shell command in the background (dev servers, long builds, test suites). Returns at once with an id and an output file. When the command exits, a notice with its exit code, last lines and output path arrives on its own: do not sleep, poll or re-read the file in a loop. Stop it with shell_stop when you no longer need it. In a subagent child the task dies when your turn ends and no notice reaches you, so there run anything whose result you need with bash.",
 		promptSnippet: "Run a long command in the background; a notice arrives when it exits",
 		promptGuidelines: ["Run dev servers, watchers and long builds or test runs with bash_bg, not bash."],
 		parameters: Type.Object({ command: Type.String({ description: "Bash command" }), cwd, timeout }),
@@ -594,25 +599,37 @@ export default function (pi: ExtensionAPI) {
 		sidebar = on === true;
 		refresh();
 	});
-	pi.on("agent_start", () => {
-		noticesThisRun = 0;
+	pi.on("message_end", (e) => {
+		const m = e.message as { role?: string; customType?: string };
+		if (m.role === "custom" && m.customType === "kit-shell") delivered++;
 	});
 
 	// Headless (print/json, subagent children): pi would exit with tasks or timers pending, so wait
 	// for the next notice (it starts a follow-up run) or for all of them to end. There is no
-	// deadline: after HEADLESS_CHECKIN_MS with no notice, a check-in notice lists what still runs and
-	// starts a turn, so the model can stop a stuck task. That turn's own agent_end waits again.
+	// deadline: after HEADLESS_CHECKIN_MS with no notice and a task still running, a check-in notice
+	// lists what still runs and starts a turn, so the model can stop a stuck task. That turn's own
+	// agent_end waits again. Timers alone get no check-in: they fire on their own.
+	// pi's hasPendingMessages() does not count extension follow-ups, so queued notices are counted here.
+	const pending = (ctx: ExtensionContext) => sent > delivered || ctx.hasPendingMessages();
+	const lastOutput = (t: Task) => {
+		try {
+			const st = fs.statSync(t.out, { throwIfNoEntry: false });
+			return st?.size ? st.mtimeMs : undefined;
+		} catch {
+			return undefined;
+		}
+	};
 	pi.on("agent_end", async (_e, ctx) => {
-		if (ctx.hasUI || noticesThisRun > 0 || busy() === 0) return;
-		const since = Date.now();
-		while (!closed && busy() > 0 && noticesThisRun === 0) {
+		if (ctx.hasUI || pending(ctx) || busy() === 0) return;
+		let since = Date.now();
+		while (!closed && busy() > 0 && !pending(ctx)) {
 			const left = since + HEADLESS_CHECKIN_MS - Date.now();
 			if (left <= 0) {
 				const now = Date.now();
-				const lastOutput = (t: Task) => {
-					const st = fs.statSync(t.out, { throwIfNoEntry: false });
-					return st?.size ? st.mtimeMs : undefined;
-				};
+				if (!running().length) {
+					since = now;
+					continue;
+				}
 				notify(checkinText(running().map((t) => ({ ...t, lastOutput: lastOutput(t) })), [...wakes.values()], now - since, now, HEADLESS_CHECKIN_MS));
 				break;
 			}

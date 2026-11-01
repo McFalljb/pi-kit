@@ -188,7 +188,7 @@ export interface CheckinTask {
 	id: string;
 	command: string;
 	started: number;
-	lastOutput?: number; // when its output file last grew; undefined while it has none
+	lastOutput?: number; // when its log file last changed; undefined while it is empty
 }
 
 /**
@@ -199,11 +199,13 @@ export function checkinText(tasks: CheckinTask[], wakes: { id: string; prompt: s
 	const lines = [`Background shells check-in: no notice for ${duration(waited)}. Nothing was stopped; still pending:`];
 	for (const t of tasks) {
 		const quiet = now - (t.lastOutput ?? t.started);
-		const out = quiet >= interval ? `no output for ${duration(quiet)}` : t.lastOutput === undefined ? "no output yet" : `last output ${duration(quiet)} ago`;
+		const out = quiet >= interval ? `nothing written to its log for ${duration(quiet)}` : t.lastOutput === undefined ? "nothing written to its log yet" : `last wrote to its log ${duration(quiet)} ago`;
 		lines.push(`- ${t.id} running ${duration(now - t.started)}, ${out}: \`${clip(t.command)}\``);
 	}
 	for (const w of wakes) lines.push(`- ${w.id} timer, wakes in ${duration(Math.max(0, w.due - now))}: ${short(w.prompt, 200)}`);
-	lines.push(`If this is expected, end your turn to keep waiting; the next check-in comes in ${duration(interval)} unless a notice arrives first. To stop a task that looks stuck, use shell_stop <id>.`);
+	lines.push(
+		`This headless run cannot finish until every task listed stops. Stop servers, watchers and anything whose result you do not need now with shell_stop <id>, and any task that looks stuck; only wait for work you expect to finish: end your turn and the next check-in comes in ${duration(interval)} unless a notice arrives first.`,
+	);
 	return lines.join("\n");
 }
 

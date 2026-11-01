@@ -57,8 +57,8 @@ Known facts, file paths, relevant commits, prior findings, data locations, relat
   and test commands for what changed> and report each exact command with its result. Never
   report done on red or unrun checks; say what could not run and why.
 - Background work: long builds and test runs in plain `bash` (a child is closed when its turn
-  ends, and its `bash_bg` tasks die with it); dev servers in `bash_bg`/`monitor`; stop every
-  task you started before the report.
+  ends, and its `bash_bg` tasks die with it); a server in `bash_bg` only if used within the same
+  turn; stop every task you started before the report.
 
 ## Deliverable
 The report format from your agent prompt, with commit SHAs and commands run with pass/fail.

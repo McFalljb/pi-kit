@@ -109,15 +109,19 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   - All process groups, leftovers included, are killed and the `pi-shell-*` directory is removed
     when the session ends or reloads. A headless top-level run (`pi -p`, json mode) waits at the
     end of a turn for the next notice or until every task and timer is done, with no time limit.
-    After 30 minutes without a notice it sends a check-in notice that starts a turn: each running
-    task with its running time and time since its last output (flagged `no output for ...` past
-    30 minutes), and the pending timers. Nothing is stopped; the model ends the turn to keep
-    waiting (the next check-in comes 30 minutes later) or stops a stuck task with `shell_stop`.
+    After 30 minutes without a notice, while a task still runs, it sends a check-in notice that
+    starts a turn: each running task with its running time and how long since it last wrote to
+    its log (flagged `nothing written to its log for ...` past 30 minutes), and the pending
+    timers (timers alone get no check-in). Nothing is stopped. The notice says the run cannot
+    finish until every listed task stops, so servers, watchers and anything whose result is not
+    needed should be stopped with `shell_stop`; the model ends the turn to keep waiting for
+    expected work (the next check-in comes 30 minutes later).
     Each check-in costs one model turn, so a `pi -p` run whose task never ends keeps going
     until someone stops it. Subagent children do not wait: pi-subagents closes a child right
     after its last turn, and its background tasks die with it. That is why `kit.worker` runs long
     commands in plain `bash` and never ends its turn with its own `bash_bg` tasks running.
-  - `kit.worker` has the tools; `kit.reviewer` does not.
+  - `kit.worker` has the tools except `wake_later` (a child never sees a timer fire);
+    `kit.reviewer` has none.
   - Their usage rules sit on the tools (`promptSnippet`, `promptGuidelines`), not in `AGENTS.md`.
     pi adds those only to its default system prompt, so `kit.worker` (`systemPromptMode:
     replace`) keeps its own background rules. A `~/.pi/agent/AGENTS.md` merged earlier
