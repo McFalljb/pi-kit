@@ -38,12 +38,14 @@ exist only when pi-desk started this pi with a control token.
   user at once. A shell tab can only fire on its exit. A desk_wait or desk_prompt wait that sees
   the tab idle ends its watch. Cancel with `cancel: true`; `desk_watch {}` lists them. At most 5;
   they end when this pi reloads.
+- "How do I … in pi-desk?": read pi-desk's user guide (the `pi-desk user guide:` path in
+  your system prompt, if present) and answer from it; never invent a feature.
 - "What happened while I was away?": `desk_events` (pi-desk's recent notifications, if this
   pi-desk offers them) and `desk_state` for the current status.
 
 ## Confirmations
-Destructive commands (closing a busy tab, quitting, reloading a pi tab, later deletes and
-settings) need confirmation. Under the default mode (`ask`) only the user can confirm, in
+Destructive commands (closing a busy tab, quitting, reloading a pi tab, moving files to the
+Trash, writing files outside your own project, saving settings) need confirmation. Under the default mode (`ask`) only the user can confirm, in
 pi-desk's window: desk_run waits and reports whether they confirmed or cancelled. Modes
 (`ask`, `trusted`, `auto`) and close rules are the user's settings; only the user can change
 them. In `trusted` mode desk_run returns a confirm token: use it only if the user explicitly
