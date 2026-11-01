@@ -1,5 +1,5 @@
 // pi-desk state and events for the Home agent (unit-tested in test/unit.test.ts): a compact state
-// summary, filters, and short notices from other tabs' status changes. Shapes: pi-desk
+// summary, filters, desk_watch's status checks and message, desk_events' output. Shapes: pi-desk
 // docs/PROTOCOL.md §3 (state snapshot, events).
 
 const arr = (v: unknown): any[] => (Array.isArray(v) ? v : []);
@@ -104,28 +104,30 @@ export function findTab(state: any, tabId: number): { tab: any; session: any; pr
 }
 
 export type Seen = { agent: string; waiting: boolean; question: boolean };
-export type Kind = "waiting" | "question" | "finished" | "error";
+export type Kind = "waiting" | "question" | "finished" | "error" | "exited";
 export interface Notice {
 	tab: number;
 	kind: Kind;
 }
 
+export const seenOf = (t: any): Seen => ({ agent: one(t?.agent), waiting: !!t?.waiting, question: !!t?.question });
+
 /** The pi tabs' statuses in a snapshot, to compare later events with. */
 export function seenFrom(state: any): Map<number, Seen> {
 	const m = new Map<number, Seen>();
-	for (const s of arr(state?.open_sessions)) for (const t of arr(s.tabs)) if (t?.kind === "pi") m.set(t.id, { agent: one(t.agent), waiting: !!t.waiting, question: !!t.question });
+	for (const s of arr(state?.open_sessions)) for (const t of arr(s.tabs)) if (t?.kind === "pi") m.set(t.id, seenOf(t));
 	return m;
 }
 
 /**
- * The notice a `command` event is worth to the Home agent, if any: only a pi tab's status turning
+ * What a `command` event says about a pi tab, if anything worth a watch: its status turning
  * waiting (a dialog is open), error, a question, or a finished run (working → idle). Updates `seen`.
  */
 export function noticeFor(ev: any, seen: Map<number, Seen>): Notice | undefined {
 	const c = ev?.command;
 	if (ev?.event !== "command" || c?.type !== "pi.status" || typeof c.tab_id !== "number" || ev.result?.ok === false) return;
 	const was = seen.get(c.tab_id);
-	const now: Seen = { agent: one(c.agent), waiting: !!c.waiting, question: !!c.question };
+	const now = seenOf(c);
 	seen.set(c.tab_id, now);
 	if (now.waiting) return was?.waiting ? undefined : { tab: c.tab_id, kind: "waiting" };
 	if (now.agent === "error") return was?.agent === "error" ? undefined : { tab: c.tab_id, kind: "error" };
@@ -133,30 +135,106 @@ export function noticeFor(ev: any, seen: Map<number, Seen>): Notice | undefined 
 	if (now.agent === "idle" && was?.agent === "working") return { tab: c.tab_id, kind: "finished" };
 }
 
-const WORDS: Record<Kind, string> = { waiting: "waiting for you (a dialog is open)", question: "asked a question", finished: "finished its run", error: "stopped with an error" };
-const MAX_LINES = 8;
+/** What desk_watch can wait for: a run ending, the user being needed, the tab exiting. */
+export const WATCH_ON = ["finished", "needs_user", "exited"] as const;
+export type On = (typeof WATCH_ON)[number];
+const COVERS: Record<On, Kind[]> = { finished: ["finished", "question", "error"], needs_user: ["waiting", "question"], exited: ["exited"] };
 
-/**
- * One short message for a batch of notices (except tabs in `skip`): the latest per tab, in order, labelled with project
- * and session from the snapshot, at most MAX_LINES lines. Empty when there is nothing to say.
- */
-export function noticeText(notices: Notice[], state: any, skip: Set<number> = new Set()): string {
-	const latest = new Map<number, Kind>();
-	for (const n of notices) if (!skip.has(n.tab)) latest.delete(n.tab), latest.set(n.tab, n.kind);
-	const lines = [...latest].map(([tab, kind]) => {
-		const where = findTab(state, tab);
-		const name = where ? one(where.project?.name) || one(where.project?.label) || `project ${where.session.project_id}` : "";
-		return `- ${name ? `${name} (session ${where!.session.id}, tab ${tab})` : `tab ${tab}`}: ${WORDS[kind]}`;
-	});
-	if (!lines.length) return "";
-	const shown = lines.length > MAX_LINES ? [...lines.slice(0, MAX_LINES - 1), `- … ${lines.length - MAX_LINES + 1} more (desk_state shows all)`] : lines;
-	return ["pi-desk: other sessions changed. Tell the user if it matters; do not act on them unasked.", ...shown].join("\n");
+/** Whether a watch for `on` fires on `kind`; an error or an exit always does (nothing else will follow). */
+export function fires(on: On[], kind: Kind): boolean {
+	return kind === "error" || kind === "exited" || on.some((o) => COVERS[o].includes(kind));
 }
 
-const COALESCE_MS = 10_000; // notices arriving within this go out as one message
-const TURN_EVERY_MS = 60_000; // at most one notice-triggered turn per this
+/** Whether a tab in the snapshot is gone or its process no longer runs. */
+export function exited(state: any, tab: number): boolean {
+	const t = findTab(state, tab)?.tab;
+	return !t || (typeof t.status === "string" && t.status !== "running");
+}
 
-/** How long to wait before sending queued notices, given when the last notice message went out. */
-export function noticeDelay(now: number, last: number | undefined): number {
-	return Math.max(COALESCE_MS, last === undefined ? 0 : last + TURN_EVERY_MS - now);
+/**
+ * The watches (tab -> what they wait for) a fresh snapshot fires: tabs gone or exited, and pi tabs
+ * whose status changed since `seen` (updated) in a way the watch waits for. For changes missed
+ * while no event said so (a reconnect, a dropped event stream, an exit).
+ */
+export function watchHits(state: any, seen: Map<number, Seen>, watches: Map<number, { on: On[]; gen?: number }>, upTo = Infinity): Notice[] {
+	const out: Notice[] = [];
+	for (const [tab, { on, gen = 0 }] of watches) {
+		if (gen > upTo) continue; // set after this state was asked for: it may predate the watch
+		if (exited(state, tab)) {
+			out.push({ tab, kind: "exited" });
+			continue;
+		}
+		const t = findTab(state, tab)!.tab;
+		if (t.kind !== "pi") continue;
+		const n = noticeFor({ event: "command", command: { type: "pi.status", tab_id: tab, agent: t.agent, waiting: t.waiting, question: t.question } }, seen);
+		if (n && fires(on, n.kind)) out.push(n);
+	}
+	return out;
+}
+
+const WORDS: Record<Kind, string> = {
+	waiting: "is waiting for you (a dialog is open)",
+	question: "finished its run with a question",
+	finished: "finished its run",
+	error: "stopped with an error",
+	exited: "exited or was closed",
+};
+
+/** A tab labelled with its project and session from the snapshot, e.g. `Beta (session 11, tab 7)`. */
+export function tabLabel(state: any, tab: number): string {
+	const where = findTab(state, tab);
+	const name = where ? one(where.project?.name) || one(where.project?.label) || `project ${where.session.project_id}` : "";
+	return name ? `${name} (session ${where!.session.id}, tab ${tab})` : `tab ${tab}`;
+}
+
+/** The one message for the watches fired together; `label` is tabLabel's from when each was set. */
+export function watchText(hits: { kind: Kind; label: string }[]): string {
+	if (hits.length === 1) return `pi-desk: the watch you set fired: ${hits[0].label} ${WORDS[hits[0].kind]}. The user asked for this; tell them.`;
+	return ["pi-desk: watches you set fired (the user asked for these; tell them):", ...hits.map((h) => `- ${h.label} ${WORDS[h.kind]}`)].join("\n");
+}
+
+/**
+ * The parts of a watch (`on`) already true for tab `t` when it is set, so desk_watch does not arm
+ * them: needs_user while a dialog waits or it asked a question; finished while it is not running
+ * (idle or error: there is no run to finish). A shell tab only has exits.
+ */
+export function alreadyTrue(t: any, on: On[]): On[] {
+	if (t?.kind !== "pi") return [];
+	const s = seenOf(t);
+	const now: On[] = [];
+	if (s.agent === "idle" || s.agent === "error") now.push("finished");
+	if (s.waiting || (s.agent === "idle" && s.question)) now.push("needs_user");
+	return on.filter((o) => now.includes(o));
+}
+
+const EVENTS_SHOWN = 20;
+const ENTRY_MAX = 300; // characters per notification line
+const RAW_MAX = 4096; // characters of a result in an unknown shape
+export const EVENTS_START = "<<<pi-desk notifications";
+export const EVENTS_END = "pi-desk notifications>>>";
+const cap = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** One notification as a line: pi-desk's shape ({id, time, kind, title, project?, session_id?, tab_id?, job_id?, status?, summary?, read}), else its JSON. */
+function eventLine(e: any): string {
+	if (typeof e === "string") return cap(`- ${one(e)}`, ENTRY_MAX);
+	if (!e || typeof e !== "object" || (typeof e.title !== "string" && typeof e.kind !== "string")) return cap(`- ${JSON.stringify(e)}`, ENTRY_MAX);
+	const where = [one(e.project), e.session_id != null && `session ${one(e.session_id)}`, e.tab_id != null && `tab ${one(e.tab_id)}`, e.job_id != null && `job ${one(e.job_id)}`, one(e.status)].filter(Boolean);
+	const line = `- ${one(e.time)} ${one(e.kind)}: ${one(e.title)}${e.summary ? ` — ${one(e.summary)}` : ""}${where.length ? ` (${where.join(", ")})` : ""}${e.read === false ? " [unread]" : ""}`;
+	return cap(line.replace(/^- {1,2}/, "- "), ENTRY_MAX);
+}
+
+/**
+ * desk_events' output from a `notifications_list` result's data: {notifications: [...]} (pi-desk's
+ * shape; also a plain array or {items}) as the latest `limit` lines, oldest first when they carry a
+ * time; any other shape as capped JSON. Marked as data and fenced.
+ */
+export function eventsText(data: any, limit = EVENTS_SHOWN): string {
+	const raw = Array.isArray(data) ? data : Array.isArray(data?.notifications) ? data.notifications : Array.isArray(data?.items) ? data.items : undefined;
+	if (!raw) return [DATA_NOTE, EVENTS_START, cap(JSON.stringify(data ?? null), RAW_MAX), EVENTS_END].join("\n");
+	if (!raw.length) return "pi-desk has no notifications.";
+	const timed = raw.every((e: any) => typeof e?.time === "string");
+	const list = timed ? [...raw].sort((a: any, b: any) => (a.time < b.time ? -1 : a.time > b.time ? 1 : 0)) : raw;
+	const shown = list.slice(-Math.max(1, Math.floor(limit)));
+	const cut = list.length > shown.length ? `, the ${timed ? "latest" : "last"} ${shown.length} shown` : "";
+	return [DATA_NOTE, `pi-desk notifications (${list.length}${cut}${timed ? ", oldest first" : ""}):`, EVENTS_START, ...shown.map(eventLine), EVENTS_END].join("\n");
 }

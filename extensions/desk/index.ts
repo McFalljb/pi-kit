@@ -1,7 +1,7 @@
 /**
- * pi-desk control for the Home agent: tools to read pi-desk's state, run any pi-desk command,
- * prompt and wait for other pi tabs, and short notices about other sessions. Per pi-desk's
- * docs/PROTOCOL.md (§2 handshake, §3 commands, confirmation, events). Inert unless PI_DESK_SOCKET
+ * pi-desk control for the Home agent: tools to read pi-desk's state and recent notifications, run
+ * any pi-desk command, prompt and wait for other pi tabs, and watch one on the user's request. Per
+ * pi-desk's docs/PROTOCOL.md (§2 handshake, §3 commands, confirmation, events). Inert unless PI_DESK_SOCKET
  * and PI_DESK_CONTROL_TOKEN are set and pi runs in the interactive TUI.
  *
  * - Connects as caller `control` with PI_DESK_CONTROL_TOKEN, reconnects with backoff. A single-use
@@ -9,15 +9,17 @@
  *   the variable is removed from process.env so shell commands and children do not inherit it.
  * - After each handshake: subscribes to events, reads the pi tabs' statuses, and asks for
  *   `list_commands` (proposed; COMMANDS in commands.ts when pi-desk does not answer it) to
- *   generate desk_run's description.
+ *   generate desk_run's description and to see whether desk_events' `notifications_list` exists.
  * - desk_run waits for long-running commands (`finished`) and, when a command needs the user's
  *   confirmation, for the user's confirmed resend or the confirmation's disappearance.
- * - Notices: another pi tab turning waiting, error, question or finished is queued and delivered
- *   as one short message when this pi is idle (coalesced over 10 s, latest per tab, at most one
- *   notice-triggered turn a minute). pi-desk never sends a caller its own events; Home's own tabs
- *   and tabs a desk_prompt/desk_wait call is waiting on are skipped too.
+ * - No automatic notices: other sessions' status changes never reach the agent on their own (the
+ *   user sees them in pi-desk's notification bell). desk_watch arms a one-shot watch on a tab the
+ *   user asked about (at most MAX_WATCHES): its first matching change (from pi.status events, or a
+ *   fresh state after a reconnect, a dropped stream or another command event, for exits) sends one
+ *   message that starts a turn, and ends the watch. desk_events reads pi-desk's notifications on
+ *   demand.
  * - Home's own tabs (the control hello's `tab_id`, and the bridge's tab via `kit:desk:tab`) are
- *   never targeted: desk_run, desk_prompt and desk_wait refuse them; desk_run also refuses
+ *   never targeted: desk_run, desk_prompt, desk_wait and desk_watch refuse them; desk_run also refuses
  *   send_text into a pi tab or a tab waiting for the user (see refusal in state.ts).
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
@@ -28,12 +30,13 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { backoff, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
 import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
-import { filterState, findTab, type Notice, noticeDelay, noticeFor, noticeText, piTabOf, refusal, type Seen, seenFrom, stateText, tabLine } from "./state.ts";
+import { alreadyTrue, eventsText, exited, filterState, findTab, fires, type Notice, noticeFor, type On, piTabOf, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
 
 const ENV = "PI_DESK_CONTROL_TOKEN";
 const HELLO_TIMEOUT_MS = 5000;
 const WAIT_S = 600; // default wait for long-running commands, confirmations and idle tabs
 const MAX_WAIT_S = 3600;
+const MAX_WATCHES = 5;
 type R = Record<string, any>;
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }], details: undefined });
 const seconds = (s: unknown) => Math.min(MAX_WAIT_S, Math.max(1, Number(s) || WAIT_S));
@@ -53,15 +56,17 @@ export default function (pi: ExtensionAPI) {
 	const listeners = new Set<(ev: R) => void>(); // command events, for confirmation waits
 	const waits = new Set<(r: R) => void>(); // every wait in progress, ended when the connection closes
 	let seen = new Map<number, Seen>();
-	let queued: Notice[] = [];
-	let noticeTimer: NodeJS.Timeout | undefined;
-	let lastNotice: number | undefined; // when the last notice message went out
+	const watches = new Map<number, { on: On[]; label: string; gen: number }>(); // desk_watch: tab -> what it waits for, its label, when set
+	let gen = 0; // counts watches set; a state fetched before a watch's gen is not compared with it
+	const waitedOn = new Map<number, number>(); // tab -> desk_wait/desk_prompt waits in progress on it
+	const endedInWait = new Set<number>(); // tabs whose watch fire() ended during such a wait, for its result
+	let checking: Promise<void> | undefined; // a watch check against a fresh state in flight
+	let checkAgain = false;
+	let hasNotifications = false; // pi-desk listed notifications_list
 	let controlTab = 0; // Home's tab, from the control hello (0: none)
 	let bridgeTab = 0; // Home's tab, from its desk bridge
 	const own = () => new Set([controlTab, bridgeTab].filter((t) => t > 0));
-	const skipped = () => new Set([...own(), ...watching.keys()]);
 	const rechecks = new Set<() => void>(); // confirmation waits: look at the state again
-	const watching = new Map<number, number>(); // tab -> tool calls waiting on it
 	let described = ""; // desk_run's current description
 
 	function request(msg: R): Promise<R> {
@@ -164,40 +169,64 @@ export default function (pi: ExtensionAPI) {
 		if (m.event !== "command") return;
 		for (const l of [...listeners]) l(m);
 		const n = noticeFor(m, seen);
-		if (n && !skipped().has(n.tab)) {
-			queued.push(n);
-			scheduleNotices();
-		}
+		const w = n && watches.get(n.tab);
+		if (n && w && fires(w.on, n.kind)) return fire([n]);
+		// A tab may have exited or closed: pi-desk's own events, a bridge gone, any other command.
+		const type = String(m.command?.type ?? "");
+		if (watches.size && (m.caller === "internal" || (type !== "pi.status" && !type.startsWith("panel.")))) void checkWatches();
 	}
 
-	function scheduleNotices() {
-		if (queued.length && ctx && !closed && ctx.isIdle()) noticeTimer ??= setTimeout(flushNotices, noticeDelay(Date.now(), lastNotice));
-	}
-	async function flushNotices() {
-		noticeTimer = undefined;
-		if (!ctx || closed || !queued.length || !ctx.isIdle()) return; // agent_settled tries again
-		const batch = queued;
-		queued = [];
-		let state: any;
-		try {
-			state = await getState();
-		} catch {}
+	/**
+	 * End the fired watches and tell the agent in one message, which starts a turn (after the current
+	 * run, if any). A run ending on a tab a desk_wait/desk_prompt call is waiting on only ends its
+	 * watch: that call's result already says so.
+	 */
+	function fire(hits: Notice[]) {
 		if (!ctx || closed) return;
-		if (!ctx.isIdle()) return void (queued = [...batch, ...queued]);
-		const msg = noticeText(batch, state, skipped());
-		if (!msg) return;
-		lastNotice = Date.now();
+		const out: { kind: Notice["kind"]; label: string }[] = [];
+		for (const h of hits) {
+			const w = watches.get(h.tab);
+			if (!w) continue;
+			watches.delete(h.tab);
+			if (waitedOn.has(h.tab) && (h.kind === "finished" || h.kind === "question" || h.kind === "error")) endedInWait.add(h.tab);
+			else out.push({ kind: h.kind, label: w.label });
+		}
+		if (!out.length) return;
 		try {
-			pi.sendMessage({ customType: "kit-desk", content: msg, display: true, details: undefined }, { triggerTurn: true, deliverAs: "followUp" });
+			pi.sendMessage({ customType: "kit-desk", content: watchText(out), display: true, details: undefined }, { triggerTurn: true, deliverAs: "followUp" });
 		} catch {}
+	}
+
+	/** Compare the watched tabs with a fresh state (one check at a time; a request meanwhile runs one more). */
+	function checkWatches(): Promise<void> {
+		if (checking) {
+			checkAgain = true;
+			return checking;
+		}
+		checking = (async () => {
+			do {
+				checkAgain = false;
+				const upTo = gen;
+				try {
+					fire(watchHits(await getState(), seen, watches, upTo));
+				} catch {}
+			} while (checkAgain && watches.size);
+		})().finally(() => (checking = undefined));
+		return checking;
 	}
 
 	async function setup() {
 		try {
 			await request({ type: "subscribe" });
-			seen = seenFrom(await getState());
+			const upTo = gen;
+			const st = await getState();
+			const hits = watchHits(st, seen, watches, upTo); // changes missed while disconnected
+			seen = seenFrom(st);
+			fire(hits);
 			const listed = (await command({ type: "list_commands" })).result;
-			setCommands((listed?.ok && parseCommands(listed.data)) || COMMANDS);
+			const list: Cmd[] = (listed?.ok && parseCommands(listed.data)) || COMMANDS;
+			hasNotifications = list.some((c) => c.type === "notifications_list");
+			setCommands(list);
 		} catch {}
 	}
 
@@ -278,21 +307,18 @@ export default function (pi: ExtensionAPI) {
 			return (e as Error).message;
 		}
 	}
-	/** Run `fn` with notices about `tab` muted: the caller is already waiting on it. */
-	async function watch<T>(tab: number, fn: () => Promise<T>): Promise<T> {
-		watching.set(tab, (watching.get(tab) ?? 0) + 1);
-		try {
-			return await fn();
-		} finally {
-			const n = (watching.get(tab) ?? 1) - 1;
-			if (n > 0) watching.set(tab, n);
-			else watching.delete(tab);
-			queued = queued.filter((q) => q.tab !== tab);
-		}
-	}
+	/** Wait until `tab` is idle; a watch on it for a finished run ends then (the result says so already). */
 	async function waitIdle(tab: number, sec: number, signal?: AbortSignal): Promise<string> {
-		const { result } = await run({ type: "pi_wait_idle", tab_id: tab, timeout_ms: sec * 1000 }, sec * 1000 + 5000, signal);
-		return `${result.ok ? `Tab ${tab} is idle.` : `Tab ${tab} is not idle: ${result.error ?? "unknown"}.`}\n${await tabStatus(tab)}`;
+		waitedOn.set(tab, (waitedOn.get(tab) ?? 0) + 1);
+		try {
+			const { result } = await run({ type: "pi_wait_idle", tab_id: tab, timeout_ms: sec * 1000 }, sec * 1000 + 5000, signal);
+			const ended = endedInWait.delete(tab) || (result.ok && watches.get(tab)?.on.includes("finished") && watches.delete(tab));
+			return `${result.ok ? `Tab ${tab} is idle.` : `Tab ${tab} is not idle: ${result.error ?? "unknown"}.`}${ended ? " Its watch ended." : ""}\n${await tabStatus(tab)}`;
+		} finally {
+			const n = (waitedOn.get(tab) ?? 1) - 1;
+			if (n > 0) waitedOn.set(tab, n);
+			else waitedOn.delete(tab);
+		}
 	}
 
 	const target = {
@@ -372,7 +398,7 @@ export default function (pi: ExtensionAPI) {
 					if (!result.ok) throw new Error(`pi-desk did not deliver the prompt to tab ${tab}: ${result.error ?? "unknown"}`);
 					return p.wait ? `Prompt delivered. ${await waitIdle(tab, seconds(p.timeout_s), signal)}` : `Prompt delivered to tab ${tab}. ${await tabStatus(tab)}`;
 				};
-				return text(p.wait ? await watch(tab, go) : await go());
+				return text(await go());
 			},
 		});
 
@@ -384,7 +410,66 @@ export default function (pi: ExtensionAPI) {
 			parameters: Type.Object({ ...target, timeout_s }),
 			async execute(_id, p, signal) {
 				const tab = await otherPiTab(p);
-				return text(await watch(tab, () => waitIdle(tab, seconds(p.timeout_s), signal)));
+				return text(await waitIdle(tab, seconds(p.timeout_s), signal));
+			},
+		});
+
+		pi.registerTool({
+			name: "desk_watch",
+			label: "Watch a pi-desk tab",
+			description: `Only when the user asks to be told about another session: watch its tab (tab_id, or open session id) and get one message, which starts a turn, at the first matching change: "finished" (its run ended: idle, a question or an error), "needs_user" (a dialog is waiting or it asked a question), "exited" (the tab closed or its process ended). Default: all three; an error or an exit always fires. A shell tab can only fire on its exit. What is already true when you set it (e.g. it is idle, or already waiting for the user) is not watched: the result says so; tell the user then. The watch ends when it fires, or when a desk_wait or desk_prompt wait on that tab sees it idle. A new watch on the same tab replaces it; at most ${MAX_WATCHES} at once. cancel: true ends the watch on that tab (or all, without a target). With no target and no cancel, lists the watches. Watches end when this pi reloads or exits.`,
+			promptSnippet: "Get told once when another pi-desk session finishes, needs the user or exits (only when the user asks)",
+			promptGuidelines: [
+				"Other sessions' status changes are not sent to you; the user sees them in pi-desk's notification bell. Use desk_watch only when the user asks to be told about a session, and desk_state or desk_events when they ask what happened.",
+			],
+			parameters: Type.Object({
+				...target,
+				on: Type.Optional(Type.Array(Type.Union(WATCH_ON.map((o) => Type.Literal(o))), { description: "What to wait for (default: all)" })),
+				cancel: Type.Optional(Type.Boolean({ description: "End the watch on this tab (all watches without a target)" })),
+			}),
+			async execute(_id, p) {
+				const targeted = typeof p.tab_id === "number" || typeof p.session === "number";
+				if (!targeted) {
+					if (p.cancel) {
+						const n = watches.size;
+						watches.clear();
+						return text(n ? `Ended ${n} watch${n === 1 ? "" : "es"}.` : "No watches were set.");
+					}
+					if (!watches.size) return text("No watches are set.");
+					return text(["Watches:", ...[...watches].map(([tab, w]) => `- tab ${tab}: ${w.on.join(", ")}`)].join("\n"));
+				}
+				if (!own().size) throw new Error("pi-desk has not said which tab is yours yet; try again shortly.");
+				const tab = await otherPiTab(p);
+				if (p.cancel) return text(watches.delete(tab) ? `Stopped watching tab ${tab}.` : `Tab ${tab} was not watched.`);
+				if (!watches.has(tab) && watches.size >= MAX_WATCHES) throw new Error(`At most ${MAX_WATCHES} watches at once; cancel one first (desk_watch with no target lists them).`);
+				const st = await getState();
+				if (exited(st, tab)) throw new Error(`Tab ${tab} is not open or not running (desk_state lists the tabs).`);
+				const where = findTab(st, tab)!;
+				const t = where.tab;
+				const now = `Now: ${tabLine(t)} (session ${where.session.id}).`;
+				const asked: On[] = t.kind !== "pi" ? ["exited"] : p.on?.length ? [...new Set(p.on as On[])] : [...WATCH_ON];
+				const already = alreadyTrue(t, asked);
+				const on = asked.filter((o) => !already.includes(o));
+				const said = already.length ? `Tab ${tab} is already ${already.map((o) => (o === "finished" ? "finished (not running)" : "waiting for the user")).join(" and ")}` : "";
+				if (!on.length) return text(`${said}; nothing to watch. Tell the user now. ${now}`);
+				if (t.kind === "pi") seen.set(tab, seenOf(t)); // compare with its status from now on
+				watches.set(tab, { on, label: tabLabel(st, tab), gen: ++gen });
+				const shell = t.kind !== "pi" ? " It is a shell tab: only its exit can fire." : "";
+				return text(`${said ? `${said}, so that is not watched. ` : ""}Watching tab ${tab} (${on.join(", ")}): you get one message when it happens.${shell} ${now}`);
+			},
+		});
+
+		pi.registerTool({
+			name: "desk_events",
+			label: "pi-desk notifications",
+			description: "Read pi-desk's recent notifications (the ones its bell shows: sessions finishing, waiting for the user, errors, exits), oldest first, as data. Use when the user asks what happened while they were away; desk_state shows the current status.",
+			promptSnippet: "Read pi-desk's recent notifications (what happened in other sessions)",
+			parameters: Type.Object({ limit: Type.Optional(Type.Number({ description: "How many of the latest to show (default 20)" })) }),
+			async execute(_id, p) {
+				if (!hasNotifications) return text("This pi-desk does not offer notifications_list, so recent events are unavailable; desk_state shows the current status of every session.");
+				const r = (await command({ type: "notifications_list" })).result;
+				if (!r?.ok) throw new Error(`pi-desk: ${r?.error ?? "no notifications"}`);
+				return text(eventsText(r.data, p.limit));
 			},
 		});
 	}
@@ -395,13 +480,11 @@ export default function (pi: ExtensionAPI) {
 		registerTools();
 		connect();
 	});
-	pi.on("agent_settled", () => scheduleNotices());
 	pi.events.on("kit:desk:tab", (id) => void (bridgeTab = Number(id) || 0));
 	pi.on("session_shutdown", () => {
 		if (closed || !ctx) return;
 		closed = true;
 		clearTimeout(retry);
-		clearTimeout(noticeTimer);
 		sock?.end();
 		ctx = undefined;
 	});

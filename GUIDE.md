@@ -173,14 +173,27 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   description is generated from pi-desk's `list_commands`, or from a built-in list in
   `extensions/desk/commands.ts` while pi-desk has none; it waits for long-running commands, and for
   the user's answer when a command needs confirmation, never resending it), `desk_prompt` (a
-  user message in another pi tab, optionally waiting until it is idle) and `desk_wait`. Home's own
+  user message in another pi tab, optionally waiting until it is idle), `desk_wait`, `desk_watch`
+  and `desk_events`. Home's own
   tabs (the control hello's `tab_id`, and its bridge's tab) are never targeted, and desk_run
   refuses `send_text` into a pi tab or a tab waiting for the user. desk_state output is marked as
-  data, not instructions. Other pi tabs turning waiting, error, question or finished are sent as
-  one short `pi-desk:` message when Home is idle (coalesced over 10 s, latest per tab, at most 8
-  lines, at most one such turn a minute; not for Home's own tabs or tabs a desk_prompt/desk_wait
-  call is waiting on). pi-desk itself never sends a caller its own events. After a `dropped`
-  event stream the extension subscribes again and re-checks pending confirmations.
+  data, not instructions. Other sessions' status changes are not sent to Home on their own (the
+  user sees them in pi-desk's notification bell). `desk_watch` (only when the user asks) arms a
+  one-shot watch on one tab, at most 5: its first `finished` (run ended: idle, question or error),
+  `needs_user` (dialog or question) or `exited` change (default all; an error or exit always fires;
+  a shell tab only has `exited`) ends the watch and sends a `pi-desk:` message that starts a turn
+  (watches fired together share one message). A part already true when the watch is set (idle:
+  nothing to finish; already waiting for the user) is not armed, and the tool result says so.
+  A desk_wait or desk_prompt wait that sees the tab idle ends its watch instead of a second turn.
+  `cancel: true` ends one or all, no target lists them; watches do not survive a reload, and
+  `desk_watch` is refused until Home's own tab is known. Exits and changes missed while
+  disconnected are found by comparing a fresh state (fetched after the watch was set).
+  `desk_events` reads pi-desk's `notifications_list` when `list_commands` lists it (else says it
+  is unavailable): `{notifications: [{id, time, kind, title, ...}]}` as one line each, at most
+  300 characters, the latest 20 (`limit`), fenced and marked as data; another shape as at most
+  4 KB of JSON. pi-desk itself
+  never sends a caller its own events. After a `dropped` event stream the extension subscribes
+  again and re-checks pending confirmations and watches.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
   the first two.

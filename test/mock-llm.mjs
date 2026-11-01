@@ -4,7 +4,8 @@
 // Each request is logged as one JSON line: model, every tool result so far, every shell notice so
 // far, the last message, the reply. Shell notices are answered "GOT SHELL: <first line>".
 // Each request's system prompt (and desk_run's description, if offered) goes to <log>.system as one JSON line.
-// A "pi-desk: " notice is answered "GOT DESK: <its lines joined by |>".
+// A "pi-desk: " message (a fired desk_watch) is answered "GOT DESK: <its lines joined by |>"; every
+// such message so far is logged too.
 // "$ID" in arguments is replaced by the last pi-subagents run id ("<agent> [<id>]") seen in tool results,
 // "$OUT" by the last shell output file ("Output: <path>.log").
 import http from "node:http";
@@ -59,7 +60,7 @@ http.createServer((req, res) => {
 		const msgs = j.messages || [];
 		const d = decide(msgs);
 		if (log !== "/dev/null") fs.appendFileSync(`${log}.system`, JSON.stringify({ model: j.model, system: msgs.filter((m) => m.role === "system" || m.role === "developer").map((m) => textOf(m.content)).join("\n"), deskRun: (j.tools || []).find((t) => t.function?.name === "desk_run")?.function?.description }) + "\n");
-		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), notices: msgs.filter((m) => m.role === "user" && SHELL_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 2000)), reminders: msgs.filter((m) => m.role === "user" && REMINDER.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 60)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
+		fs.appendFileSync(log, JSON.stringify({ model: j.model, tools: msgs.filter((m) => m.role === "tool").map((m) => textOf(m.content).slice(0, 120)), notices: msgs.filter((m) => m.role === "user" && SHELL_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 2000)), reminders: msgs.filter((m) => m.role === "user" && REMINDER.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 60)), desk: msgs.filter((m) => m.role === "user" && DESK_NOTICE.test(textOf(m.content))).map((m) => textOf(m.content).slice(0, 300)), last: msgs.slice(-1).map((m) => ({ role: m.role, text: textOf(m.content).slice(0, 300) })), out: d }) + "\n");
 		const base = { id: "mock", object: "chat.completion.chunk", created: 0, model: j.model };
 		const chunk = (delta, finish = null) => `data: ${JSON.stringify({ ...base, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
 		res.writeHead(200, { "content-type": "text/event-stream" });
