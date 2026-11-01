@@ -306,12 +306,27 @@ $(step bash_bg '{"command":"yes | head -c 3000000; sleep 20"}')"
 check "log cap: task killed with a clear notice" "Background shell sh1 killed: output file passed 1 MiB" "$T/p22b.log"
 
 # 23. no background shell in the agent dir; reading a shell output file redacts assignments;
-# headless wake_later is clamped to the drain window
+# headless wake_later is clamped like any other (to 3600s), not to a drain window
 run p23 "Steps:
 $(step bash_bg '{"command":"echo password=supersecretvalue123; echo done"}'; step bash '{"command":"sleep 1; echo waited"}'; step read '{"path":"$OUT"}'; step wake_later '{"seconds":7200,"prompt":"never"}'; step shell_stop '{"id":"wk2"}')"
 check "read of a shell log: assignment redacted" '"role":"tool","text":"password=\[REDACTED\]' "$T/p23.log"
 nocheck "read of a shell log: value never sent" '"role":"tool","text":"[^"]*supersecretvalue123' "$T/p23.log"
-check "headless wake_later clamped to the drain window" "wakes this session in 1800s (clamped from 7200)" "$T/p23.log"
+check "headless wake_later not clamped to a drain window" "wakes this session in 3600s (clamped from 7200)" "$T/p23.log"
+
+# 23b. headless runs never kill background work on a deadline: every check-in interval with no
+# notice (3 s here) a check-in notice lists what runs and flags tasks with no output; the turn it
+# starts ends and the wait resumes, until the tasks exit on their own
+PI_KIT_SHELL_CHECKIN_MS=3000 run p23b "Steps:
+$(step bash_bg '{"command":"sleep 11; echo quiet-done"}'; step bash_bg '{"command":"for i in $(seq 1 12); do echo tick $i; sleep 0.5; done"}')"
+CHECKINS="$(tail -1 "$T/p23b.log" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(d.notices.filter(n=>n.startsWith("Background shells check-in:")).length)')"
+if [ "$CHECKINS" -ge 2 ]; then echo "PASS headless check-in: $CHECKINS check-ins, the wait resumed after each"; else echo "FAIL headless check-in: $CHECKINS check-ins (want >= 2)"; fail=1; fi
+check "headless check-in: says nothing was stopped" '"notices":\[[^]]*Background shells check-in: no notice for 3s. Nothing was stopped' "$T/p23b.log"
+check "headless check-in: quiet task flagged" '"notices":\[[^]]*- sh1 running [0-9]*s, no output for [0-9]*s: `sleep 11; echo quiet-done`' "$T/p23b.log"
+check "headless check-in: chatty task shows its last output" '"notices":\[[^]]*- sh2 running [0-9]*s, last output [0-9]*s ago' "$T/p23b.log"
+check "headless check-in: quiet task finished on its own" '"notices":\[[^]]*Background shell sh1 exited with code 0[^"]*quiet-done' "$T/p23b.log"
+check "headless check-in: chatty task finished on its own" '"notices":\[[^]]*Background shell sh2 exited with code 0[^"]*tick 12' "$T/p23b.log"
+nocheck "headless check-in: nothing killed" 'killed what was left\|headless session ended' "$T/p23b.log"
+check "headless check-in: the run ended with the last exit notice" "GOT SHELL: Background shell sh1 exited with code 0" "$T/p23b.out"
 
 # 24. notes reminder: past the threshold, one reminder in the context, no extra turn, and the
 # planned steps still finish (print mode keeps the real answer); 0 disables it
