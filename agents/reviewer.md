@@ -9,6 +9,7 @@ inheritProjectContext: true
 inheritGlobalContext: true
 inheritSkills: false
 defaultContext: fresh
+timeoutMs: 2147483647
 tools: read, grep, find, ls, bash, contact_supervisor
 extensions: ../extensions/guardrails/readonly.ts, ../extensions/model-rules/index.ts
 ---

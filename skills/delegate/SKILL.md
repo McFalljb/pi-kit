@@ -72,8 +72,9 @@ One call per task, all in the same turn for parallel work:
 subagent({ agent: "kit.worker", task: "<brief>", cwd: "<worktree>", async: true })
 ```
 - `model: "provider/id:thinking"` overrides the agent's model and thinking for one run.
-- Long writers: add `options: { timeoutMs: <ms>, checkpointBeforeDeadlineMs: 120000 }`. Do not
-  give writers a hard `toolBudget`.
+- No run deadline: the kit sets `timeoutMs` to the maximum (about 24.8 days), so runs are not cut
+  off at 30 minutes. Pass `options.timeoutMs` only to cap a run on purpose. Do not give writers a
+  hard `toolBudget`.
 - Tell the user in one line per worker what is running (worktree, branch, run id). Then keep
   working or end your turn. Each completion arrives as a "Background task completed" message;
   do not poll or sleep. Running work also shows in FleetView (`/subagents-fleet`).

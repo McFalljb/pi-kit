@@ -10,6 +10,7 @@ inheritGlobalContext: true
 inheritSkills: false
 skills: worktree-discipline
 defaultContext: fresh
+timeoutMs: 2147483647
 tools: read, grep, find, ls, bash, edit, write, bash_bg, monitor, shell_stop, shell_list, wake_later, contact_supervisor
 extensions: ../extensions/guardrails/index.ts, ../extensions/shell/index.ts, ../extensions/model-rules/index.ts
 ---
