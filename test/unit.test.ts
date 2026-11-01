@@ -191,13 +191,14 @@ test("checkinText: headless check-in lists tasks and timers, flags quiet tasks, 
 	);
 	const lines = text.split("\n");
 	assert.match(lines[0], /^Background shells check-in: no notice for 30m00s\. Nothing was stopped/);
-	assert.equal(lines[1], "- sh1 running 62m00s, last output 2m00s ago: `npm run build`");
-	assert.match(lines[2], /^- sh2 running 45m00s, no output for 41m00s: `python train\.py --token \[REDACTED\]`$/);
-	assert.equal(lines[3], "- sh3 running 31m00s, no output for 31m00s: `sleep 9999`");
-	assert.equal(lines[4], "- sh4 running 5m00s, no output yet: `make test`");
+	assert.equal(lines[1], "- sh1 running 62m00s, last wrote to its log 2m00s ago: `npm run build`");
+	assert.match(lines[2], /^- sh2 running 45m00s, nothing written to its log for 41m00s: `python train\.py --token \[REDACTED\]`$/);
+	assert.equal(lines[3], "- sh3 running 31m00s, nothing written to its log for 31m00s: `sleep 9999`");
+	assert.equal(lines[4], "- sh4 running 5m00s, nothing written to its log yet: `make test`");
 	assert.equal(lines[5], "- wk5 timer, wakes in 12m00s: check the deploy");
-	assert.match(text, /end your turn to keep waiting; the next check-in comes in 30m00s/);
-	assert.match(text, /shell_stop <id>/);
+	assert.match(text, /This headless run cannot finish until every task listed stops\./);
+	assert.match(text, /Stop servers, watchers and anything whose result you do not need now with shell_stop <id>/);
+	assert.match(text, /only wait for work you expect to finish: end your turn and the next check-in comes in 30m00s/);
 	assert.ok(!text.includes("ghp_abc"));
 });
 

@@ -248,14 +248,16 @@ $(step monitor '{"command":"for i in $(seq 1 50000); do echo ERR $i; done","patt
 check "flood: lines beyond the cap are counted" 'more matching lines (see the output file)' "$T/p17.log"
 check "flood: monitor still ends with the command" "Monitor total: 50000 matching lines" "$T/p17.log"
 
-# 18. wake_later: clamped to 60s, fires as a notice; a cancelled timer never fires
-run p18 "Steps:
+# 18. wake_later: clamped to 60s, fires as a notice; a cancelled timer never fires; a headless
+# wait on timers alone sends no check-in (PI_KIT_SHELL_CHECKIN_MS=3000)
+PI_KIT_SHELL_CHECKIN_MS=3000 run p18 "Steps:
 $(step wake_later '{"seconds":120,"prompt":"never"}'; step shell_list '{}'; step shell_stop '{"id":"wk1"}'; step wake_later '{"seconds":1,"prompt":"check the deploy page"}')"
 check "wake_later: listed while pending" '"role":"tool","text":"wk1  wakes in' "$T/p18.log"
 check "wake_later: cancelled" "Cancelled timer wk1" "$T/p18.log"
 check "wake_later: clamped to the minimum" "wakes this session in 60s (clamped from 1)" "$T/p18.log"
 check "wake_later: fired with its prompt" "GOT SHELL: Wake-up wk2 after 1m00s: check the deploy page" "$T/p18.out"
 nocheck "wake_later: cancelled timer never fired" "Wake-up wk1" "$T/p18.log"
+nocheck "wake_later: no check-in while only a timer is pending" "Background shells check-in" "$T/p18.log"
 
 # 19. secrets in output: redacted before lines are cut, key blocks dropped, in monitor lines and the exit tail
 cat > "$T/work/leak.sh" <<'SH'
@@ -321,12 +323,19 @@ $(step bash_bg '{"command":"sleep 11; echo quiet-done"}'; step bash_bg '{"comman
 CHECKINS="$(tail -1 "$T/p23b.log" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(d.notices.filter(n=>n.startsWith("Background shells check-in:")).length)')"
 if [ "$CHECKINS" -ge 2 ]; then echo "PASS headless check-in: $CHECKINS check-ins, the wait resumed after each"; else echo "FAIL headless check-in: $CHECKINS check-ins (want >= 2)"; fail=1; fi
 check "headless check-in: says nothing was stopped" '"notices":\[[^]]*Background shells check-in: no notice for 3s. Nothing was stopped' "$T/p23b.log"
-check "headless check-in: quiet task flagged" '"notices":\[[^]]*- sh1 running [0-9]*s, no output for [0-9]*s: `sleep 11; echo quiet-done`' "$T/p23b.log"
-check "headless check-in: chatty task shows its last output" '"notices":\[[^]]*- sh2 running [0-9]*s, last output [0-9]*s ago' "$T/p23b.log"
+check "headless check-in: quiet task flagged" '"notices":\[[^]]*- sh1 running [0-9]*s, nothing written to its log for [0-9]*s: `sleep 11; echo quiet-done`' "$T/p23b.log"
+check "headless check-in: chatty task shows its last output" '"notices":\[[^]]*- sh2 running [0-9]*s, last wrote to its log [0-9]*s ago' "$T/p23b.log"
 check "headless check-in: quiet task finished on its own" '"notices":\[[^]]*Background shell sh1 exited with code 0[^"]*quiet-done' "$T/p23b.log"
 check "headless check-in: chatty task finished on its own" '"notices":\[[^]]*Background shell sh2 exited with code 0[^"]*tick 12' "$T/p23b.log"
 nocheck "headless check-in: nothing killed" 'killed what was left\|headless session ended' "$T/p23b.log"
 check "headless check-in: the run ended with the last exit notice" "GOT SHELL: Background shell sh1 exited with code 0" "$T/p23b.out"
+
+# 23c. a notice consumed inside the run (sh1 exits while bash still runs) must not end the
+# headless wait: the long task still finishes and its exit notice arrives
+run p23c "Steps:
+$(step bash_bg '{"command":"sleep 1; echo short-done"}'; step bash_bg '{"command":"sleep 6; echo long-done"}'; step bash '{"command":"sleep 3; echo waited"}')"
+check "consumed notice: short task's notice arrived" '"notices":\[[^]]*Background shell sh1 exited with code 0' "$T/p23c.log"
+check "consumed notice: long task still finished" '"notices":\[[^]]*Background shell sh2 exited with code 0[^"]*long-done' "$T/p23c.log"
 
 # 24. notes reminder: past the threshold, one reminder in the context, no extra turn, and the
 # planned steps still finish (print mode keeps the real answer); 0 disables it
