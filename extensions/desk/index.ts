@@ -507,7 +507,7 @@ export default function (pi: ExtensionAPI) {
 				if (!result.ok) return text(appReplyText(p.tab, "app_screenshot", result));
 				const d = result.data ?? {};
 				const about = shotText(p.tab, d);
-				const shot = shotFile(p.tab, d.path, process.env.PI_DESK_DATA_DIR || undefined);
+				const shot = shotFile(p.tab, d.path);
 				if ("why" in shot) return text(`${about}\n(Not attached: ${shot.why}.)`);
 				const png = shot.png;
 				return { content: [{ type: "text" as const, text: about }, { type: "image" as const, data: png.toString("base64"), mimeType: "image/png" }], details: undefined };

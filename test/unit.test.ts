@@ -814,6 +814,8 @@ test("desk apps: the app's error text stays inside the data fence (review round 
 
 test("desk apps: a screenshot file must be pi-desk's shot of that tab: under apps/shots, no symlink out, a real PNG (review round 1)", () => {
 	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kit-shots-")));
+	const saved = process.env.PI_DESK_DATA_DIR;
+	delete process.env.PI_DESK_DATA_DIR; // the shape-only check, even when run inside pi-desk
 	try {
 		const shots = path.join(root, "apps", "shots");
 		fs.mkdirSync(shots, { recursive: true });
@@ -838,6 +840,31 @@ test("desk apps: a screenshot file must be pi-desk's shot of that tab: under app
 		assert.equal(why(13, path.join(shots, "13-1.png"), root), "accepted");
 		assert.match(why(13, path.join(shots, "13-9.png")), /could not be read/);
 	} finally {
+		if (saved !== undefined) process.env.PI_DESK_DATA_DIR = saved;
+		fs.rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("desk apps: PI_DESK_DATA_DIR, when set, makes the screenshot check strict; without it only the shape is checked", () => {
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kit-shots-env-")));
+	const saved = process.env.PI_DESK_DATA_DIR;
+	try {
+		const shots = path.join(root, "apps", "shots");
+		fs.mkdirSync(shots, { recursive: true });
+		const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+		fs.writeFileSync(path.join(shots, "13-1.png"), png);
+		const file = path.join(shots, "13-1.png");
+		process.env.PI_DESK_DATA_DIR = path.join(root, "elsewhere");
+		assert.ok("why" in shotFile(13, file), "set to another dir: the file is refused");
+		process.env.PI_DESK_DATA_DIR = root;
+		assert.ok("png" in shotFile(13, file), "set to pi-desk's data dir: accepted");
+		delete process.env.PI_DESK_DATA_DIR;
+		assert.ok("png" in shotFile(13, file), "unset: the shape-only check");
+		process.env.PI_DESK_DATA_DIR = "";
+		assert.ok("png" in shotFile(13, file), "empty counts as unset");
+	} finally {
+		if (saved === undefined) delete process.env.PI_DESK_DATA_DIR;
+		else process.env.PI_DESK_DATA_DIR = saved;
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
