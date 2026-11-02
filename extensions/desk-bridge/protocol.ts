@@ -106,3 +106,108 @@ export function blockers(shells: ShellRow[], runs: Run[]): string[] {
 	for (const r of Array.isArray(runs) ? runs : []) if (r && runningLeaves(r)) out.push(`subagent ${one(r.label) || one(r.kind) || one(r.id) || "run"}`);
 	return out;
 }
+
+// ---- comments that go with the user's next message (pi-desk docs/BROWSER.md §3.7) ----
+
+export type Image = { type: "image"; data: string; mimeType: string };
+/** What pi-desk's `pi.attach` holds until the user's next message: pi-desk's text block and images. */
+export interface Attachment {
+	id: string | number;
+	text: string;
+	images: Image[];
+}
+export const ATTACH_IMAGES_MAX = 8;
+export const ATTACH_DATA_MAX = 6 * 1024 * 1024; // base64 characters across one message's images
+const MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * Images on the wire (`[{mime, data}]`, data base64) as pi's image content; undefined if absent,
+ * a string if invalid (the error).
+ */
+export function wireImages(v: unknown): Image[] | string | undefined {
+	if (v === undefined) return undefined;
+	if (!Array.isArray(v)) return "images must be a list";
+	if (v.length > ATTACH_IMAGES_MAX) return `at most ${ATTACH_IMAGES_MAX} images`;
+	const out: Image[] = [];
+	let size = 0;
+	for (const [i, x] of v.entries()) {
+		if (!MIMES.includes(x?.mime)) return `image ${i + 1}: mime must be image/png, image/jpeg, image/gif or image/webp`;
+		if (typeof x.data !== "string" || x.data.length % 4 !== 0 || !BASE64.test(x.data)) return `image ${i + 1}: data must be base64`;
+		size += x.data.length;
+		out.push({ type: "image", data: x.data, mimeType: x.mime });
+	}
+	if (size > ATTACH_DATA_MAX) return "images too large";
+	return out;
+}
+
+/** A `pi.attach` message as an attachment, or the error. */
+export function parseAttach(m: Record<string, any>): Attachment | string {
+	const id = m.attachment_id;
+	if ((typeof id !== "number" && typeof id !== "string") || id === "") return "attachment_id is required";
+	if (typeof m.text !== "string" || !m.text.trim()) return "text is required";
+	const images = wireImages(m.images);
+	if (typeof images === "string") return images;
+	return { id, text: m.text, images: images ?? [] };
+}
+
+/**
+ * The input transform: the user's next message typed in pi (source `interactive`) gets the pending
+ * attachment after its own text and images. undefined: leave the input as it is (nothing pending,
+ * a message from pi.prompt, RPC or another extension, or a `/` command: pi expands templates and
+ * skills after this hook, and the block would end up in their arguments).
+ */
+export function attachInput(e: { text: string; images?: Image[]; source: string }, a: Attachment | undefined): { text: string; images: Image[] } | undefined {
+	if (!a || e.source !== "interactive" || e.text.startsWith("/")) return undefined; // pi's own check
+	// restored from pi's queue (Esc) with the block already in it: only the images again
+	if (e.text.includes(a.text)) return { text: e.text, images: [...(e.images ?? []), ...a.images] };
+	return { text: e.text.trim() ? `${e.text}\n\n${a.text}` : a.text, images: [...(e.images ?? []), ...a.images] };
+}
+
+/** A message's text (a user message's content is a string or text and image parts). */
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.map((p) => (p?.type === "text" && typeof p.text === "string" ? p.text : "")).join("\n");
+}
+
+/**
+ * pi-desk's pending comments in the bridge: what `pi.attach` holds. A message queued while pi works
+ * takes them and acks at once (pi has it; Esc puts its text, block included, back in the editor),
+ * so pi-desk stops showing them pending (Send now, Clear or Edit cannot double them). An idle
+ * prompt acks once its message starts (`started`, from pi's `message_start`): pi may still refuse
+ * it (no model, no auth) or another extension take it, and then the comments go with the next.
+ */
+export class Attacher {
+	held: Attachment | undefined;
+
+	/** pi.attach: replaces what is held. */
+	set(a: Attachment) {
+		this.held = a;
+	}
+	/** pi.attach_clear, or the connection dropped (pi-desk sends it again, or clears it). */
+	clear() {
+		this.held = undefined;
+	}
+	/** The input transform for the user's message (attachInput), with `ack` for a queued one. */
+	input(e: { text: string; images?: Image[]; source: string; streamingBehavior?: string }): { text: string; images: Image[]; ack?: string | number } | undefined {
+		const a = this.held;
+		const out = attachInput(e, a);
+		if (!out || !a) return undefined;
+		if (!e.streamingBehavior) return out;
+		this.held = undefined;
+		return { ...out, ack: a.id };
+	}
+	/** A message started (pi's message_start): the held attachment if it carries it (ack it). */
+	started(message: { role?: string; content?: unknown }): (string | number)[] {
+		const a = this.held;
+		if (!a || message?.role !== "user" || !messageText(message.content).includes(a.text)) return [];
+		this.held = undefined;
+		return [a.id];
+	}
+}
+
+/** pi.prompt's message for sendUserMessage: the text alone, or text then images. */
+export function promptContent(text: string, images: Image[]): string | ({ type: "text"; text: string } | Image)[] {
+	return images.length ? [{ type: "text", text }, ...images] : text;
+}

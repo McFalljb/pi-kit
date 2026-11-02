@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { checkCommand, commandVerdict, configPaths, describeRules, isShellLog, loadRules, mergeLayers, parseConfig, PRESETS, redact, warnOnce } from "../extensions/guardrails/core.ts";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
+import { ATTACH_IMAGES_MAX, Attacher, attachInput, backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, parseAttach, promptContent, reply, runOutcome, status, wireImages } from "../extensions/desk-bridge/protocol.ts";
 import { COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
 import { alreadyTrue, DATA_NOTE, tabLine, eventsText, EVENTS_END, EVENTS_START, exited, filterState, fires, noticeFor, type On, piTabOf, refusal, seenFrom, stateText, summarize, tabLabel, watchHits, watchText } from "../extensions/desk/state.ts";
 import { APP_IMAGE_MAX, appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "../extensions/desk/app.ts";
@@ -798,6 +798,104 @@ test("desk bridge: pi.prompt is refused while a dialog is open or a manual /comp
 	assert.equal(promptRefusal({ dialogs: 0, compacting: false }), undefined);
 	assert.equal(promptRefusal({ dialogs: 1, compacting: false }), "pi is waiting on the user (a dialog is open)");
 	assert.equal(promptRefusal({ dialogs: 0, compacting: true }), "pi is compacting the session; retry when it is idle");
+});
+
+const PNG = Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
+test("desk bridge: pi.attach becomes an attachment with pi's image content", () => {
+	const a = parseAttach({ type: "pi.attach", attachment_id: 12, text: "<comments>", images: [{ mime: "image/png", data: PNG }] });
+	assert.deepEqual(a, { id: 12, text: "<comments>", images: [{ type: "image", data: PNG, mimeType: "image/png" }] });
+	assert.deepEqual(parseAttach({ attachment_id: "a7", text: "t" }), { id: "a7", text: "t", images: [] });
+	assert.equal(parseAttach({ text: "t" }), "attachment_id is required");
+	assert.equal(parseAttach({ attachment_id: 1, text: "" }), "text is required");
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: "x" }), "images must be a list");
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: [{ mime: "text/html", data: PNG }] }), "image 1: mime must be image/png, image/jpeg, image/gif or image/webp");
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: [{ mime: "image/png", data: "not base64!" }] }), "image 1: data must be base64");
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: [{ mime: "image/png", data: "" }] }), "image 1: data must be base64");
+	const many = Array.from({ length: ATTACH_IMAGES_MAX + 1 }, () => ({ mime: "image/png", data: PNG }));
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: many }), `at most ${ATTACH_IMAGES_MAX} images`);
+	assert.equal(wireImages(undefined), undefined, "no images field: none");
+	assert.deepEqual(wireImages([]), []);
+});
+
+test("desk bridge: the attachment goes with the next message typed in pi, after its text and images", () => {
+	const a = { id: 3, text: "<pi-desk-comments>", images: [{ type: "image" as const, data: PNG, mimeType: "image/png" }] };
+	const own = { type: "image" as const, data: "AAAA", mimeType: "image/jpeg" };
+	assert.deepEqual(attachInput({ text: "fix these", images: [own], source: "interactive" }, a), { text: "fix these\n\n<pi-desk-comments>", images: [own, a.images[0]] });
+	assert.deepEqual(attachInput({ text: "  ", source: "interactive" }, a), { text: "<pi-desk-comments>", images: a.images });
+	assert.equal(attachInput({ text: "x", source: "interactive" }, undefined), undefined, "nothing pending");
+	assert.equal(attachInput({ text: "x", source: "extension" }, a), undefined, "pi.prompt and other extensions' messages: not the user's next message");
+	assert.equal(attachInput({ text: "x", source: "rpc" }, a), undefined);
+});
+
+test("desk bridge: a slash command keeps its text; the attachment waits for the next message", () => {
+	const a = { id: 3, text: "<pi-desk-comments>", images: [] };
+	assert.equal(attachInput({ text: "/review the diff", source: "interactive" }, a), undefined, "a prompt template");
+	assert.equal(attachInput({ text: "/skill:foo go", source: "interactive" }, a), undefined, "a skill");
+	assert.ok(attachInput({ text: " /x", source: "interactive" }, a), "pi's own check: only a leading /");
+	const t = new Attacher();
+	t.set(a);
+	assert.equal(t.input({ text: "/review", source: "interactive" }), undefined);
+	assert.equal(t.held?.id, 3, "still pending");
+	assert.deepEqual(t.input({ text: "now this", source: "interactive" }), { text: "now this\n\n<pi-desk-comments>", images: [] });
+});
+
+const userMsg = (content: unknown) => ({ role: "user", content });
+test("desk bridge: an idle prompt's pi.attached once its message starts", () => {
+	const t = new Attacher();
+	const a = { id: 5, text: "<pi-desk-comments>A5</pi-desk-comments>", images: [] };
+	t.set(a);
+	const out = t.input({ text: "look", source: "interactive" });
+	assert.deepEqual(out, { text: "look\n\n<pi-desk-comments>A5</pi-desk-comments>", images: [] }, "no ack yet");
+	assert.equal(t.held?.id, 5, "not acked at input: the message may never start");
+	assert.deepEqual(t.started({ role: "assistant", content: [{ type: "text", text: out!.text }] }), [], "not a user message");
+	assert.deepEqual(t.started(userMsg("something else")), [], "another message");
+	assert.deepEqual(t.started(userMsg([{ type: "text", text: out!.text }, { type: "image", data: PNG, mimeType: "image/png" }])), [5]);
+	assert.equal(t.held, undefined, "delivered: dropped");
+	assert.deepEqual(t.started(userMsg(out!.text)), [], "acked once");
+});
+
+test("desk bridge: a message that never starts keeps the comments for the next one", () => {
+	const t = new Attacher();
+	t.set({ id: 6, text: "C6", images: [] });
+	assert.ok(t.input({ text: "first", source: "interactive" })); // then pi threw (no model, no auth) or a handler took it
+	const again = t.input({ text: "second", source: "interactive" });
+	assert.deepEqual(again, { text: "second\n\nC6", images: [] }, "goes again");
+	assert.deepEqual(t.started(userMsg(again!.text)), [6]);
+});
+
+test("desk bridge: a queued message takes the comments and acks at once; the next one goes alone", () => {
+	const t = new Attacher();
+	t.set({ id: 7, text: "C7", images: [] });
+	assert.deepEqual(t.input({ text: "one", source: "interactive", streamingBehavior: "followUp" }), { text: "one\n\nC7", images: [], ack: 7 });
+	assert.equal(t.held, undefined, "pi has the message: pi-desk clears them now (no Send now, Clear or Edit can double them)");
+	assert.equal(t.input({ text: "two", source: "interactive", streamingBehavior: "steer" }), undefined);
+});
+
+test("desk bridge: a message restored with the block (Esc) gets only the images again", () => {
+	const t = new Attacher();
+	const img = { type: "image" as const, data: PNG, mimeType: "image/png" };
+	t.set({ id: 10, text: "C10", images: [img] });
+	assert.deepEqual(t.input({ text: "mine\n\nC10", source: "interactive" }), { text: "mine\n\nC10", images: [img] });
+});
+
+test("desk bridge: a started message with the held text drops it", () => {
+	const t = new Attacher();
+	t.set({ id: 11, text: "C11", images: [] });
+	assert.deepEqual(t.started(userMsg("x\n\nC11")), [11]);
+	assert.equal(t.held, undefined);
+});
+
+test("desk bridge: a dropped connection forgets the attachment (pi-desk sends it again or clears it)", () => {
+	const t = new Attacher();
+	t.set({ id: 9, text: "C9", images: [] });
+	t.clear();
+	assert.equal(t.input({ text: "x", source: "interactive" }), undefined);
+});
+
+test("desk bridge: pi.prompt with images is sent as text plus image content", () => {
+	assert.equal(promptContent("hi", []), "hi");
+	const img = { type: "image" as const, data: PNG, mimeType: "image/png" };
+	assert.deepEqual(promptContent("hi", [img]), [{ type: "text", text: "hi" }, img]);
 });
 
 test("desk: the control token is kept apart from the pi tab's token", () => {

@@ -45,11 +45,14 @@ if [ "${PI_KIT_RECOMMENDED:-}" = 1 ]; then
 fi
 
 # Two mock providers on the same server, so the reviewer's model pin can be observed.
+# mock-img takes images: the pi-desk bridge run (25) sends some.
 cat > "$PI_CODING_AGENT_DIR/models.json" <<JSON
 {"providers":{
- "mock":{"baseUrl":"http://127.0.0.1:$PORT/v1","api":"openai-completions","apiKey":"mock","models":[{"id":"mock-1"}]},
+ "mock":{"baseUrl":"http://127.0.0.1:$PORT/v1","api":"openai-completions","apiKey":"mock","models":[{"id":"mock-1"},{"id":"mock-img","input":["text","image"]}]},
  "mockb":{"baseUrl":"http://127.0.0.1:$PORT/v1","api":"openai-completions","apiKey":"mock","models":[{"id":"mock-b"}]}}}
 JSON
+mkdir -p "$PI_CODING_AGENT_DIR/prompts" # a prompt template for the pi-desk bridge run (25)
+printf 'TEMPLATE-EXPANDED $ARGUMENTS\n' > "$PI_CODING_AGENT_DIR/prompts/deskt.md"
 cat > "$PI_CODING_AGENT_DIR/settings.json" <<JSON
 {"defaultProvider":"mock","defaultModel":"mock-1","defaultThinkingLevel":"off","enableInstallTelemetry":false,
  "packages":["$SUBAGENTS","$KIT"$EXTRA],
@@ -372,11 +375,22 @@ nocheck "notes reminder disabled by 0" "compacted soon" "$T/p24b.log"
 nocheck "no notes reminder below the threshold" "will be compacted soon" "$T/p1.log"
 
 # 25. pi-desk bridge: pi in its TUI (a pseudo-terminal) against a fake pi-desk: handshake, session,
-# status across runs, blockers, panels, wait_idle, reload, reconnect; the sidebar column only outside pi-desk
+# status across runs, blockers, panels, wait_idle, pending comments (pi.attach with the next typed
+# message, pi.attached, pi.attach_clear, pi.prompt with images), reload, reconnect; the sidebar
+# column only outside pi-desk
 node "$KIT/test/desk-fake.mjs" desk "$T/desk.log" "$T/desk.screen" > "$T/desk.out" 2>&1 || fail=1
 sed -e 's/^OK /PASS desk: /' -e 's/^FAIL /FAIL desk: /' "$T/desk.out"
 check "desk: prompt ran through the model" '"text":"FINAL: desk-ran' "$T/mock.log"
 check "desk: shell commands do not see the token" 'desk-ran token=\[\]' "$T/mock.log"
+check "desk: the typed message took the comments, text and image" '"text":"typed-one please\\n\\n<pi-desk-comments>ATTACH-41</pi-desk-comments>","images":1' "$T/mock.log"
+check "desk: the next typed message goes alone" '"text":"typed-two please"}' "$T/mock.log"
+check "desk: a cleared attachment does not go" '"text":"typed-three please"}' "$T/mock.log"
+check "desk: pi.prompt with images reaches the model" '"text":"SEND-NOW comments","images":1' "$T/mock.log"
+check "desk: a queued message took its comments" '"text":"typed-queued please\\n\\nATTACH-46"' "$T/mock.log"
+check "desk: a prompt template expands without the comments" '"text":"TEMPLATE-EXPANDED please\\n"}' "$T/mock.log"
+check "desk: the comments went with the next message instead" '"text":"typed-five please\\n\\nATTACH-47"}' "$T/mock.log"
+nocheck "desk: a message another extension took never reached the model" 'drop-me please' "$T/mock.log"
+check "desk: a dropped connection's attachment does not go" '"text":"typed-after-drop please"}' "$T/mock.log"
 nocheck "desk: no sidebar column in pi-desk" "No subagents, todos or shells" "$T/desk.screen"
 node "$KIT/test/desk-fake.mjs" plain "$T/plain.screen"
 check "desk: sidebar column outside pi-desk" "No subagents, todos or shells" "$T/plain.screen"

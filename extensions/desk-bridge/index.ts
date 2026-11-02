@@ -14,9 +14,16 @@
  *   (subagents, shells, todos) as panels (`panel.set`, or `panel.remove` once a section empties),
  *   at most once a second and only when they changed. `kit:desk:mode` tells the sidebar whether
  *   pi-desk draws panels (after each handshake; false while the bridge has never connected).
- * - Answers `pi.prompt` (a user message; follow-up while a run is going), `pi.wait_idle` (when
- *   pi is idle with nothing queued and no blockers, or a timeout) and `pi.reload` (refused unless
- *   that same idle holds: a reload kills the kit's background shells; the result comes after it).
+ * - Answers `pi.prompt` (a user message, with `images` if given; follow-up while a run is going),
+ *   `pi.wait_idle` (when pi is idle with nothing queued and no blockers, or a timeout) and
+ *   `pi.reload` (refused unless that same idle holds: a reload kills the kit's background shells;
+ *   the result comes after it).
+ * - Holds pi-desk's pending comments (`pi.attach` replaces them, `pi.attach_clear` drops them, and
+ *   so does a dropped connection) and adds them to the next message the user types in pi (the
+ *   `input` hook: text after the user's, images after theirs; not a `/` command), then tells
+ *   pi-desk `pi.attached {attachment_id}` so it clears them: at once for a message queued while pi
+ *   works, once it starts (`message_start`) for one sent while idle.
+ *   pi-desk sends them again (or clears them) after every handshake, so a reload loses nothing.
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
  */
@@ -25,7 +32,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Panel, type Run, type ShellRow, SUBAGENT_EVENTS } from "../sidebar/rows.ts";
-import { backoff, busyReasons, deskToken, keepReconnectToken, line, parse, promptRefusal, reply, runOutcome, status } from "./protocol.ts";
+import { Attacher, backoff, busyReasons, deskToken, keepReconnectToken, line, parse, parseAttach, promptContent, promptRefusal, reply, runOutcome, status, wireImages } from "./protocol.ts";
 
 export { inDesk } from "./protocol.ts";
 
@@ -59,6 +66,8 @@ export default function (pi: ExtensionAPI) {
 	let panelTimer: NodeJS.Timeout | undefined;
 	let idleTimer: NodeJS.Timeout | undefined;
 	const waiters = new Map<unknown, NodeJS.Timeout | undefined>(); // pi.wait_idle id -> its timeout
+	const attach = new Attacher(); // pi-desk's pending comments (pi.attach), for the next typed message
+	const acks: (string | number)[] = []; // pi.attached not sent yet (no connection when the message started)
 
 	const send = (msg: Record<string, unknown>) => {
 		if (sock && ready && !sock.destroyed) sock.write(line({ id: `b${++seq}`, ...msg }));
@@ -106,6 +115,10 @@ export default function (pi: ExtensionAPI) {
 	}
 	const panelsChanged = () => void (ready && panelsOn && !closed && (panelTimer ??= setTimeout(flushPanels, PANEL_EVERY_MS)));
 
+	function flushAcks() {
+		while (acks.length && ready && sock && !sock.destroyed) send({ type: "pi.attached", attachment_id: acks.shift() });
+	}
+
 	function sendSession() {
 		const sm = ctx!.sessionManager;
 		send({ type: "pi.session", pi_session_id: sm.getSessionId(), session_file: sm.getSessionFile() ?? "", cwd: ctx!.cwd });
@@ -116,9 +129,21 @@ export default function (pi: ExtensionAPI) {
 		if (m.id === undefined) return; // events: none expected yet
 		if (m.type === "pi.prompt") {
 			if (typeof m.text !== "string" || !m.text.trim()) return answer(m.id, { ok: false, error: "text is required" });
+			const images = wireImages(m.images);
+			if (typeof images === "string") return answer(m.id, { ok: false, error: images });
 			const refused = promptRefusal({ dialogs, compacting });
 			if (refused) return answer(m.id, { ok: false, error: refused });
-			pi.sendUserMessage(m.text, ctx!.isIdle() ? undefined : { deliverAs: "followUp" });
+			pi.sendUserMessage(promptContent(m.text, images ?? []), ctx!.isIdle() ? undefined : { deliverAs: "followUp" });
+			return answer(m.id, { ok: true });
+		}
+		if (m.type === "pi.attach") {
+			const a = parseAttach(m);
+			if (typeof a === "string") return answer(m.id, { ok: false, error: a });
+			attach.set(a);
+			return answer(m.id, { ok: true });
+		}
+		if (m.type === "pi.attach_clear") {
+			attach.clear();
 			return answer(m.id, { ok: true });
 		}
 		if (m.type === "pi.wait_idle") {
@@ -173,6 +198,7 @@ export default function (pi: ExtensionAPI) {
 						attempt = 0;
 						sent = "";
 						panelSent.clear();
+						flushAcks(); // before pi.session: pi-desk clears those comments before it sends the rest again
 						sendSession();
 						update();
 						flushPanels();
@@ -189,6 +215,9 @@ export default function (pi: ExtensionAPI) {
 			for (const t of waiters.values()) clearTimeout(t); // their connection is gone
 			waiters.clear();
 			reloadId = undefined; // a reload still running answers nobody
+			// pi-desk may clear or change the comments while we are away and cannot say so: after the
+			// handshake it sends them again, or pi.attach_clear
+			attach.clear();
 			if (!connected && !closed) pi.events.emit("kit:desk:mode", false); // no pi-desk: the sidebar draws as usual
 			if (!closed) retry = setTimeout(connect, backoff(attempt++));
 		});
@@ -240,6 +269,21 @@ export default function (pi: ExtensionAPI) {
 		ctx = c;
 		connect();
 		subagentsChanged();
+	});
+	// The user's next typed message takes pi-desk's pending comments; pi.attached tells pi-desk to
+	// clear them (Attacher: at once if queued, else when the message starts).
+	pi.on("input", (e) => {
+		const out = attach.input(e);
+		if (!out) return { action: "continue" };
+		const { ack, ...transform } = out;
+		if (ack !== undefined) acks.push(ack), flushAcks(); // queued: pi has it
+		return { action: "transform", ...transform };
+	});
+	pi.on("message_start", (e) => {
+		const ids = attach.started(e.message as { role?: string; content?: unknown });
+		if (!ids.length) return;
+		acks.push(...ids);
+		flushAcks();
 	});
 	pi.on("ui_prompt_start", () => {
 		dialogs++;

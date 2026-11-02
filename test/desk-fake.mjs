@@ -2,7 +2,8 @@
 // python3) and plays pi-desk's side of the protocol (pi-desk docs/PROTOCOL.md §2, §4, §5).
 // Prints "OK <step>" or "FAIL <step>" per step; every message goes to <log>, the screen to <screen>.
 //
-//   node test/desk-fake.mjs desk <log> <screen>   pi with PI_DESK_SOCKET/PI_DESK_TOKEN: the scenario;
+//   node test/desk-fake.mjs desk <log> <screen>   pi with PI_DESK_SOCKET/PI_DESK_TOKEN: the scenario (with
+//                                                 pi.attach / pi.attached and pi.prompt images);
 //                                                 the hello result advertises the panels capability
 //   node test/desk-fake.mjs nopanels <log> <screen>  the same pi, panels not advertised: a short run
 //   node test/desk-fake.mjs earlyreload <log> <screen>  /reload typed in pi before its first hello
@@ -49,7 +50,7 @@ while True:
     out.flush()
 os.waitpid(pid, 0)
 `;
-const startPi = (screen, env) => spawn("python3", ["-c", PTY, screen, "pi"], { env: { ...process.env, ...env }, stdio: ["pipe", "ignore", "inherit"] });
+const startPi = (screen, env, piArgs = []) => spawn("python3", ["-c", PTY, screen, "pi", ...piArgs], { env: { ...process.env, ...env }, stdio: ["pipe", "ignore", "inherit"] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stop = async (proc) => {
 	proc.kill("SIGTERM");
@@ -290,7 +291,10 @@ function request(type, fields = {}, ms = 30_000) {
 const step = (name, args) => `@@ ${JSON.stringify({ name, arguments: args })}`;
 const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
-const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, PI_DESK_SHOTS_DIR: path.join(dir, "apps", "shots"), ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) });
+const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, PI_DESK_SHOTS_DIR: path.join(dir, "apps", "shots"), ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) },
+	// the pending-comments steps send images: a model that takes them (smoke.sh's models.json)
+	// and another extension that takes some typed messages ("drop-me ...") before they start
+	mode === "desk" ? ["--model", "mock/mock-img", "-e", path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures", "desk-drop-input.ts")] : []);
 try {
 	if (mode === "reloads") {
 		await until("handshake", (m) => m.type === "hello", 30_000);
@@ -422,6 +426,62 @@ try {
 	mark = got.length;
 	await request("pi.prompt", { text: `Steps:\n${step("bash", { command: "echo done." })}` });
 	await until("the next run clears the question", (m) => isStatus(m, "idle") && m.question === false, 20_000, mark);
+	// pi-desk's pending comments (pi.attach) go with the next message typed in pi, then pi.attached
+	const IMG = { mime: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" };
+	const typed = async (text) => {
+		const from = got.length;
+		proc.stdin.write(`${text}\r`);
+		const w = await until(`"${text}" ran`, (m) => isStatus(m, "working"), 20_000, from);
+		await until(`idle after "${text}"`, (m) => isStatus(m, "idle"), 20_000, Math.max(w, from));
+		return from;
+	};
+	r = await request("pi.attach", { attachment_id: 41, text: "<pi-desk-comments>ATTACH-41</pi-desk-comments>", images: [IMG] });
+	result("pi.attach accepted", r.ok === true, JSON.stringify(r));
+	r = await request("pi.attach", { attachment_id: 42, text: "x", images: [{ mime: "text/html", data: "AAAA" }] });
+	result("pi.attach with a bad image refused", r.ok === false && /mime/.test(r.error), JSON.stringify(r));
+	mark = await typed("typed-one please");
+	await until("pi.attached for the attachment the typed message took", (m) => m.type === "pi.attached" && m.attachment_id === 41, 5000, mark);
+	await typed("typed-two please");
+	await request("pi.attach", { attachment_id: 43, text: "ATTACH-43" });
+	r = await request("pi.attach_clear");
+	result("pi.attach_clear accepted", r.ok === true, JSON.stringify(r));
+	await typed("typed-three please");
+	result("one pi.attached in all, none for the cleared attachment", got.filter((g) => g.m.type === "pi.attached").map((g) => g.m.attachment_id).join() === "41");
+	mark = got.length;
+	r = await request("pi.prompt", { text: "SEND-NOW comments", images: [IMG] });
+	result("pi.prompt with images accepted", r.ok === true, JSON.stringify(r));
+	const sw = await until("Send now ran", (m) => isStatus(m, "working"), 20_000, mark);
+	await until("idle after Send now", (m) => isStatus(m, "idle"), 20_000, Math.max(sw, mark));
+	r = await request("pi.prompt", { text: "x", images: [{ mime: "image/png", data: "%%%" }] });
+	result("pi.prompt with a bad image refused", r.ok === false && /base64/.test(r.error), JSON.stringify(r));
+	const acked = (from) => got.slice(from).filter((g) => g.m.type === "pi.attached").map((g) => g.m.attachment_id);
+	// a message queued behind a run takes the comments and acks at once (pi has it)
+	r = await request("pi.attach", { attachment_id: 46, text: "ATTACH-46" });
+	mark = got.length;
+	await request("pi.prompt", { text: `Steps:\n${step("bash", { command: "sleep 3; echo slow." })}` });
+	const qw = await until("a slow run", (m) => isStatus(m, "working"), 20_000, mark);
+	await sleep(300);
+	proc.stdin.write("typed-queued please\r");
+	await sleep(1200);
+	result("pi.attached at once for a queued message, before the run ends", acked(mark).join() === "46" && !got.slice(qw + 1).some((g) => isStatus(g.m, "idle")), acked(mark).join());
+	await until("idle after the queued message", (m) => isStatus(m, "idle"), 20_000, qw);
+	// a slash command (a prompt template) and an idle message another extension takes: the comments wait
+	r = await request("pi.attach", { attachment_id: 47, text: "ATTACH-47" });
+	mark = got.length;
+	await typed("/deskt please");
+	proc.stdin.write("drop-me please\r");
+	await sleep(1500);
+	result("no pi.attached for a slash command or a message that never started", acked(mark).length === 0, acked(mark).join());
+	await typed("typed-five please");
+	result("the next message took them", acked(mark).join() === "47", acked(mark).join());
+	// the connection drops while pi holds an attachment: it is forgotten (pi-desk sends it again, or clears it)
+	r = await request("pi.attach", { attachment_id: 48, text: "ATTACH-48" });
+	const nb = conns.length;
+	mark = got.length;
+	conns.findLast((x) => x.caller !== "control").sock.destroy();
+	await until("the bridge reconnects", (m, n) => m.type === "pi.session" && n === nb, 10_000, mark);
+	await typed("typed-after-drop please");
+	result("a dropped connection's attachment does not go", acked(mark).length === 0, acked(mark).join());
 	r = await request("pi.nonsense");
 	result("unknown type refused", r.ok === false && /unknown/.test(r.error), JSON.stringify(r));
 
