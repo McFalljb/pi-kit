@@ -24,7 +24,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, HStack, isViewportTUI, ScrollView, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { inDesk } from "../desk-bridge/protocol.ts";
-import { type Data, deskPanels, hideCompleted, type Line, type Run, SUBAGENT_EVENTS, sidebarLines, subagentTask, summary, type TodoState, todosFromBranch, todoView, trackTodos } from "./rows.ts";
+import { type Data, deskPanels, hideCompleted, type Line, nextHide, type Run, SUBAGENT_EVENTS, sidebarLines, subagentTask, summary, type TodoState, todosFromBranch, todoView, trackFinished, trackTodos } from "./rows.ts";
 
 const WIDTH = 34; // columns, border included
 const MIN_COLUMNS = 120; // narrower terminals get the footer summary instead of the column
@@ -36,7 +36,8 @@ const owners = globalThis as { [OWNER]?: object };
 export default function (pi: ExtensionAPI) {
 	const tasks = new Map<string, string[]>(); // run id -> task line per step, from this session's own subagent calls
 	const taskAt = new Map<string, number>();
-	const data: Data = { runs: [], todos: [], shells: [], tasks };
+	const finishedAt = new Map<string, number>(); // run id -> when first seen finished, for runs without endedAt
+	const data: Data = { runs: [], todos: [], shells: [], tasks, finishedAt };
 	let view = todoView(); // which completed todos are no longer listed
 	let ui: ExtensionContext["ui"] | undefined;
 	let tui: TUI | undefined; // pi's TUI reference: it follows the renderer when tuiMode changes
@@ -53,6 +54,7 @@ export default function (pi: ExtensionAPI) {
 	let stopRead: (() => void) | undefined; // set while a status read is in flight; ends it
 	let again = false; // something changed during that read: read again after it
 	let hideTimer: NodeJS.Timeout | undefined;
+	let expiry: NodeJS.Timeout | undefined; // redraws when the next finished run is due to leave the sidebar
 	let hideAt = 0;
 	let ownFrame = false; // the next frame is the one our own todo-widget removal asked for
 
@@ -92,9 +94,17 @@ export default function (pi: ExtensionAPI) {
 		root = undefined;
 	}
 
+	/** Redraw when the next finished run is due to leave the sidebar, so it goes without waiting for an event. */
+	function scheduleExpiry() {
+		clearTimeout(expiry);
+		const at = nextHide(data, Date.now());
+		expiry = at === undefined ? undefined : setTimeout(() => ((expiry = undefined), refresh()), Math.min(at - Date.now(), 15 * 60_000) + 100);
+	}
+
 	function refresh() {
 		if (closed || !ui || deskWait || (!tui && !desk)) return;
 		try {
+			scheduleExpiry();
 			if (desk) {
 				unmount();
 				closeOverlay?.();
@@ -157,6 +167,7 @@ export default function (pi: ExtensionAPI) {
 			const r = reply as { success?: boolean; data?: { asyncSnapshot?: { runs?: unknown } } } | undefined;
 			if (r?.success) {
 				data.runs = arr(r.data?.asyncSnapshot?.runs);
+				trackFinished(finishedAt, data.runs, Date.now());
 				// Forget tasks of runs gone from the snapshot (a minute's grace: a read may predate a launch).
 				const live = new Set(data.runs.map((run: Run) => run?.id));
 				for (const [id, at] of taskAt) if (!live.has(id) && Date.now() - at > 60_000) tasks.delete(id), taskAt.delete(id);
@@ -274,6 +285,7 @@ export default function (pi: ExtensionAPI) {
 		clearTimeout(subTimer);
 		clearTimeout(later);
 		clearTimeout(hideTimer);
+		clearTimeout(expiry);
 		clearTimeout(deskWait);
 		stopRead?.();
 		try {

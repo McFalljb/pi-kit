@@ -8,7 +8,7 @@ import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/cor
 import { backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
 import { COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
 import { alreadyTrue, DATA_NOTE, eventsText, EVENTS_END, EVENTS_START, exited, filterState, fires, noticeFor, type On, piTabOf, refusal, seenFrom, stateText, summarize, tabLabel, watchHits, watchText } from "../extensions/desk/state.ts";
-import { deskPanels, hideCompleted, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackTodos } from "../extensions/sidebar/rows.ts";
+import { deskPanels, hideCompleted, nextHide, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackFinished, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
 import { drift } from "../extensions/versions/drift.ts";
 import { checkinText, clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
@@ -257,6 +257,74 @@ test("summary counts what the sidebar would show", () => {
 	const d = { runs: [{ state: "running" }, { state: "complete" }], todos: [{ subject: "a", status: "completed" }, { subject: "b", status: "pending" }], shells: [{ id: "sh1", status: "", label: "" }, { id: "", status: "+1", label: "" }] };
 	assert.equal(summary(d), "1 subagent · todos 1/2 · 1 shell · /sidebar");
 	assert.equal(summary({ runs: [], todos: [], shells: [] }), undefined);
+});
+
+test("sidebarLines: a finished run is hidden 2 minutes after it completes, 10 after any other end", () => {
+	const end = 1_000_000;
+	const rows = (runs: object[], now: number) => sidebarLines({ runs, todos: [], shells: [] }, now).map((l) => l.text);
+	const done = { id: "a", label: "w", state: "complete", startedAt: end - 5_000, endedAt: end };
+	assert.deepEqual(rows([done], end + 119_000), ["Subagents", "✓ w 5s"]);
+	assert.deepEqual(rows([done], end + 121_000), ["No subagents, todos or shells"], "the header goes with the last run");
+	const failed = { id: "b", label: "r", state: "failed", startedAt: end - 5_000, endedAt: end };
+	assert.deepEqual(rows([failed], end + 599_000), ["Subagents", "✗ r 5s failed"]);
+	assert.deepEqual(rows([failed], end + 601_000), ["No subagents, todos or shells"]);
+	const running = { id: "c", label: "x", state: "running", startedAt: end };
+	assert.deepEqual(rows([done, running], end + 3_600_000), ["Subagents · 1 running", "● x 60m00s"]);
+	assert.equal(summary({ runs: [done, running], todos: [], shells: [] }), "1 subagent · /sidebar", "counts are unaffected");
+	// A paused run waits to be resumed or stopped: it stays listed.
+	assert.deepEqual(rows([{ id: "d", label: "p", state: "paused", startedAt: end, endedAt: end }], end + 3_600_000), ["Subagents", "‖ p 0s paused"]);
+	const panel = deskPanels({ runs: [done], todos: [], shells: [] }, end + 121_000)[0];
+	assert.deepEqual(panel.rows, [], "pi-desk's subagents panel empties too");
+});
+
+test("sidebarLines: a multi-step run is hidden only when the whole run is finished", () => {
+	const end = 1_000_000;
+	const step = (i: number, state: string) => ({ id: `step:${i}`, agent: "kit.worker", state, startedAt: end - 5_000, endedAt: state === "running" ? undefined : end });
+	const live = { id: "w", kind: "workflow", state: "running", startedAt: end - 5_000, children: [step(0, "complete"), step(1, "running")] };
+	const lines = sidebarLines({ runs: [live], todos: [], shells: [] }, end + 3_600_000).map((l) => l.text);
+	assert.deepEqual(lines, ["Subagents · 1 running", "● workflow · 2 agents 60m05s", "  ✓ kit.worker 5s", "  ● kit.worker 60m05s"]);
+	// The run says complete but a step still runs: not finished.
+	const stray = { ...live, state: "complete", endedAt: end };
+	assert.equal(sidebarLines({ runs: [stray], todos: [], shells: [] }, end + 3_600_000)[1].text, "✓ workflow · 2 agents 5s");
+	const over = { ...live, state: "complete", endedAt: end, children: [step(0, "complete"), step(1, "complete")] };
+	assert.deepEqual(sidebarLines({ runs: [over], todos: [], shells: [] }, end + 121_000), [{ text: "No subagents, todos or shells", tone: "muted" }]);
+	// A failed chain leaves its later steps pending: the run is still finished.
+	const failed = { ...live, state: "failed", endedAt: end, children: [step(0, "failed"), step(1, "pending")] };
+	assert.equal(sidebarLines({ runs: [failed], todos: [], shells: [] }, end + 599_000).length, 4);
+	assert.deepEqual(sidebarLines({ runs: [failed], todos: [], shells: [] }, end + 601_000), [{ text: "No subagents, todos or shells", tone: "muted" }]);
+});
+
+test("trackFinished: without endedAt, a run is timed from when the sidebar first saw it finished", () => {
+	const seen = new Map<string, number>();
+	const run = { id: "a", label: "w", state: "running" };
+	trackFinished(seen, [run], 0);
+	assert.equal(seen.size, 0);
+	const done = { ...run, state: "complete" };
+	trackFinished(seen, [done], 50_000);
+	trackFinished(seen, [done], 90_000); // a later read keeps the first sighting
+	assert.deepEqual([...seen], [["a", 50_000]]);
+	const d = { runs: [done], todos: [], shells: [], finishedAt: seen };
+	assert.deepEqual(sidebarLines(d, 169_000).map((l) => l.text), ["Subagents", "✓ w"]);
+	assert.deepEqual(sidebarLines(d, 171_000).map((l) => l.text), ["No subagents, todos or shells"]);
+	assert.equal(nextHide(d, 100_000), 170_000);
+	trackFinished(seen, [], 200_000); // gone from the snapshot: forgotten
+	assert.equal(seen.size, 0);
+	// No endedAt and never seen (no id): kept, never scheduled.
+	assert.equal(sidebarLines({ runs: [{ label: "x", state: "failed" }], todos: [], shells: [] }, 1e12)[1].text, "✗ x failed");
+});
+
+test("nextHide: when the next finished run is due to disappear", () => {
+	const runs = [
+		{ id: "a", state: "running", startedAt: 0 },
+		{ id: "b", state: "failed", endedAt: 10_000 },
+		{ id: "c", state: "complete", endedAt: 20_000 },
+		{ id: "d", state: "complete", endedAt: 0 }, // already hidden at 130_000
+	];
+	assert.equal(nextHide({ runs, todos: [], shells: [] }, 130_000), 140_000);
+	assert.equal(nextHide({ runs, todos: [], shells: [] }, 140_000), 610_000);
+	assert.equal(nextHide({ runs, todos: [], shells: [] }, 610_000), undefined);
+	assert.equal(nextHide({ runs: [{ id: "a", state: "running" }], todos: [], shells: [] }, 0), undefined);
+	assert.equal(nextHide({ runs: [null as never], todos: [], shells: [] }, 0), undefined, "a bad record does not throw");
 });
 
 test("todosFromBranch: state entries win over todo tool results", () => {
