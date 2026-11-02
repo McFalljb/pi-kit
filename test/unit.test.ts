@@ -609,7 +609,7 @@ test("completed todos stay for the run that completed them, then hide; the heade
 	trackTodos(v, todos, 4);
 	assert.deepEqual(rows(todos, v), ["Todos 3/3", "✓ t2", "✓ t3"]);
 	hideCompleted(v);
-	assert.deepEqual(rows(todos, v), ["Todos 3/3"]);
+	assert.deepEqual(rows(todos, v), ["Todos 3/3", "✓ all done"]); // never a lone header
 	assert.equal(summary({ runs: [], todos, shells: [] }), "todos 3/3 · /sidebar");
 	// Reopened: shown again. Cleared and recreated (nextId went down): ids start over, nothing hidden.
 	trackTodos(v, [todo(1, "pending"), todo(2, "completed"), todo(3, "completed")], 4);
@@ -792,6 +792,18 @@ test("deskPanels: one panel per sidebar section, empty rows when it has nothing"
 	assert.deepEqual(p.map((x) => [x.panel, x.title, x.rows.length > 0]), [["subagents", "Subagents", true], ["shells", "Shells", true], ["todos", "Todos", false]]);
 	assert.deepEqual(p[1].rows, [{ text: "Shells", head: true }, { text: "sh1 5s", tone: "accent" }, { text: "  npm test", tone: "muted" }]);
 	assert.deepEqual(p[0].rows[0], { text: "Subagents · 1 running", head: true });
+});
+
+test("todos: all completed and hidden shows one muted 'all done' row, in the sidebar and the desk panel", () => {
+	const todos = [1, 2, 3].map((id) => ({ id, subject: `t${id}`, status: "completed" }));
+	const d = { runs: [], todos, shells: [], hiddenTodos: new Set([1, 2, 3]) };
+	const want = [{ text: "Todos 3/3", head: true }, { text: "✓ all done", tone: "dim" }];
+	assert.deepEqual(sidebarLines(d, 0), want);
+	assert.deepEqual(deskPanels(d, 0)[2], { panel: "todos", title: "Todos", rows: want });
+	// Some still listed, or some not completed: no "all done" row.
+	assert.deepEqual(sidebarLines({ ...d, hiddenTodos: new Set([1, 2]) }, 0), [{ text: "Todos 3/3", head: true }, { text: "✓ t3", tone: "dim" }]);
+	const partial = { ...d, todos: [...todos.slice(0, 2), { id: 3, subject: "t3", status: "pending" }] };
+	assert.deepEqual(deskPanels(partial, 0)[2].rows, [{ text: "Todos 2/3", head: true }, { text: "○ t3" }]);
 });
 
 test("desk bridge: pi.prompt is refused while a dialog is open or a manual /compact runs", () => {
