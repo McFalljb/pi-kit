@@ -129,6 +129,7 @@ function todoLines(todos: Todo[], hidden: ReadonlySet<number>): Line[] {
 		else if (t.status === "completed") out.push({ text: `✓ ${one(t.subject)}`, tone: "dim" });
 		else out.push({ text: `○ ${one(t.subject)}` });
 	}
+	if (out.length === 1) out.push({ text: "✓ all done", tone: "dim" }); // every todo completed and hidden: never a lone header
 	return out;
 }
 
