@@ -53,12 +53,12 @@ const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 /**
  * The PNG pi-desk wrote for app_screenshot, checked rather than trusted: after resolving symlinks
- * it must be `.../apps/shots/<tab>-<n>.png`, and exactly `<dataDir>/apps/shots/` when there is a
- * data dir (PI_DESK_DATA_DIR, which pi-desk sets for the pi sessions it starts; without it only the
- * shape is checked), a regular file of at most APP_IMAGE_MAX bytes (its own size, not the reply's)
+ * it must be `.../apps/shots/<tab>-<n>.png`, directly in `shotsDir` when there is one
+ * (PI_DESK_SHOTS_DIR, which pi-desk sets for the pi sessions it starts; an older pi-desk does not,
+ * and then only the shape is checked), a regular file of at most APP_IMAGE_MAX bytes (its own size, not the reply's)
  * starting with the PNG signature. Otherwise why not.
  */
-export function shotFile(tab: number, file: unknown, dataDir: string | undefined = process.env.PI_DESK_DATA_DIR || undefined): { png: Buffer; bytes: number } | { why: string } {
+export function shotFile(tab: number, file: unknown, shotsDir: string | undefined = process.env.PI_DESK_SHOTS_DIR || undefined): { png: Buffer; bytes: number } | { why: string } {
 	const no = { why: "not a pi-desk screenshot of this tab" };
 	if (typeof file !== "string" || !path.isAbsolute(file)) return no;
 	let real: string;
@@ -69,10 +69,10 @@ export function shotFile(tab: number, file: unknown, dataDir: string | undefined
 	}
 	const dir = path.dirname(real);
 	if (!new RegExp(`^${tab}-\\d+\\.png$`).test(path.basename(real)) || !dir.endsWith(`${path.sep}apps${path.sep}shots`)) return no;
-	if (dataDir !== undefined) {
+	if (shotsDir !== undefined) {
 		let want: string;
 		try {
-			want = fs.realpathSync(path.join(dataDir, "apps", "shots"));
+			want = fs.realpathSync(shotsDir);
 		} catch {
 			return no;
 		}

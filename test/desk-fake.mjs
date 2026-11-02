@@ -290,7 +290,7 @@ function request(type, fields = {}, ms = 30_000) {
 const step = (name, args) => `@@ ${JSON.stringify({ name, arguments: args })}`;
 const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
-const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, PI_DESK_DATA_DIR: dir, ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) });
+const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, PI_DESK_SHOTS_DIR: path.join(dir, "apps", "shots"), ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) });
 try {
 	if (mode === "reloads") {
 		await until("handshake", (m) => m.type === "hello", 30_000);

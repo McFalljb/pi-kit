@@ -814,8 +814,8 @@ test("desk apps: the app's error text stays inside the data fence (review round 
 
 test("desk apps: a screenshot file must be pi-desk's shot of that tab: under apps/shots, no symlink out, a real PNG (review round 1)", () => {
 	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kit-shots-")));
-	const saved = process.env.PI_DESK_DATA_DIR;
-	delete process.env.PI_DESK_DATA_DIR; // the shape-only check, even when run inside pi-desk
+	const saved = process.env.PI_DESK_SHOTS_DIR;
+	delete process.env.PI_DESK_SHOTS_DIR; // the shape-only check, even when run inside pi-desk
 	try {
 		const shots = path.join(root, "apps", "shots");
 		fs.mkdirSync(shots, { recursive: true });
@@ -823,8 +823,8 @@ test("desk apps: a screenshot file must be pi-desk's shot of that tab: under app
 		fs.writeFileSync(path.join(shots, "13-1.png"), png);
 		const ok = shotFile(13, path.join(shots, "13-1.png"));
 		assert.ok("png" in ok && ok.png.equals(png) && ok.bytes === png.length, JSON.stringify(ok));
-		const why = (tab: number, p: string, dataDir?: string) => {
-			const r = shotFile(tab, p, dataDir);
+		const why = (tab: number, p: string, shotsDir?: string) => {
+			const r = shotFile(tab, p, shotsDir);
 			return "why" in r ? r.why : "accepted";
 		};
 		assert.match(why(13, "/etc/passwd"), /not a pi-desk screenshot/);
@@ -836,35 +836,46 @@ test("desk apps: a screenshot file must be pi-desk's shot of that tab: under app
 		assert.match(why(13, path.join(shots, "13-3.png")), /not a PNG/);
 		fs.writeFileSync(path.join(shots, "13-4.png"), Buffer.concat([png.subarray(0, 8), Buffer.alloc(APP_IMAGE_MAX + 1)]));
 		assert.match(why(13, path.join(shots, "13-4.png")), /over 4 MB/, "the size is the file's, not the app's");
-		assert.match(why(13, path.join(shots, "13-1.png"), "/somewhere/else"), /not a pi-desk screenshot/, "outside PI_DESK_DATA_DIR");
-		assert.equal(why(13, path.join(shots, "13-1.png"), root), "accepted");
+		assert.match(why(13, path.join(shots, "13-1.png"), "/somewhere/else/apps/shots"), /not a pi-desk screenshot/, "outside PI_DESK_SHOTS_DIR");
+		assert.equal(why(13, path.join(shots, "13-1.png"), shots), "accepted");
 		assert.match(why(13, path.join(shots, "13-9.png")), /could not be read/);
 	} finally {
-		if (saved !== undefined) process.env.PI_DESK_DATA_DIR = saved;
+		if (saved !== undefined) process.env.PI_DESK_SHOTS_DIR = saved;
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
 
-test("desk apps: PI_DESK_DATA_DIR, when set, makes the screenshot check strict; without it only the shape is checked", () => {
+test("desk apps: PI_DESK_SHOTS_DIR, when set, makes the screenshot check strict (the file directly in it); without it only the shape is checked", () => {
 	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "kit-shots-env-")));
-	const saved = process.env.PI_DESK_DATA_DIR;
+	const saved = { shots: process.env.PI_DESK_SHOTS_DIR, data: process.env.PI_DESK_DATA_DIR };
 	try {
 		const shots = path.join(root, "apps", "shots");
-		fs.mkdirSync(shots, { recursive: true });
+		fs.mkdirSync(path.join(shots, "apps", "shots"), { recursive: true });
 		const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
-		fs.writeFileSync(path.join(shots, "13-1.png"), png);
 		const file = path.join(shots, "13-1.png");
-		process.env.PI_DESK_DATA_DIR = path.join(root, "elsewhere");
-		assert.ok("why" in shotFile(13, file), "set to another dir: the file is refused");
-		process.env.PI_DESK_DATA_DIR = root;
-		assert.ok("png" in shotFile(13, file), "set to pi-desk's data dir: accepted");
+		fs.writeFileSync(file, png);
+		const nested = path.join(shots, "apps", "shots", "13-1.png");
+		fs.writeFileSync(nested, png);
 		delete process.env.PI_DESK_DATA_DIR;
-		assert.ok("png" in shotFile(13, file), "unset: the shape-only check");
-		process.env.PI_DESK_DATA_DIR = "";
+		process.env.PI_DESK_SHOTS_DIR = path.join(root, "elsewhere", "apps", "shots");
+		assert.ok("why" in shotFile(13, file), "set to another dir: the file is refused");
+		process.env.PI_DESK_SHOTS_DIR = shots;
+		assert.ok("png" in shotFile(13, file), "set to pi-desk's shots dir: accepted");
+		assert.ok("why" in shotFile(13, nested), "only directly in it, not below it");
+		process.env.PI_DESK_SHOTS_DIR = root;
+		assert.ok("why" in shotFile(13, file), "the shots dir itself, not the data dir");
+		delete process.env.PI_DESK_SHOTS_DIR;
+		process.env.PI_DESK_DATA_DIR = path.join(root, "elsewhere");
+		assert.ok("png" in shotFile(13, file), "PI_DESK_DATA_DIR is not read (pi-desk no longer passes it)");
+		delete process.env.PI_DESK_DATA_DIR;
+		assert.ok("png" in shotFile(13, file), "unset: the shape-only check (older pi-desk)");
+		process.env.PI_DESK_SHOTS_DIR = "";
 		assert.ok("png" in shotFile(13, file), "empty counts as unset");
 	} finally {
-		if (saved === undefined) delete process.env.PI_DESK_DATA_DIR;
-		else process.env.PI_DESK_DATA_DIR = saved;
+		for (const [k, v] of [["PI_DESK_SHOTS_DIR", saved.shots], ["PI_DESK_DATA_DIR", saved.data]] as const) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
 		fs.rmSync(root, { recursive: true, force: true });
 	}
 });
