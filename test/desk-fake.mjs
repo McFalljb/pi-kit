@@ -2,7 +2,8 @@
 // python3) and plays pi-desk's side of the protocol (pi-desk docs/PROTOCOL.md §2, §4, §5).
 // Prints "OK <step>" or "FAIL <step>" per step; every message goes to <log>, the screen to <screen>.
 //
-//   node test/desk-fake.mjs desk <log> <screen>   pi with PI_DESK_SOCKET/PI_DESK_TOKEN: the scenario;
+//   node test/desk-fake.mjs desk <log> <screen>   pi with PI_DESK_SOCKET/PI_DESK_TOKEN: the scenario (with
+//                                                 pi.attach / pi.attached and pi.prompt images);
 //                                                 the hello result advertises the panels capability
 //   node test/desk-fake.mjs nopanels <log> <screen>  the same pi, panels not advertised: a short run
 //   node test/desk-fake.mjs earlyreload <log> <screen>  /reload typed in pi before its first hello
@@ -49,7 +50,7 @@ while True:
     out.flush()
 os.waitpid(pid, 0)
 `;
-const startPi = (screen, env) => spawn("python3", ["-c", PTY, screen, "pi"], { env: { ...process.env, ...env }, stdio: ["pipe", "ignore", "inherit"] });
+const startPi = (screen, env, piArgs = []) => spawn("python3", ["-c", PTY, screen, "pi", ...piArgs], { env: { ...process.env, ...env }, stdio: ["pipe", "ignore", "inherit"] });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const stop = async (proc) => {
 	proc.kill("SIGTERM");
@@ -290,7 +291,9 @@ function request(type, fields = {}, ms = 30_000) {
 const step = (name, args) => `@@ ${JSON.stringify({ name, arguments: args })}`;
 const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
-const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, PI_DESK_SHOTS_DIR: path.join(dir, "apps", "shots"), ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) });
+const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, PI_DESK_SHOTS_DIR: path.join(dir, "apps", "shots"), ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) },
+	// the pending-comments steps send images: a model that takes them (smoke.sh's models.json)
+	mode === "desk" ? ["--model", "mock/mock-img"] : []);
 try {
 	if (mode === "reloads") {
 		await until("handshake", (m) => m.type === "hello", 30_000);
@@ -422,6 +425,34 @@ try {
 	mark = got.length;
 	await request("pi.prompt", { text: `Steps:\n${step("bash", { command: "echo done." })}` });
 	await until("the next run clears the question", (m) => isStatus(m, "idle") && m.question === false, 20_000, mark);
+	// pi-desk's pending comments (pi.attach) go with the next message typed in pi, then pi.attached
+	const IMG = { mime: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" };
+	const typed = async (text) => {
+		const from = got.length;
+		proc.stdin.write(`${text}\r`);
+		const w = await until(`"${text}" ran`, (m) => isStatus(m, "working"), 20_000, from);
+		await until(`idle after "${text}"`, (m) => isStatus(m, "idle"), 20_000, Math.max(w, from));
+		return from;
+	};
+	r = await request("pi.attach", { attachment_id: 41, text: "<pi-desk-comments>ATTACH-41</pi-desk-comments>", images: [IMG] });
+	result("pi.attach accepted", r.ok === true, JSON.stringify(r));
+	r = await request("pi.attach", { attachment_id: 42, text: "x", images: [{ mime: "text/html", data: "AAAA" }] });
+	result("pi.attach with a bad image refused", r.ok === false && /mime/.test(r.error), JSON.stringify(r));
+	mark = await typed("typed-one please");
+	await until("pi.attached for the attachment the typed message took", (m) => m.type === "pi.attached" && m.attachment_id === 41, 5000, mark);
+	await typed("typed-two please");
+	await request("pi.attach", { attachment_id: 43, text: "ATTACH-43" });
+	r = await request("pi.attach_clear");
+	result("pi.attach_clear accepted", r.ok === true, JSON.stringify(r));
+	await typed("typed-three please");
+	result("one pi.attached in all, none for the cleared attachment", got.filter((g) => g.m.type === "pi.attached").map((g) => g.m.attachment_id).join() === "41");
+	mark = got.length;
+	r = await request("pi.prompt", { text: "SEND-NOW comments", images: [IMG] });
+	result("pi.prompt with images accepted", r.ok === true, JSON.stringify(r));
+	const sw = await until("Send now ran", (m) => isStatus(m, "working"), 20_000, mark);
+	await until("idle after Send now", (m) => isStatus(m, "idle"), 20_000, Math.max(sw, mark));
+	r = await request("pi.prompt", { text: "x", images: [{ mime: "image/png", data: "%%%" }] });
+	result("pi.prompt with a bad image refused", r.ok === false && /base64/.test(r.error), JSON.stringify(r));
 	r = await request("pi.nonsense");
 	result("unknown type refused", r.ok === false && /unknown/.test(r.error), JSON.stringify(r));
 

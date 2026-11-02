@@ -106,3 +106,62 @@ export function blockers(shells: ShellRow[], runs: Run[]): string[] {
 	for (const r of Array.isArray(runs) ? runs : []) if (r && runningLeaves(r)) out.push(`subagent ${one(r.label) || one(r.kind) || one(r.id) || "run"}`);
 	return out;
 }
+
+// ---- comments that go with the user's next message (pi-desk docs/BROWSER.md §3.7) ----
+
+export type Image = { type: "image"; data: string; mimeType: string };
+/** What pi-desk's `pi.attach` holds until the user's next message: pi-desk's text block and images. */
+export interface Attachment {
+	id: string | number;
+	text: string;
+	images: Image[];
+}
+export const ATTACH_IMAGES_MAX = 8;
+export const ATTACH_DATA_MAX = 6 * 1024 * 1024; // base64 characters across one message's images
+const MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+
+/**
+ * Images on the wire (`[{mime, data}]`, data base64) as pi's image content; undefined if absent,
+ * a string if invalid (the error).
+ */
+export function wireImages(v: unknown): Image[] | string | undefined {
+	if (v === undefined) return undefined;
+	if (!Array.isArray(v)) return "images must be a list";
+	if (v.length > ATTACH_IMAGES_MAX) return `at most ${ATTACH_IMAGES_MAX} images`;
+	const out: Image[] = [];
+	let size = 0;
+	for (const [i, x] of v.entries()) {
+		if (!MIMES.includes(x?.mime)) return `image ${i + 1}: mime must be image/png, image/jpeg, image/gif or image/webp`;
+		if (typeof x.data !== "string" || x.data.length % 4 !== 0 || !BASE64.test(x.data)) return `image ${i + 1}: data must be base64`;
+		size += x.data.length;
+		out.push({ type: "image", data: x.data, mimeType: x.mime });
+	}
+	if (size > ATTACH_DATA_MAX) return "images too large";
+	return out;
+}
+
+/** A `pi.attach` message as an attachment, or the error. */
+export function parseAttach(m: Record<string, any>): Attachment | string {
+	const id = m.attachment_id;
+	if ((typeof id !== "number" && typeof id !== "string") || id === "") return "attachment_id is required";
+	if (typeof m.text !== "string" || !m.text.trim()) return "text is required";
+	const images = wireImages(m.images);
+	if (typeof images === "string") return images;
+	return { id, text: m.text, images: images ?? [] };
+}
+
+/**
+ * The input transform: the user's next message typed in pi (source `interactive`) gets the pending
+ * attachment after its own text and images. undefined: leave the input as it is (nothing pending,
+ * or a message from pi.prompt, RPC or another extension).
+ */
+export function attachInput(e: { text: string; images?: Image[]; source: string }, a: Attachment | undefined): { text: string; images: Image[] } | undefined {
+	if (!a || e.source !== "interactive") return undefined;
+	return { text: e.text.trim() ? `${e.text}\n\n${a.text}` : a.text, images: [...(e.images ?? []), ...a.images] };
+}
+
+/** pi.prompt's message for sendUserMessage: the text alone, or text then images. */
+export function promptContent(text: string, images: Image[]): string | ({ type: "text"; text: string } | Image)[] {
+	return images.length ? [{ type: "text", text }, ...images] : text;
+}

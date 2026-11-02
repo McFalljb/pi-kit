@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { checkCommand, commandVerdict, configPaths, describeRules, isShellLog, loadRules, mergeLayers, parseConfig, PRESETS, redact, warnOnce } from "../extensions/guardrails/core.ts";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
+import { ATTACH_IMAGES_MAX, attachInput, backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, parseAttach, promptContent, reply, runOutcome, status, wireImages } from "../extensions/desk-bridge/protocol.ts";
 import { COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
 import { alreadyTrue, DATA_NOTE, tabLine, eventsText, EVENTS_END, EVENTS_START, exited, filterState, fires, noticeFor, type On, piTabOf, refusal, seenFrom, stateText, summarize, tabLabel, watchHits, watchText } from "../extensions/desk/state.ts";
 import { APP_IMAGE_MAX, appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "../extensions/desk/app.ts";
@@ -798,6 +798,39 @@ test("desk bridge: pi.prompt is refused while a dialog is open or a manual /comp
 	assert.equal(promptRefusal({ dialogs: 0, compacting: false }), undefined);
 	assert.equal(promptRefusal({ dialogs: 1, compacting: false }), "pi is waiting on the user (a dialog is open)");
 	assert.equal(promptRefusal({ dialogs: 0, compacting: true }), "pi is compacting the session; retry when it is idle");
+});
+
+const PNG = Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
+test("desk bridge: pi.attach becomes an attachment with pi's image content", () => {
+	const a = parseAttach({ type: "pi.attach", attachment_id: 12, text: "<comments>", images: [{ mime: "image/png", data: PNG }] });
+	assert.deepEqual(a, { id: 12, text: "<comments>", images: [{ type: "image", data: PNG, mimeType: "image/png" }] });
+	assert.deepEqual(parseAttach({ attachment_id: "a7", text: "t" }), { id: "a7", text: "t", images: [] });
+	assert.equal(parseAttach({ text: "t" }), "attachment_id is required");
+	assert.equal(parseAttach({ attachment_id: 1, text: "" }), "text is required");
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: "x" }), "images must be a list");
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: [{ mime: "text/html", data: PNG }] }), "image 1: mime must be image/png, image/jpeg, image/gif or image/webp");
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: [{ mime: "image/png", data: "not base64!" }] }), "image 1: data must be base64");
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: [{ mime: "image/png", data: "" }] }), "image 1: data must be base64");
+	const many = Array.from({ length: ATTACH_IMAGES_MAX + 1 }, () => ({ mime: "image/png", data: PNG }));
+	assert.equal(parseAttach({ attachment_id: 1, text: "t", images: many }), `at most ${ATTACH_IMAGES_MAX} images`);
+	assert.equal(wireImages(undefined), undefined, "no images field: none");
+	assert.deepEqual(wireImages([]), []);
+});
+
+test("desk bridge: the attachment goes with the next message typed in pi, after its text and images", () => {
+	const a = { id: 3, text: "<pi-desk-comments>", images: [{ type: "image" as const, data: PNG, mimeType: "image/png" }] };
+	const own = { type: "image" as const, data: "AAAA", mimeType: "image/jpeg" };
+	assert.deepEqual(attachInput({ text: "fix these", images: [own], source: "interactive" }, a), { text: "fix these\n\n<pi-desk-comments>", images: [own, a.images[0]] });
+	assert.deepEqual(attachInput({ text: "  ", source: "interactive" }, a), { text: "<pi-desk-comments>", images: a.images });
+	assert.equal(attachInput({ text: "x", source: "interactive" }, undefined), undefined, "nothing pending");
+	assert.equal(attachInput({ text: "x", source: "extension" }, a), undefined, "pi.prompt and other extensions' messages: not the user's next message");
+	assert.equal(attachInput({ text: "x", source: "rpc" }, a), undefined);
+});
+
+test("desk bridge: pi.prompt with images is sent as text plus image content", () => {
+	assert.equal(promptContent("hi", []), "hi");
+	const img = { type: "image" as const, data: PNG, mimeType: "image/png" };
+	assert.deepEqual(promptContent("hi", [img]), [{ type: "text", text: "hi" }, img]);
 });
 
 test("desk: the control token is kept apart from the pi tab's token", () => {
