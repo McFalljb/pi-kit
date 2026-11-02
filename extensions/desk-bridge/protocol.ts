@@ -239,10 +239,37 @@ export function browserRefusal(cmd: unknown): string | undefined {
  * or, when pending, the `finished` event with its request_id (pi-desk sends that to the requester
  * even without a subscription). A finished event seen before its result line is kept (a few).
  */
+/** The line that asks pi-desk to stop a long-running command of this connection (`request_id`: its id). */
+export const cancelLine = (id: string, rid: number) => line({ id, type: "cancel", request_id: rid });
+
 export class CommandCalls {
 	private byId = new Map<string, { done: (o: CommandOutcome) => void; rid?: number }>();
 	private byRid = new Map<number, string>();
 	private early = new Map<number, Record<string, any>>();
+	private cancelledIds = new Set<string>(); // cancelled before pi-desk's pending reply (its request id) came
+	private cancelledRids = new Set<number>(); // cancelled in pi-desk: their late finished is dropped
+	private sendCancel: (rid: number) => void;
+	/** `sendCancel`: ask pi-desk to stop request `rid` (fire and forget). */
+	constructor(sendCancel: (rid: number) => void = () => {}) {
+		this.sendCancel = sendCancel;
+	}
+	private cancelRid(rid: number) {
+		this.cancelledRids.add(rid);
+		if (this.cancelledRids.size > 32) this.cancelledRids.delete(this.cancelledRids.values().next().value!);
+		this.early.delete(rid);
+		this.sendCancel(rid);
+	}
+	/** The caller gave up: end it here at once, and stop it in pi-desk (now, or once its request id comes). */
+	cancel(id: string) {
+		const call = this.byId.get(id);
+		if (!call) return;
+		if (call.rid !== undefined) this.cancelRid(call.rid);
+		else {
+			this.cancelledIds.add(id);
+			if (this.cancelledIds.size > 32) this.cancelledIds.delete(this.cancelledIds.values().next().value!);
+		}
+		this.end(id, { error: "cancelled" });
+	}
 	/** Waits for line `id`'s outcome. */
 	start(id: string, done: (o: CommandOutcome) => void) {
 		this.byId.set(id, { done, rid: undefined });
@@ -250,7 +277,11 @@ export class CommandCalls {
 	/** A `result` line: true if it was one of ours. */
 	onResult(m: Record<string, any>): boolean {
 		const call = this.byId.get(m.id);
-		if (!call) return false;
+		if (!call) {
+			if (!this.cancelledIds.delete(m.id)) return false;
+			if (m.result?.pending && typeof m.request_id === "number") this.cancelRid(m.request_id);
+			return true;
+		}
 		const result = m.result ?? { ok: false, error: "no result" };
 		if (result.pending && typeof m.request_id === "number") {
 			if (this.early.has(m.request_id)) {
@@ -269,6 +300,7 @@ export class CommandCalls {
 	/** A `finished` event: true if it ended one of ours. */
 	onFinished(m: Record<string, any>): boolean {
 		if (typeof m.request_id !== "number") return false;
+		if (this.cancelledRids.delete(m.request_id)) return true; // ended here already
 		const id = this.byRid.get(m.request_id);
 		if (id === undefined) {
 			this.early.set(m.request_id, m.result ?? {});
@@ -290,6 +322,8 @@ export class CommandCalls {
 	failAll(error: string) {
 		for (const id of [...this.byId.keys()]) this.end(id, { error });
 		this.early.clear();
+		this.cancelledIds.clear();
+		this.cancelledRids.clear();
 	}
 	get size() {
 		return this.byId.size;

@@ -87,13 +87,28 @@ The `browser_*` tools are in every pi tab too: there they see only their own ses
   `browser_select` (a `<select>`'s option by `label` or `value`), `browser_hover` and
   `browser_upload` (`paths`: absolute paths of files). Results say what was hit (page data,
   fenced), whether the page changed or is loading; a typed text is never repeated back. Actions
-  never bring the tab to the front.
+  never bring the tab to the front. An action's 30 s counts from when pi-desk accepts it (queued
+  ones included); interrupting a call cancels it in pi-desk too.
+- `browser_type` inserts the whole text at once (the page sees input events, not a keydown per
+  key: use `browser_press` for key events); `submit` is one Enter after a fresh check.
+  `browser_press` sends one chord at a time with a check before each and stops with
+  `page_changed` if the page navigates (`"Enter a b c"` stops after Enter if Enter submits); read
+  the page again then. Navigation keys (Tab, arrows, Enter, Escape, PageUp/PageDown, Home/End)
+  work anywhere; text, letters and other printable keys only in a plain text field (an input of
+  type text, search, email, url, tel or number, a textarea or a contenteditable) in the top
+  document (`not_a_field`, `frame_focused` otherwise). A click that opens a native file chooser
+  is refused (`use_browser_upload`): use `browser_upload` with the file input. If the page writes
+  the clipboard during an action, pi-desk restores it (`clipboard_blocked`).
 - What agents may not do: there is no JavaScript evaluation. Typing, keys and choices in
   password, card and one-time-code fields (`sensitive_field`), or in an iframe (`frame_focused`),
   are refused: ask the user to press **Take over** on the page and enter it themselves. An upload
-  waits up to 2 minutes for the user's **Allow** on the page (`upload_blocked`,
-  `waiting_for_user`: nothing was sent); a download your click starts waits for their Allow too
-  (tell them). `Meta+V`/`C`/`X` (the user's clipboard) are refused. Actions on `file:`,
+  waits up to 2 minutes for the user's **Allow** on a bar that shows the full paths
+  (`upload_blocked`, `waiting_for_user`: nothing was sent; `busy` while it asks); files under
+  `~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/.aws`, `~/.config/gh`, `~/.netrc`, `~/.pi` and
+  pi-desk's data and profile folders, and symlinks whose real path differs, are refused
+  (`path_not_allowed`: ask the user for another file). A download your click starts waits for
+  their Allow too (tell them). A screenshot is refused while a revealed password field has text
+  (`sensitive_visible`). `Meta+V`/`C`/`X` (the user's clipboard) are refused. Actions on `file:`,
   `chrome:`, `devtools:` and `view-source:` pages are refused (`page_not_allowed`).
 - No site is off limits and nothing asks first; `file:` addresses are the user's only. The user
   sees a strip on the page while you use it, with **Stop** and **Take over**: a `stopped` or

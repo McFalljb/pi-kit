@@ -47,6 +47,8 @@ export const MODES = ["text", "outline", "html"] as const;
 export const SELECTOR_HELP =
 	'tag names, #ids and .classes joined by spaces or > (e.g. "main article p", "div.card > a#buy"), or "ref=e3" from the latest outline; no attributes, pseudo-classes (:checked…), commas, *, + or ~';
 export const WAIT_FOR = ["load", "selector", "text"] as const;
+/** Where text keys and browser_type work (pi-desk refuses them elsewhere). */
+export const TEXT_FIELD = "plain text field (an input of type text, search, email, url, tel or number, a textarea or a contenteditable) in the top document";
 
 export function tabsCommand(session?: number): R {
 	return { type: "browser_tabs", ...(session !== undefined && { session }) };
@@ -95,7 +97,7 @@ const ACTS = new Set(["browser_click", "browser_type", "browser_press", "browser
 
 /** The safety rules an action's description carries (`kind` adds the ones that apply to it). */
 export function actRules(kind: "click" | "type" | "scroll" | "upload"): string {
-	const rules = ["There is no JavaScript evaluation."];
+	const rules = ["There is no JavaScript evaluation. pi-desk gives an action 30 s, which counts from when pi-desk accepts it (queued ones included)."];
 	if (kind === "type") rules.push("Typing, keys and choices in password, card and one-time-code fields (and in iframes, which pi-desk cannot check) are refused: ask the user to press Take over on the page and enter them themselves.");
 	if (kind === "click" || kind === "type") rules.push("A download your input starts waits for the user's Allow in pi-desk: tell the user.");
 	if (kind === "upload") rules.push("The upload waits (up to 2 minutes) for the user's Allow on a bar in pi-desk; Block or no answer sends nothing.");
@@ -104,6 +106,19 @@ export function actRules(kind: "click" | "type" | "scroll" | "upload"): string {
 	);
 	return rules.join(" ");
 }
+
+const TARGET = `The target is a selector (${SELECTOR_HELP}; best a ref from browser_read outline) or x and y (CSS px from the viewport's top-left, as in browser_screenshot divided by its scale).`;
+const PROTECTED = "~/.ssh, ~/.gnupg, ~/Library/Keychains, ~/.aws, ~/.config/gh, ~/.netrc, ~/.pi and pi-desk's data and profile folders";
+/** The action tools' descriptions, each with the safety rules that apply to it. */
+export const ACT_DESCRIPTIONS: Record<string, string> = {
+	browser_click: `Click an element in a pi-desk browser tab's page as a mouse would (its centre), or a point. ${TARGET} button: left (default), right or middle; double: a double click; modifiers: keys held (shift, control, alt, meta). The result says what it hit, whether the page changed or is loading, a download waiting for the user, a popup (a new tab, behind). A click that opens a native file chooser is refused (use_browser_upload): agents never get it; use browser_upload with the file input. ${actRules("click")}`,
+	browser_type: `Type text into a ${TEXT_FIELD} of a pi-desk browser tab's page (selector: the field, focused first; else the focused element). It inserts the whole text at once: the page sees input events, not a keydown per key (use browser_press for key events). clear: select all and delete first; submit: one Enter after a fresh check. The result says how many characters went in, never the text. ${actRules("type")}`,
+	browser_press: `Press keys in a pi-desk browser tab's page: space-separated keys or chords, e.g. "Tab", "Shift+Tab", "Enter", "Escape", "ArrowDown ArrowDown Enter", "Meta+A". selector: focus that element first. pi-desk sends one chord at a time with a check before each, and stops with page_changed if the page navigates (so "Enter a b c" stops after Enter if Enter submits). Navigation keys (Tab, arrows, Enter, Escape, PageUp/PageDown, Home/End) work anywhere; letters and other printable keys only in a ${TEXT_FIELD}. Meta+V, Meta+C and Meta+X (the user's clipboard) are refused. ${actRules("type")}`,
+	browser_scroll: `Scroll a pi-desk browser tab's page: dx/dy (CSS px) scroll the target (selector, or the scrollable thing at x,y) or, with no target, the page; a target alone is scrolled into view. ${actRules("scroll")}`,
+	browser_select: `Choose an option of a <select> in a pi-desk browser tab's page by its label (its text) or its value (exactly one). No match: the error lists the labels. For a custom dropdown, click it and then the option. ${actRules("type")}`,
+	browser_hover: `Move the pointer over an element or a point in a pi-desk browser tab's page (menus, tooltips). ${TARGET} ${actRules("scroll")}`,
+	browser_upload: `Set files on a file input (<input type="file">) of a pi-desk browser tab's page. paths: absolute paths of regular files (no directories). Nothing is sent until the user presses Allow on the bar pi-desk shows, with the full paths (it waits up to 2 minutes): tell the user you are asking. Files under ${PROTECTED}, and symlinks whose real path differs, are refused (path_not_allowed). The result names the files by base name. ${actRules("upload")}`,
+};
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const bool = (v: unknown, name: string) => {
@@ -178,12 +193,11 @@ const HINTS: Record<string, string> = {
 	bad_args: "Fix the call (a selector that matches, a ref from the latest outline, a rect inside the page).",
 	selector_unsupported: `Use a simple selector: ${SELECTOR_HELP}. Read an outline for refs to anything else.`,
 	stopped: "The user pressed Stop on the page: stop using this tab and ask the user before going on.",
-	busy: "Screenshots are still being written; try again in a moment.",
+	busy: "pi-desk is busy with this tab (screenshots still being written, or an upload bar asking the user): try again in a moment, or after the user answers the bar.",
 	page_error: "The page did not answer; it may be navigating. Try again after browser_wait.",
 	// step 8: actions
-	sensitive_field:
-		"That is a password, card or one-time-code field (or inside one): agents never type, press keys or choose there. Ask the user to press Take over on the page, enter it themselves and press Hand back.",
-	frame_focused: "Focus is inside an iframe, which pi-desk cannot check (card fields often are): ask the user to press Take over and do this part themselves.",
+	sensitive_field: `That is a password, card or one-time-code field (or inside one): agents never type, press keys or choose there; text keys and browser_type work only in a ${TEXT_FIELD}. Ask the user to press Take over on the page, enter it themselves and press Hand back.`,
+	frame_focused: `Focus is inside an iframe, which pi-desk cannot check (card fields often are); text keys and browser_type work only in a ${TEXT_FIELD}. Ask the user to press Take over and do this part themselves.`,
 	user_has_control:
 		"The user took over this tab (Take over, or they used it while you acted): stop using it now. Every call on it is refused until they press Hand back; ask the user before going on.",
 	waiting_for_user: "The user did not answer the upload bar in time, so nothing was sent. Ask the user whether to try again.",
@@ -191,17 +205,25 @@ const HINTS: Record<string, string> = {
 	not_found: "Nothing matches that selector or ref (refs last until the next outline or navigation): read an outline again for fresh refs.",
 	covered: "Another element (named in the error: a dialog, banner or overlay) is on top of the target: deal with it first if the user wants that, or ask the user.",
 	disabled: "The target is disabled: something else on the page must happen first (read it to see what).",
-	not_a_field: "The target is not a text field: pick an input, a text area or editable text (browser_read outline).",
-	not_a_select: 'The target is not a <select>: for a custom dropdown, click it and then click the option.',
+	not_a_field: `The target is not a ${TEXT_FIELD}: text keys and browser_type work only there (find one with browser_read outline).`,
+	not_a_select: "The target is not a <select>: for a custom dropdown, click it and then click the option.",
 	not_a_file_input: 'The target is not a file input (<input type="file">): find it with browser_read outline (it may be hidden behind a button: use its ref).',
 	no_option: "No option has that label or value; the error lists the labels (page data). Pick one of them.",
 	page_not_allowed: "Agents may not act on file:, chrome:, devtools: or view-source: pages; ask the user.",
 	bad_file: "Each path must be an absolute path to an existing regular file (no directories).",
 	bad_keys: "Use key names such as Enter, Tab, Escape, Backspace, ArrowDown, PageDown, a single character, or chords such as Shift+Tab or Meta+A. Meta+V, Meta+C and Meta+X (the user's clipboard) are refused.",
+	// security review round 1
+	page_changed: "The page navigated or changed document during the action, so pi-desk stopped there; what was sent is in the error. Read the page again before acting.",
+	sensitive_visible: "Screenshot refused: a revealed password field on the page has text in it. Ask the user to hide it, or to Take over.",
+	path_not_allowed: "That file is under a protected folder (keys, credentials, pi's or pi-desk's data) or is a symlink to somewhere else: ask the user to pick another file.",
+	use_browser_upload: "The click opened a native file chooser, which agents never get: use browser_upload with the file input instead.",
+	clipboard_blocked: "The page wrote the clipboard during the action; pi-desk restored the old contents. Do not rely on the page's copy buttons.",
+	cancelled: "The call was cancelled (it was interrupted here), and pi-desk stopped the action. Check the page before trying again.",
 };
 /** An action's own hints where a code means something else for it. */
 const ACT_HINTS: Record<string, string> = {
-	timeout: "The action did not finish in 30 s (the page may be busy or stuck): check the page with browser_read or browser_screenshot before trying again.",
+	timeout: "The action did not finish in 30 s, counted from when pi-desk accepted it (queued ones included; the page may be busy or stuck): check the page with browser_read or browser_screenshot before trying again.",
+	busy: "An upload bar is asking the user on this tab: wait for their answer before acting on it.",
 	bad_args: "Fix the call (a selector that matches, a ref from the latest outline, coordinates inside the viewport).",
 };
 

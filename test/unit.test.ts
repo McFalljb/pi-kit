@@ -1504,3 +1504,79 @@ test("desk-browser routes: the act commands are forwarded; the user-only ones st
 	for (const type of ["browser_upload_answer", "browser_agent_take_over", "browser_agent_stop", "browser_eval", "browser_drag"])
 		assert.match(proto.browserRefusal({ type, tab_id: 3 }) ?? "", /only the browser tools' commands/, type);
 });
+
+// ---- step 8, security review round 1 ----
+
+test("desk bridge: a cancelled command sends pi-desk a cancel line for its request id (also when cancelled before the id came)", async () => {
+	const proto: Record<string, any> = await import("../extensions/desk-bridge/protocol.ts");
+	assert.equal(typeof proto.cancelLine, "function", "protocol.ts exports cancelLine");
+	assert.deepEqual(JSON.parse(proto.cancelLine("c1", 40)), { v: 1, id: "c1", type: "cancel", request_id: 40 });
+	assert.ok(proto.cancelLine("c1", 40).endsWith("}\n"));
+	const sent: number[] = [];
+	const calls = new proto.CommandCalls((rid: number) => sent.push(rid));
+	const got: any[] = [];
+	calls.start("b1", (o: any) => got.push(["b1", o]));
+	calls.onResult({ id: "b1", request_id: 40, result: { ok: true, pending: true } });
+	calls.cancel("b1");
+	assert.deepEqual(sent, [40], "the running request is cancelled in pi-desk");
+	assert.deepEqual(got, [["b1", { error: "cancelled" }]], "and ended here at once");
+	assert.equal(calls.onFinished({ request_id: 40, result: { ok: false, error: "cancelled by the requester", data: { code: "cancelled" } } }), true, "its late finished is dropped");
+	assert.equal(got.length, 1);
+	// cancelled before pi-desk's pending reply: the cancel goes when the request id arrives
+	calls.start("b2", (o: any) => got.push(["b2", o]));
+	calls.cancel("b2");
+	assert.deepEqual(sent, [40], "nothing to cancel yet");
+	assert.deepEqual(got.at(-1), ["b2", { error: "cancelled" }]);
+	assert.equal(calls.onResult({ id: "b2", request_id: 41, result: { ok: true, pending: true } }), true);
+	assert.deepEqual(sent, [40, 41]);
+	assert.equal(calls.onFinished({ request_id: 41, result: { ok: false, data: { code: "cancelled" } } }), true);
+	// a command that was not long-running (plain result) sends nothing
+	calls.start("b3", (o: any) => got.push(["b3", o]));
+	calls.cancel("b3");
+	calls.onResult({ id: "b3", result: { ok: true } });
+	assert.deepEqual(sent, [40, 41]);
+	assert.equal(calls.size, 0);
+	// unknown ids: nothing
+	calls.cancel("zz");
+	assert.deepEqual(sent, [40, 41]);
+});
+
+test("desk-browser round 1: hints for the new codes; text keys only in plain text fields", async () => {
+	const b: Record<string, any> = await import("../extensions/desk-browser/browser.ts");
+	const hint = (code: string, what = "browser_click") => {
+		const t = b.errorText(what, { ok: false, error: "pi-desk's words", data: { code } });
+		return t.slice(0, t.indexOf(WEB_NOTE));
+	};
+	assert.match(hint("page_changed", "browser_press"), /navigated or changed.*what was sent is in the error.*read the page again/i);
+	assert.match(hint("sensitive_visible", "browser_screenshot"), /password.*(hide|Take over)/);
+	assert.match(hint("path_not_allowed", "browser_upload"), /protected folder.*symlink.*another file/);
+	assert.match(hint("use_browser_upload"), /file chooser.*browser_upload/);
+	assert.match(hint("clipboard_blocked"), /clipboard.*restored/);
+	assert.match(hint("busy"), /upload bar.*wait/i);
+	assert.match(hint("cancelled"), /cancel/i);
+	for (const code of ["frame_focused", "not_a_field", "sensitive_field"]) assert.match(hint(code, "browser_type"), /plain text field/, code);
+	assert.match(hint("not_a_field", "browser_type"), /textarea.*contenteditable/);
+	assert.match(hint("not_a_field", "browser_type"), /top document/);
+});
+
+test("desk-browser round 1: the act descriptions say how typing, keys, uploads and timeouts work", async () => {
+	const b: Record<string, any> = await import("../extensions/desk-browser/browser.ts");
+	const d: Record<string, string> = b.ACT_DESCRIPTIONS ?? {};
+	for (const t of ["browser_click", "browser_type", "browser_press", "browser_scroll", "browser_select", "browser_hover", "browser_upload"]) {
+		assert.equal(typeof d[t], "string", t);
+		assert.match(d[t], /no JavaScript/i, t);
+		assert.match(d[t], /counts from when pi-desk accepts it/, t);
+	}
+	assert.match(d.browser_type, /whole text at once/);
+	assert.match(d.browser_type, /browser_press for key events/);
+	assert.match(d.browser_type, /one Enter after a fresh check/);
+	assert.match(d.browser_press, /one chord at a time/);
+	assert.match(d.browser_press, /page_changed/);
+	assert.match(d.browser_press, /Tab, arrows, Enter, Escape, PageUp\/PageDown, Home\/End/);
+	assert.match(d.browser_press, /plain text field/);
+	assert.match(d.browser_upload, /full paths/);
+	for (const p of ["~/.ssh", "~/.gnupg", "~/Library/Keychains", "~/.aws", "~/.config/gh", "~/.netrc", "~/.pi"]) assert.ok(d.browser_upload.includes(p), p);
+	assert.match(d.browser_upload, /symlink/);
+	assert.match(d.browser_upload, /path_not_allowed/);
+	assert.match(d.browser_click, /file chooser.*browser_upload/);
+});

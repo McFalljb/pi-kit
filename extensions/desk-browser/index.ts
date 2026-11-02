@@ -32,7 +32,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { COMMAND_EVENT, CONTROL_EVENT, CONTROL_READY, type CommandOutcome, inDesk } from "../desk-bridge/protocol.ts";
 import { shotFile } from "../desk/app.ts";
 import {
-	ACT_TIMEOUT_MS, actRules, actText, BUTTONS, clickCommand, commentsCommand, commentsText, errorText, hoverCommand, logCommand, logText, MAX_WAIT_S, MODES, MODIFIERS, navigateCommand, openCommand, pressCommand, readCommand, readText,
+	ACT_DESCRIPTIONS, ACT_TIMEOUT_MS, actText, BUTTONS, clickCommand, commentsCommand, commentsText, errorText, hoverCommand, logCommand, logText, MAX_WAIT_S, MODES, MODIFIERS, navigateCommand, openCommand, pressCommand, readCommand, readText,
 	screenshotCommand, screenshotText, scrollCommand, SELECTOR_HELP, selectCommand, tabsCommand, tabsText, typeCommand, UPLOAD_TIMEOUT_MS, uploadCommand, WAIT_FOR, waitCommand, waitText,
 } from "./browser.ts";
 
@@ -221,13 +221,12 @@ export default function (pi: ExtensionAPI) {
 		x: Type.Optional(Type.Number({ description: "Or a point: CSS px from the viewport's top-left (as browser_screenshot shows it, divided by its scale); with y" })),
 		y: Type.Optional(Type.Number({ description: "With x" })),
 	};
-	const TARGET = `The target is a selector (${SELECTOR_HELP}; best a ref from browser_read outline) or x and y (CSS px from the viewport's top-left, as in browser_screenshot divided by its scale).`;
 
 	function registerActs() {
 		pi.registerTool({
 			name: "browser_click",
 			label: "Click in a web page",
-			description: `Click an element in a pi-desk browser tab's page as a mouse would (its centre), or a point. ${TARGET} button: left (default), right or middle; double: a double click; modifiers: keys held (shift, control, alt, meta). The result says what it hit, whether the page changed or is loading, a download waiting for the user, a popup (a new tab, behind). ${actRules("click")}`,
+			description: ACT_DESCRIPTIONS.browser_click,
 			promptSnippet: "Click an element or a point in a pi-desk browser tab's page",
 			promptGuidelines: [
 				"pi-desk browser actions (browser_click, browser_type, browser_press, browser_scroll, browser_select, browser_hover, browser_upload): read an outline first and target refs; never try to type passwords, card numbers or one-time codes (ask the user to Take over); stop and ask the user on user_has_control or stopped.",
@@ -248,7 +247,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "browser_type",
 			label: "Type in a web page",
-			description: `Type text into a field of a pi-desk browser tab's page (selector: the field, focused first; else the focused element), as keystrokes. clear: select all and delete first; submit: press Enter after. The result says how many characters went in, never the text. ${actRules("type")}`,
+			description: ACT_DESCRIPTIONS.browser_type,
 			promptSnippet: "Type text into a field of a pi-desk browser tab's page",
 			parameters: Type.Object({
 				tab,
@@ -265,7 +264,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "browser_press",
 			label: "Press keys in a web page",
-			description: `Press keys in a pi-desk browser tab's page: space-separated keys or chords, e.g. "Tab", "Shift+Tab", "Enter", "Escape", "ArrowDown ArrowDown Enter", "Meta+A". selector: focus that element first. Meta+V, Meta+C and Meta+X (the user's clipboard) are refused. ${actRules("type")}`,
+			description: ACT_DESCRIPTIONS.browser_press,
 			promptSnippet: "Press keys or chords in a pi-desk browser tab's page",
 			parameters: Type.Object({
 				tab,
@@ -280,7 +279,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "browser_scroll",
 			label: "Scroll a web page",
-			description: `Scroll a pi-desk browser tab's page: dx/dy (CSS px) scroll the target (selector, or the scrollable thing at x,y) or, with no target, the page; a target alone is scrolled into view. ${actRules("scroll")}`,
+			description: ACT_DESCRIPTIONS.browser_scroll,
 			promptSnippet: "Scroll a pi-desk browser tab's page, or an element into view",
 			parameters: Type.Object({
 				tab,
@@ -297,7 +296,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "browser_select",
 			label: "Choose an option in a web page",
-			description: `Choose an option of a <select> in a pi-desk browser tab's page by its label (its text) or its value (exactly one). No match: the error lists the labels. For a custom dropdown, click it and then the option. ${actRules("type")}`,
+			description: ACT_DESCRIPTIONS.browser_select,
 			promptSnippet: "Choose an option of a <select> in a pi-desk browser tab's page",
 			parameters: Type.Object({
 				tab,
@@ -313,7 +312,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "browser_hover",
 			label: "Hover in a web page",
-			description: `Move the pointer over an element or a point in a pi-desk browser tab's page (menus, tooltips). ${TARGET} ${actRules("scroll")}`,
+			description: ACT_DESCRIPTIONS.browser_hover,
 			promptSnippet: "Move the pointer over an element in a pi-desk browser tab's page",
 			parameters: Type.Object({ tab, selector: selector("The element"), ...xy }),
 			async execute(_id, p, signal) {
@@ -324,7 +323,7 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "browser_upload",
 			label: "Upload files to a web page",
-			description: `Set files on a file input (<input type="file">) of a pi-desk browser tab's page. paths: absolute paths of regular files (no directories). Nothing is sent until the user presses Allow on the bar pi-desk shows (it waits up to 2 minutes): tell the user you are asking. The result names the files by base name. ${actRules("upload")}`,
+			description: ACT_DESCRIPTIONS.browser_upload,
 			promptSnippet: "Upload files to a file input in a pi-desk browser tab's page (the user allows it)",
 			parameters: Type.Object({
 				tab,
