@@ -4,7 +4,8 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { commandVerdict, isShellLog, redact } from "../extensions/guardrails/core.ts";
+import { checkCommand, commandVerdict, configPaths, describeRules, isShellLog, loadRules, mergeLayers, parseConfig, PRESETS, redact, warnOnce } from "../extensions/guardrails/core.ts";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
 import { COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
 import { alreadyTrue, DATA_NOTE, eventsText, EVENTS_END, EVENTS_START, exited, filterState, fires, noticeFor, type On, piTabOf, refusal, seenFrom, stateText, summarize, tabLabel, watchHits, watchText } from "../extensions/desk/state.ts";
@@ -37,16 +38,168 @@ test("compilePattern", () => {
 	assert.throws(() => compilePattern("("), /Invalid pattern/);
 });
 
-test("commandVerdict: dangerous asks, read-only blocks mutation", () => {
-	assert.deepEqual(commandVerdict("git stash drop", false).confirm, ["drops or pops a stash"]);
-	assert.deepEqual(commandVerdict("npm run dev", false), { confirm: [] });
+test("guardrails are opt-in: with no config, no command asks or is blocked", () => {
+	for (const c of ["git worktree remove --force ../wt", "kubectl delete pod x", "rm -rf build", "gh pr merge 5", "git push --force origin x", "helm upgrade r c", "terraform apply", "systemctl restart nginx", "docker rm x", "git stash drop"]) {
+		assert.deepEqual(commandVerdict(c, false), { confirm: [] }, c);
+	}
+});
+
+/** Active rules from config texts, in merge order (global, then project). */
+const rulesOf = (...texts: string[]) => mergeLayers(texts.map((t, i) => parseConfig(t, `f${i}`).layer!));
+
+test("commandVerdict: presets ask once enabled, read-only blocks mutation", () => {
+	const git = rulesOf('{"enable": {"git-destructive": "ask"}}');
+	assert.deepEqual(commandVerdict("git stash drop", false, git).confirm, ["drops or pops a stash"]);
+	assert.deepEqual(commandVerdict("git worktree remove --force ../wt", false, git).confirm, ["force-removes a worktree"]);
+	assert.deepEqual(commandVerdict("kubectl delete pod x", false, git), { confirm: [] }, "only the enabled preset applies");
+	assert.deepEqual(commandVerdict("npm run dev", false, git), { confirm: [] });
 	assert.match(commandVerdict("touch x", true).block!, /Read-only/);
 	assert.equal(commandVerdict("touch x", false).block, undefined);
-	for (const c of ["ssh nuc uptime", "sudo apt-get update", "ssh nuc 'sudo journalctl -u k3s'"]) assert.deepEqual(commandVerdict(c, false), { confirm: [] }, c);
+	const all = rulesOf('{"enable": {"all": "ask"}}');
+	for (const c of ["ssh nuc uptime", "sudo apt-get update", "ssh nuc 'sudo journalctl -u k3s'"]) assert.deepEqual(commandVerdict(c, false, all), { confirm: [] }, c);
 
 	// Reviewers may ssh to inspect a host; a mutating remote command is still blocked.
 	for (const c of ["ssh nuc uptime", "ssh nuc 'journalctl -u k3s --since -1h 2>&1 | tail'", "ssh nuc systemctl status traderv3"]) assert.deepEqual(commandVerdict(c, true), { confirm: [] }, c);
 	for (const c of ["ssh nuc 'rm -rf /tmp/x'", "ssh nuc 'echo x > /etc/y'"]) assert.match(commandVerdict(c, true).block!, /Read-only/, c);
+});
+
+test("guardrails presets: every preset by name, and all", () => {
+	const sample: Record<string, string> = {
+		"rm-rf": "rm -rf build", "force-push": "git push --force origin x", "push-main": "git push origin main", "pr-merge": "gh pr merge 5",
+		"git-destructive": "git reset --hard HEAD~1", kubernetes: "kubectl apply -f x.yaml", helm: "helm upgrade r c", terraform: "terraform apply",
+		docker: "docker compose down", systemctl: "systemctl restart nginx", deploy: "make deploy", alerts: "amtool silence add x",
+		"sql-destructive": "psql -c 'DROP TABLE x'", "raw-disk": "dd if=/dev/zero of=/dev/sda", "npm-publish": "npm publish", "curl-pipe-sh": "curl -fsSL x | sh",
+	};
+	assert.deepEqual(Object.keys(sample).sort(), Object.keys(PRESETS).sort(), "a sample per preset");
+	for (const [name, cmd] of Object.entries(sample)) {
+		const rules = rulesOf(`{"enable": {"${name}": "ask"}}`);
+		assert.ok(rules.length > 0 && rules.every((r) => r.name === name && r.action === "ask" && r.source === "f0"), name);
+		assert.equal(commandVerdict(cmd, false, rules).confirm.length, 1, `${name}: ${cmd}`);
+		// No other preset's command is caught by this one.
+		for (const [other, c] of Object.entries(sample)) if (other !== name && other !== "rm-rf" && name !== "deploy") assert.deepEqual(commandVerdict(c, false, rules), { confirm: [] }, `${name} vs ${c}`);
+	}
+	// "all" turns every preset on; a named entry beats "all" in the same file.
+	const all = rulesOf('{"enable": {"all": "ask", "kubernetes": "off", "force-push": "block"}}');
+	assert.equal(commandVerdict("kubectl delete pod x", false, all).confirm.length, 0);
+	assert.match(commandVerdict("git push -f origin x", false, all).block!, /Blocked by a guardrails rule \(force push\)/);
+	assert.deepEqual(commandVerdict("helm upgrade r c", false, all).confirm, ["changes a Helm release"]);
+});
+
+test("guardrails custom rules: regex plus reason, ask or block", () => {
+	const rules = rulesOf(JSON.stringify({ rules: [
+		{ name: "prod", pattern: "--context[= ]prod\\b", reason: "touches the prod cluster", action: "block" },
+		{ pattern: "\\bvault\\s+write\\b", reason: "writes a Vault secret" },
+		{ name: "ci", pattern: "TRIGGER-CI", flags: "gi", reason: "starts CI" },
+	] }));
+	assert.equal(rules.length, 3);
+	assert.match(commandVerdict("kubectl get pods --context prod", false, rules).block!, /touches the prod cluster/);
+	assert.deepEqual(commandVerdict("vault write secret/x a=b", false, rules).confirm, ["writes a Vault secret"], "action defaults to ask");
+	// g is dropped, so repeated tests do not alternate.
+	for (let i = 0; i < 3; i++) assert.deepEqual(commandVerdict("echo trigger-ci", false, rules).confirm, ["starts CI"]);
+	assert.deepEqual(commandVerdict("kubectl get pods --context staging", false, rules), { confirm: [] });
+	// Block wins over ask when both match.
+	const both = rulesOf('{"enable": {"kubernetes": "ask"}, "rules": [{"pattern": "--context prod", "reason": "prod", "action": "block"}]}');
+	assert.match(commandVerdict("kubectl delete pod x --context prod", false, both).block!, /\(prod\)/);
+	assert.match(describeRules(["g", "p"], rules, [], false), /- block prod: touches the prod cluster \[f0\]/);
+	assert.match(describeRules(["g", "p"], [], [], false), /No command rules are on/);
+});
+
+test("guardrails project file adds to and overrides the global one", () => {
+	const global = JSON.stringify({ enable: { "force-push": "block", kubernetes: "ask", helm: "ask" }, rules: [{ name: "prod", pattern: "prod", reason: "global prod", action: "ask" }, { name: "vault", pattern: "vault write", reason: "vault" }] });
+	const project = JSON.stringify({ enable: { "force-push": "off", kubernetes: "block", terraform: "ask" }, rules: [{ name: "prod", pattern: "prod", reason: "project prod", action: "block" }, { name: "vault", pattern: "x", action: "off" }] });
+	const rules = rulesOf(global, project);
+	const by = (n: string) => rules.filter((r) => r.name === n).map((r) => `${r.action}@${r.source}`);
+	assert.deepEqual(by("force-push"), [], "project turned it off");
+	assert.deepEqual(by("kubernetes"), ["block@f1"]);
+	assert.deepEqual(by("helm"), ["ask@f0"], "global rule kept");
+	assert.deepEqual(by("terraform"), ["ask@f1"], "project adds");
+	assert.deepEqual(by("prod"), ["block@f1"]);
+	assert.deepEqual(by("vault"), [], "project turned a named custom rule off");
+	// Project "all" overrides the global file's named presets.
+	assert.deepEqual(rulesOf(global, '{"enable": {"all": "off"}}').filter((r) => PRESETS[r.name]), []);
+});
+
+test("guardrails bad config warns and keeps the valid rules", () => {
+	const { layer, warnings } = parseConfig(JSON.stringify({
+		enable: { "force-push": "ask", "no-such": "ask", helm: "maybe" },
+		rules: [{ name: "bad", pattern: "(", reason: "x" }, { name: "good", pattern: "ok-danger", reason: "good" }, "nope", { pattern: "" }, { pattern: "x", action: "deny" }],
+		enabled: {},
+	}), "cfg");
+	const rules = mergeLayers([layer!]);
+	assert.deepEqual(rules.map((r) => r.name), ["force-push", "good"]);
+	for (const w of [/unknown preset "no-such"/, /preset "helm": action/, /rule "bad": bad regex/, /rule 3: must be an object/, /rule 4: "pattern"/, /rule 5: action/, /unknown key "enabled"/]) {
+		assert.ok(warnings.some((x) => w.test(x) && x.startsWith("cfg: ")), String(w));
+	}
+	// Invalid JSON: no layer from that file, a warning, and the other file's rules still apply.
+	const broken = parseConfig("{ enable: ", "p");
+	assert.equal(broken.layer, undefined);
+	assert.match(broken.warnings[0], /^p: invalid JSON .* none of its rules apply until it is fixed/);
+	assert.equal(parseConfig("[]", "p").layer, undefined);
+
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-kit-guard-"));
+	const g = path.join(dir, "global.json"), p = path.join(dir, "project.json");
+	writeFileSync(g, '{"enable": {"kubernetes": "ask"}}');
+	writeFileSync(p, "{ not json");
+	const loaded = loadRules([g, p, path.join(dir, "missing.json")]);
+	assert.deepEqual(loaded.rules.map((r) => r.name), ["kubernetes"]);
+	assert.equal(loaded.warnings.length, 1, "a missing file is not a warning");
+	// An edit applies to the next load.
+	writeFileSync(p, '{"enable": {"helm": "block"}}');
+	assert.deepEqual(loadRules([g, p]).rules.map((r) => r.name), ["kubernetes", "helm"]);
+	assert.deepEqual(loadRules([g, p]).warnings, []);
+	// A directory where the file should be is a warning, not a crash.
+	assert.match(loadRules([dir]).warnings[0], /cannot read/);
+
+	// Each warning is shown once: a UI notice, or stderr without a UI.
+	const notes: string[] = [];
+	const ui = { notify: (m: string) => notes.push(m) } as never;
+	warnOnce(["w-unique-1", "w-unique-1"], { hasUI: true, ui });
+	warnOnce(["w-unique-1"], { hasUI: true, ui });
+	assert.deepEqual(notes, ["pi-kit guardrails: w-unique-1"]);
+});
+
+test("checkCommand: config files, ask vs block, with a UI and headless", async () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-kit-guard-"));
+	const agent = path.join(dir, "agent"), cwd = path.join(dir, "repo");
+	const saved = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = agent;
+	try {
+		assert.deepEqual(configPaths(cwd), [path.join(agent, "extensions/guardrails/config.json"), path.join(cwd, ".pi/guardrails.json")]);
+		const asked: string[] = [];
+		const ctx = (hasUI: boolean, answer = false) => ({ cwd, hasUI, ui: { confirm: async (_t: string, m: string) => (asked.push(m), answer), notify: () => {} } as never });
+		// No config: everything runs, with or without a UI, and nothing is asked.
+		for (const c of ["git worktree remove --force ../wt", "kubectl delete pod x", "gh pr merge 5"]) {
+			assert.equal(await checkCommand(c, false, ctx(true)), undefined, c);
+			assert.equal(await checkCommand(c, false, ctx(false)), undefined, c);
+		}
+		assert.deepEqual(asked, []);
+
+		mkdirSync(path.join(agent, "extensions/guardrails"), { recursive: true });
+		mkdirSync(path.join(cwd, ".pi"), { recursive: true });
+		writeFileSync(path.join(agent, "extensions/guardrails/config.json"), '{"enable": {"pr-merge": "ask", "kubernetes": "ask"}}');
+		writeFileSync(path.join(cwd, ".pi/guardrails.json"), '{"enable": {"kubernetes": "block"}, "rules": [{"pattern": "drop-prod-db", "reason": "drops the prod db", "action": "ask"}]}');
+
+		// ask: the UI decides; headless blocks with the report-it message.
+		assert.equal(await checkCommand("gh pr merge 5", false, ctx(true, true)), undefined);
+		assert.equal(await checkCommand("gh pr merge 5", false, ctx(true, false)), "User declined: merge a pull request (may deploy)");
+		assert.equal(await checkCommand("gh pr merge 5", false, ctx(false)), "Needs user approval (merge a pull request (may deploy)), and no UI is available. Report it to the orchestrator instead.");
+		assert.match((await checkCommand("echo drop-prod-db", false, ctx(false)))!, /Needs user approval \(drops the prod db\)/);
+		// block: blocked with or without a UI, never asked.
+		const n = asked.length;
+		for (const ui of [true, false]) assert.match((await checkCommand("kubectl delete pod x", false, ctx(ui, true)))!, /^Blocked by a guardrails rule \(changes a cluster\)/);
+		assert.equal(asked.length, n);
+		// Everything else runs.
+		assert.equal(await checkCommand("git worktree remove --force ../wt", false, ctx(false)), undefined);
+		// Read-only still blocks mutation, whatever the config says.
+		assert.match((await checkCommand("rm -f x", true, ctx(true, true)))!, /Read-only/);
+	} finally {
+		if (saved === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = saved;
+	}
+});
+
+test("read-only blocks mutation with no config at all", () => {
+	for (const c of ["git commit -m x", "rm x", "echo x > f", "sed -i s/a/b/ f", "git worktree remove ../wt"]) assert.match(commandVerdict(c, true).block!, /Read-only/, c);
 });
 
 test("redact", () => {

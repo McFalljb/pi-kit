@@ -1,10 +1,14 @@
 /**
  * pi-kit guardrails core: best-effort safety rails, not a sandbox.
  *
- * - Confirms dangerous bash commands (destructive git, rm -rf, deploys, cluster/infra changes,
- *   alert silencing, SQL drops). Without a UI (print/json mode, subagent children) they are blocked.
- * - In read-only sessions blocks file edits and mutating bash commands.
- * - Redacts secret-shaped strings from tool output before the model sees it.
+ * - Command rules are opt-in: with no config no command asks or is blocked. The user turns on
+ *   named presets (destructive git, rm -rf, deploys, cluster/infra changes, alert silencing, SQL
+ *   drops, ...) or adds their own regex rules, each with action `ask` or `block`, in
+ *   <agent-dir>/extensions/guardrails/config.json and, per project, <cwd>/.pi/guardrails.json
+ *   (which adds to or overrides the global file). `ask` confirms with a UI; without one (print/json
+ *   mode, subagent children) it blocks. Bad config warns once and keeps the valid rules.
+ * - In read-only sessions blocks file edits and mutating bash commands (always on).
+ * - Redacts secret-shaped strings from tool output before the model sees it (always on).
  *
  * checkCommand() is the one command gate; extensions/shell calls it for its background tools.
  *
@@ -16,37 +20,196 @@
  * Commands the user types with `!` go through user_bash, not tool_call, and are not gated.
  */
 
+import { readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 // Type-only import, so the pure functions here load under plain node for test/unit.test.ts.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-// [pattern, why] — matched against the whole bash command.
-const DANGEROUS: [RegExp, string][] = [
-	[/\brm\b(?=[^|;&]*\s(?:-[a-zA-Z]*[rR]|--recursive))(?=[^|;&]*\s(?:-[a-zA-Z]*f|--force))/, "recursive force delete"],
-	[/\bgit\b[^|;&]*\bpush\b[^|;&]*(?:\s--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b|\s\+\S)/, "force push"],
-	[/\bgit\b[^|;&]*\bpush\b[^|;&]*\b(?:main|master)\b/, "push to main/master (a merge to main may be a production deploy)"],
-	[/\bgh\s+pr\s+merge\b/, "merge a pull request (may deploy)"],
-	[/\bgit\b[^|;&]*\bstash\s+(?:drop|pop|clear)\b/, "drops or pops a stash"],
-	[/\bgit\b[^|;&]*\breset\s+[^|;&]*--hard\b/, "hard reset discards changes"],
-	[/\bgit\b[^|;&]*\bclean\s+-[a-zA-Z]*f/, "git clean deletes untracked files"],
-	[/\bgit\b[^|;&]*\bbranch\s+[^|;&]*-D\b/, "force-deletes a branch"],
-	[/\bgit\b[^|;&]*\b(?:checkout|restore)\s+(?:--\s+)?\.(?:\s|$)/, "discards working-tree changes"],
-	[/\bgit\b[^|;&]*\bworktree\s+remove\b[^|;&]*--force\b/, "force-removes a worktree"],
-	[/\bkubectl\b[^|;&]*\b(?:delete|apply|replace|patch|scale|drain|cordon|edit|rollout\s+(?:restart|undo)|set\s+image)\b/, "changes a cluster"],
-	[/\bhelm\s+(?:install|upgrade|uninstall|rollback|delete)\b/, "changes a Helm release"],
-	[/\b(?:terraform|tofu)\s+(?:apply|destroy|import|state\s+rm)\b/, "changes infrastructure"],
-	[/\bdocker\b[^|;&]*\b(?:down|rm|rmi|prune|kill)\b/, "removes containers, images or volumes"],
-	[/\bsystemctl\s+(?:restart|stop|disable|kill)\b/, "restarts or stops a service"],
-	[/(?:^|[;&|]\s*)(?:\S*\/)?deploy[\w.-]*(?:\s|$)|\b(?:make|just|npm\s+run|pnpm|yarn)\s+deploy\b/, "runs a deploy"],
-	[/\b(?:amtool\s+silence|api\/v[12]\/silences?|alerts?\s+ack)\b/i, "silences or acknowledges alerts"],
-	[/\b(?:drop|truncate)\s+(?:table|database|schema)\b|\bdelete\s+from\b/i, "destructive SQL"],
-	[/\b(?:mkfs|dd\s+if=)/, "writes raw disks"],
-	[/\b(?:npm|pnpm|yarn)\s+publish\b/, "publishes a package"],
-	[/\bcurl\b[^|]*\|\s*(?:ba|z)?sh\b/, "pipes a download into a shell"],
-	// ssh and sudo are intentionally not gated: they prompted on every remote or root command and
-	// blocked headless children outright. Remote and root work is governed by AGENTS.md instead.
-];
+// Opt-in presets: name -> [pattern, why], each matched against the whole bash command.
+// None is on unless the user's config enables it (e.g. "enable": {"force-push": "ask"}).
+export const PRESETS: Record<string, [RegExp, string][]> = {
+	"rm-rf": [[/\brm\b(?=[^|;&]*\s(?:-[a-zA-Z]*[rR]|--recursive))(?=[^|;&]*\s(?:-[a-zA-Z]*f|--force))/, "recursive force delete"]],
+	"force-push": [[/\bgit\b[^|;&]*\bpush\b[^|;&]*(?:\s--force(?:-with-lease)?\b|\s-[a-zA-Z]*f\b|\s\+\S)/, "force push"]],
+	"push-main": [[/\bgit\b[^|;&]*\bpush\b[^|;&]*\b(?:main|master)\b/, "push to main/master (a merge to main may be a production deploy)"]],
+	"pr-merge": [[/\bgh\s+pr\s+merge\b/, "merge a pull request (may deploy)"]],
+	"git-destructive": [
+		[/\bgit\b[^|;&]*\bstash\s+(?:drop|pop|clear)\b/, "drops or pops a stash"],
+		[/\bgit\b[^|;&]*\breset\s+[^|;&]*--hard\b/, "hard reset discards changes"],
+		[/\bgit\b[^|;&]*\bclean\s+-[a-zA-Z]*f/, "git clean deletes untracked files"],
+		[/\bgit\b[^|;&]*\bbranch\s+[^|;&]*-D\b/, "force-deletes a branch"],
+		[/\bgit\b[^|;&]*\b(?:checkout|restore)\s+(?:--\s+)?\.(?:\s|$)/, "discards working-tree changes"],
+		[/\bgit\b[^|;&]*\bworktree\s+remove\b[^|;&]*--force\b/, "force-removes a worktree"],
+	],
+	kubernetes: [[/\bkubectl\b[^|;&]*\b(?:delete|apply|replace|patch|scale|drain|cordon|edit|rollout\s+(?:restart|undo)|set\s+image)\b/, "changes a cluster"]],
+	helm: [[/\bhelm\s+(?:install|upgrade|uninstall|rollback|delete)\b/, "changes a Helm release"]],
+	terraform: [[/\b(?:terraform|tofu)\s+(?:apply|destroy|import|state\s+rm)\b/, "changes infrastructure"]],
+	docker: [[/\bdocker\b[^|;&]*\b(?:down|rm|rmi|prune|kill)\b/, "removes containers, images or volumes"]],
+	systemctl: [[/\bsystemctl\s+(?:restart|stop|disable|kill)\b/, "restarts or stops a service"]],
+	deploy: [[/(?:^|[;&|]\s*)(?:\S*\/)?deploy[\w.-]*(?:\s|$)|\b(?:make|just|npm\s+run|pnpm|yarn)\s+deploy\b/, "runs a deploy"]],
+	alerts: [[/\b(?:amtool\s+silence|api\/v[12]\/silences?|alerts?\s+ack)\b/i, "silences or acknowledges alerts"]],
+	"sql-destructive": [[/\b(?:drop|truncate)\s+(?:table|database|schema)\b|\bdelete\s+from\b/i, "destructive SQL"]],
+	"raw-disk": [[/\b(?:mkfs|dd\s+if=)/, "writes raw disks"]],
+	"npm-publish": [[/\b(?:npm|pnpm|yarn)\s+publish\b/, "publishes a package"]],
+	"curl-pipe-sh": [[/\bcurl\b[^|]*\|\s*(?:ba|z)?sh\b/, "pipes a download into a shell"]],
+	// ssh and sudo have no preset: they prompted on every remote or root command and blocked
+	// headless children outright. Remote and root work is governed by AGENTS.md instead.
+};
+
+export type Action = "ask" | "block";
+/** One active command rule; `source` says where it was turned on (shown by /guardrails). */
+export interface Rule {
+	name: string;
+	pattern: RegExp;
+	reason: string;
+	action: Action;
+	source: string;
+}
+
+type Setting = Action | "off";
+const SETTINGS = new Set(["ask", "block", "off"]);
+interface CustomRule {
+	pattern: RegExp;
+	reason: string;
+	action: Setting;
+}
+/** One parsed config file. */
+export interface Layer {
+	source: string;
+	enable: Record<string, Setting>;
+	rules: [string, CustomRule][];
+}
+
+/**
+ * Parses one config file. Every problem becomes a warning and only the bad entry is skipped;
+ * invalid JSON yields no layer (nothing in that file can be trusted).
+ *
+ * {"enable": {"<preset>" | "all": "ask" | "block" | "off"},
+ *  "rules": [{"name"?, "pattern", "reason"?, "action"?: "ask" | "block" | "off", "flags"?}]}
+ */
+export function parseConfig(text: string, source: string): { layer?: Layer; warnings: string[] } {
+	const warnings: string[] = [];
+	const warn = (m: string) => warnings.push(`${source}: ${m}`);
+	let raw: unknown;
+	try {
+		raw = JSON.parse(text);
+	} catch (e) {
+		warn(`invalid JSON (${(e as Error).message}); none of its rules apply until it is fixed`);
+		return { warnings };
+	}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+		warn("expected a JSON object; none of its rules apply until it is fixed");
+		return { warnings };
+	}
+	const obj = raw as Record<string, unknown>;
+	for (const k of Object.keys(obj)) if (k !== "enable" && k !== "rules" && !k.startsWith("//")) warn(`unknown key "${k}" ignored (expected "enable" and "rules")`);
+	const layer: Layer = { source, enable: {}, rules: [] };
+
+	if (obj.enable !== undefined) {
+		if (!obj.enable || typeof obj.enable !== "object" || Array.isArray(obj.enable)) warn(`"enable" must be an object like {"force-push": "ask"}; ignored`);
+		else
+			for (const [name, v] of Object.entries(obj.enable as Record<string, unknown>)) {
+				if (name !== "all" && !(name in PRESETS)) warn(`unknown preset "${name}" ignored (presets: ${Object.keys(PRESETS).join(", ")})`);
+				else if (typeof v !== "string" || !SETTINGS.has(v)) warn(`preset "${name}": action must be "ask", "block" or "off"; ignored`);
+				else layer.enable[name] = v as Setting;
+			}
+	}
+
+	if (obj.rules !== undefined) {
+		if (!Array.isArray(obj.rules)) warn(`"rules" must be an array; ignored`);
+		else
+			obj.rules.forEach((r: unknown, i: number) => {
+				const at = `rule ${i + 1}`;
+				if (!r || typeof r !== "object" || Array.isArray(r)) return warn(`${at}: must be an object; skipped`);
+				const { name, pattern, reason, action = "ask", flags = "" } = r as Record<string, unknown>;
+				const label = typeof name === "string" && name ? `rule "${name}"` : at;
+				if (typeof pattern !== "string" || !pattern) return warn(`${label}: "pattern" must be a non-empty string; skipped`);
+				if (typeof action !== "string" || !SETTINGS.has(action)) return warn(`${label}: action must be "ask", "block" or "off"; skipped`);
+				if (typeof flags !== "string") return warn(`${label}: "flags" must be a string; skipped`);
+				if (reason !== undefined && typeof reason !== "string") return warn(`${label}: "reason" must be a string; skipped`);
+				let re: RegExp;
+				try {
+					// g and y make test() stateful; drop them.
+					re = new RegExp(pattern, flags.replace(/[gy]/g, ""));
+				} catch (e) {
+					return warn(`${label}: bad regex (${(e as Error).message}); skipped, the other rules still apply`);
+				}
+				const key = typeof name === "string" && name ? name : `${source}#${i + 1}`;
+				layer.rules.push([key, { pattern: re, reason: (reason as string | undefined) || `matches /${pattern}/`, action: action as Setting }]);
+			});
+	}
+	return { layer, warnings };
+}
+
+/**
+ * Active rules from layers in order (global, then project): for a preset, the last layer that sets
+ * it (by name, else through "all") wins; a custom rule with the same name as an earlier one
+ * replaces it, and "off" removes it.
+ */
+export function mergeLayers(layers: Layer[]): Rule[] {
+	const rules: Rule[] = [];
+	for (const [name, patterns] of Object.entries(PRESETS)) {
+		let set: Setting = "off";
+		let source = "";
+		for (const l of layers) {
+			const v = l.enable[name] ?? l.enable.all;
+			if (v) [set, source] = [v, l.source];
+		}
+		if (set !== "off") for (const [pattern, reason] of patterns) rules.push({ name, pattern, reason, action: set, source });
+	}
+	const custom = new Map<string, Rule>();
+	for (const l of layers)
+		for (const [name, r] of l.rules) {
+			custom.delete(name);
+			if (r.action !== "off") custom.set(name, { name, pattern: r.pattern, reason: r.reason, action: r.action, source: l.source });
+		}
+	return [...rules, ...custom.values()];
+}
+
+function agentDir(): string {
+	const e = process.env.PI_CODING_AGENT_DIR;
+	if (!e) return path.join(os.homedir(), ".pi", "agent");
+	return e === "~" ? os.homedir() : e.startsWith("~/") ? path.join(os.homedir(), e.slice(2)) : e;
+}
+
+/** The config files, in merge order: global, then the project's (relative to the session cwd). */
+export function configPaths(cwd: string): string[] {
+	return [path.join(agentDir(), "extensions", "guardrails", "config.json"), path.join(cwd, ".pi", "guardrails.json")];
+}
+
+// Parsed files by path, re-parsed only when the text changes, so an edit applies to the next command.
+const parsed = new Map<string, { text: string; layer?: Layer; warnings: string[] }>();
+
+/** Reads and merges the config files. A missing file is no layer; nothing here throws. */
+export function loadRules(files: string[]): { rules: Rule[]; warnings: string[] } {
+	const layers: Layer[] = [];
+	const warnings: string[] = [];
+	for (const f of files) {
+		let text: string;
+		try {
+			text = readFileSync(f, "utf8");
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`${f}: cannot read (${(e as Error).message}); none of its rules apply`);
+			continue;
+		}
+		let p = parsed.get(f);
+		if (!p || p.text !== text) parsed.set(f, (p = { text, ...parseConfig(text, f) }));
+		if (p.layer) layers.push(p.layer);
+		warnings.push(...p.warnings);
+	}
+	return { rules: mergeLayers(layers), warnings };
+}
+
+const warned = new Set<string>();
+/** Shows each config warning once per process: a UI notice, or stderr without a UI. */
+export function warnOnce(warnings: string[], ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
+	for (const w of warnings) {
+		if (warned.has(w)) continue;
+		warned.add(w);
+		if (ctx.hasUI) ctx.ui.notify(`pi-kit guardrails: ${w}`, "warning");
+		else console.error(`pi-kit guardrails: ${w}`);
+	}
+}
 
 // Mutating commands blocked outright in read-only children (reviewers).
 const MUTATING: RegExp[] = [
@@ -86,26 +249,46 @@ export function redact(s: string, assignments: boolean): string {
 	return out;
 }
 
-/** Pure verdict for one shell command: a block reason, or the reasons it needs confirmation. */
-export function commandVerdict(cmd: string, readonly: boolean): { block?: string; confirm: string[] } {
+/**
+ * Pure verdict for one shell command against the active rules: a block reason, or the reasons it
+ * needs confirmation. Read-only sessions block mutating commands whatever the rules say.
+ */
+export function commandVerdict(cmd: string, readonly: boolean, rules: Rule[] = []): { block?: string; confirm: string[] } {
 	if (readonly && MUTATING.some((r) => r.test(cmd))) {
 		return { block: "Read-only session: mutating commands are not allowed.", confirm: [] };
 	}
-	return { confirm: DANGEROUS.filter(([r]) => r.test(cmd)).map(([, why]) => why) };
+	const hits = rules.filter((r) => r.pattern.test(cmd));
+	const blocked = hits.filter((r) => r.action === "block").map((r) => r.reason);
+	if (blocked.length) return { block: `Blocked by a guardrails rule (${blocked.join("; ")}). Report it to the orchestrator or ask the user instead.`, confirm: [] };
+	return { confirm: hits.map((r) => r.reason) };
 }
 
 /**
  * The gate every shell command goes through (the `bash` tool here, and the kit's background shell
  * tools in extensions/shell). Returns a block reason, or undefined when the command may run.
+ * Rules come from the config files (configPaths), read again for each command.
  */
-export async function checkCommand(cmd: string, readonly: boolean, ctx: Pick<ExtensionContext, "hasUI" | "ui">): Promise<string | undefined> {
-	const v = commandVerdict(cmd, readonly);
+export async function checkCommand(cmd: string, readonly: boolean, ctx: Pick<ExtensionContext, "hasUI" | "ui" | "cwd">): Promise<string | undefined> {
+	const { rules, warnings } = loadRules(configPaths(ctx.cwd));
+	warnOnce(warnings, ctx);
+	const v = commandVerdict(cmd, readonly, rules);
 	if (v.block) return v.block;
 	if (v.confirm.length === 0) return undefined;
 	const why = v.confirm.join("; ");
 	if (!ctx.hasUI) return `Needs user approval (${why}), and no UI is available. Report it to the orchestrator instead.`;
 	const ok = await ctx.ui.confirm("Allow this command?", `${cmd}\n\nReason: ${why}`);
 	return ok ? undefined : `User declined: ${why}`;
+}
+
+/** Text for /guardrails: the files read, the active rules and where each came from. */
+export function describeRules(files: string[], rules: Rule[], warnings: string[], readonly: boolean): string {
+	const out = [`Guardrails config (global, then project; project wins): ${files.join(", ")}`];
+	if (readonly) out.push("Read-only session: mutating commands and file edits are blocked.");
+	if (rules.length === 0) out.push("No command rules are on: no command asks or is blocked.");
+	else for (const r of rules) out.push(`- ${r.action} ${r.name}: ${r.reason} [${r.source}]`);
+	if (warnings.length) out.push("Warnings:", ...warnings.map((w) => `- ${w}`));
+	out.push(`Presets: ${Object.keys(PRESETS).join(", ")} (or "all"). Example: {"enable": {"force-push": "ask"}}`);
+	return out.join("\n");
 }
 
 // The kit's background shell tools (extensions/shell). They gate their own commands with
@@ -117,6 +300,18 @@ export function guardrails(readonly: boolean): (pi: ExtensionAPI) => void {
 }
 
 function register(pi: ExtensionAPI, readonly: boolean): void {
+	// Show config problems at startup, not only at the first command.
+	pi.on("session_start", (_e, ctx) => warnOnce(loadRules(configPaths(ctx.cwd)).warnings, ctx));
+
+	pi.registerCommand("guardrails", {
+		description: "Show the active guardrails command rules and where they come from",
+		handler: async (_args, ctx) => {
+			const files = configPaths(ctx.cwd);
+			const { rules, warnings } = loadRules(files);
+			ctx.ui.notify(describeRules(files, rules, warnings, readonly), warnings.length ? "warning" : "info");
+		},
+	});
+
 	pi.on("tool_call", async (event, ctx) => {
 		if (readonly && (event.toolName === "edit" || event.toolName === "write")) {
 			return { block: true, reason: "This is a read-only session; file changes are not allowed." };

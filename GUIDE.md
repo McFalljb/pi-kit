@@ -33,10 +33,11 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   tool, and its guardrails entry point (`extensions/guardrails/readonly.ts`) blocks mutating bash.
   Its model is set per call (`model: "provider/id:high"`) or pinned once with
   `subagents.agentOverrides` in settings.
-- **Guardrails are an extension** (`extensions/guardrails`). In the TUI, dangerous commands ask
-  for confirmation. Without a UI (headless runs, background children) they are blocked and the
-  child reports them. Whether a foreground child inside the TUI gets the dialog or a block is
-  untested. Secret files and credential commands (`.env`, sops, aws sso, teleport, gcloud,
+- **Guardrails are an extension** (`extensions/guardrails`). Command rules are opt-in: with no
+  config no command asks or is blocked (see "Guardrail rules" in section 3). A rule set to `ask`
+  asks in the TUI; without a UI (headless runs, background children) it blocks and the child
+  reports it. A rule set to `block` always blocks. Whether a foreground child inside the TUI gets
+  the dialog or a block is untested. Secret files and credential commands (`.env`, sops, aws sso, teleport, gcloud,
   kubectl) are not blocked: agents use them when a task needs them and follow the AGENTS.md rule
   never to expose secret values. Token-shaped output is redacted.
   These are pattern matches, not a sandbox.
@@ -101,7 +102,7 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     `+N more · /shells`; it never shows output lines. The footer counts them, e.g.
     `2 shells · 1 monitor · 1 timer · /shells`.
   - Every command goes through the guardrails' `checkCommand`, the same gate as `bash`
-    (confirm with a UI, block without).
+    (the same opt-in rules: `ask` confirms with a UI and blocks without, `block` blocks).
     Each output line is redacted like bash output before it is cut to length, so a cut cannot
     leave a token too short to be recognised; the lines of a private key block are dropped and
     reported once as `[private key block redacted]`. Read-only sessions do not register the
@@ -273,6 +274,43 @@ Pin the reviewer to another provider with `install.sh --reviewer-model provider/
 
 `PI_KIT_READONLY=1 pi` starts a session whose guardrails are read-only (no edits, no mutating
 bash, no background shells), which is handy for a look-only session.
+
+**Guardrail rules.** No command needs confirmation until you turn a rule on. Two files, both
+optional, read again before every command (an edit applies to the next one):
+`<agent-dir>/extensions/guardrails/config.json` (global; `<agent-dir>` is `~/.pi/agent` or
+`$PI_CODING_AGENT_DIR`) and `.pi/guardrails.json` in the session's working directory (per
+project). The project file adds to the global one and wins where both set the same preset or
+rule name, including `"off"`.
+```json
+{
+  "enable": { "force-push": "ask", "push-main": "ask", "kubernetes": "block" },
+  "rules": [
+    { "name": "prod-context", "pattern": "--context[= ]prod\\b", "reason": "touches the prod cluster", "action": "block" },
+    { "pattern": "\\bvault\\s+write\\b", "reason": "writes a Vault secret" }
+  ]
+}
+```
+- `enable` maps a preset (or `"all"`) to `"ask"`, `"block"` or `"off"`. A named preset beats
+  `"all"` in the same file. Presets: `git-destructive` (stash drop/pop/clear, `reset --hard`,
+  `clean -f`, `branch -D`, `checkout .`/`restore .`, `worktree remove --force`), `force-push`,
+  `push-main`, `pr-merge` (`gh pr merge`), `rm-rf`, `kubernetes` (kubectl delete, apply, patch,
+  scale, drain, rollout restart, ...), `helm` (install, upgrade, uninstall, rollback),
+  `terraform` (and `tofu` apply, destroy, import, state rm), `docker` (down, rm, rmi, prune,
+  kill), `systemctl` (restart, stop, disable, kill), `deploy` (`deploy*` scripts, `make deploy`,
+  `npm run deploy`, ...), `alerts` (amtool silence, alert ack), `sql-destructive`, `raw-disk`,
+  `npm-publish`, `curl-pipe-sh`. The patterns are `PRESETS` in `extensions/guardrails/core.ts`.
+- `rules` are your own: `pattern` (a JavaScript regex matched against the whole command; escape
+  backslashes in JSON), `reason` (shown in the dialog or block message), `action` (`"ask"`,
+  the default, `"block"` or `"off"`), optional `flags` (e.g. `"i"`) and `name` (lets the project
+  file replace or turn off a global rule of the same name).
+- `ask` shows a confirm dialog; without a UI it blocks with "Needs user approval (...) ... Report
+  it to the orchestrator instead." `block` always blocks. If both match, block wins.
+- Bad config never turns guardrails off silently and never stops pi: each problem (invalid JSON,
+  a bad regex, an unknown preset or action) is shown once as a warning (stderr without a UI),
+  only the bad entry is skipped, and the other rules apply. A file with invalid JSON contributes
+  nothing until it is fixed; the other file still applies.
+- `/guardrails` lists the active rules, the file each came from, and any warnings.
+- Read-only mode and secret redaction do not depend on this config.
 
 ### Updating
 
@@ -447,8 +485,9 @@ the column moves only the column.
   the bridge) to see where it waits.
 - **No plan mode.** pi has none built in; ask for a plan before edits, or use read-only mode.
   `@plannotator/pi-extension` is optional (heavy, opens a browser and a local server).
-- **No CI-side enforcement.** The CI gate is an `AGENTS.md` rule the parent follows plus a guardrail that
-  asks before `gh pr merge`; branch protection on the host is what actually enforces it.
+- **No CI-side enforcement.** The CI gate is an `AGENTS.md` rule the parent follows (plus the
+  `pr-merge` guardrail preset, if you turn it on); branch protection on the host is what
+  actually enforces it.
 
 ## 6. Sources
 

@@ -108,7 +108,9 @@ In a scratch git repo, start `pi` and check:
 2. "run `sleep 5; echo done` in the background" uses `bash_bg`, the footer shows
    `1 shell · /shells` and a widget line above the editor shows it, and a notice with exit code 0 arrives about 5 s later without prompting.
 3. `/shells` lists it and offers to stop a running task.
-4. "run `git stash drop`" asks for confirmation (decline it).
+4. "run `git stash drop`" runs without asking (guardrails are opt-in). Then put
+   `{"enable": {"git-destructive": "ask"}}` in `~/.pi/agent/extensions/guardrails/config.json`:
+   `/guardrails` lists it, and "run `git stash drop`" asks for confirmation (decline it).
 5. "read .env" (create a dummy one first) is blocked.
 6. "start a kit.worker in the background that lists the five largest files here" returns a run
    id at once and a report later.
