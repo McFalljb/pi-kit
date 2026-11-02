@@ -830,7 +830,8 @@ test("desk bridge: the attachment goes with the next message typed in pi, after 
 test("desk bridge: a slash command keeps its text; the attachment waits for the next message", () => {
 	const a = { id: 3, text: "<pi-desk-comments>", images: [] };
 	assert.equal(attachInput({ text: "/review the diff", source: "interactive" }, a), undefined, "a prompt template");
-	assert.equal(attachInput({ text: "  /skill:foo go", source: "interactive" }, a), undefined, "a skill, after spaces");
+	assert.equal(attachInput({ text: "/skill:foo go", source: "interactive" }, a), undefined, "a skill");
+	assert.ok(attachInput({ text: " /x", source: "interactive" }, a), "pi's own check: only a leading /");
 	const t = new Attacher();
 	t.set(a);
 	assert.equal(t.input({ text: "/review", source: "interactive" }), undefined);
@@ -839,18 +840,18 @@ test("desk bridge: a slash command keeps its text; the attachment waits for the 
 });
 
 const userMsg = (content: unknown) => ({ role: "user", content });
-test("desk bridge: pi.attached only once the message carrying the comments starts", () => {
+test("desk bridge: an idle prompt's pi.attached once its message starts", () => {
 	const t = new Attacher();
 	const a = { id: 5, text: "<pi-desk-comments>A5</pi-desk-comments>", images: [] };
 	t.set(a);
 	const out = t.input({ text: "look", source: "interactive" });
-	assert.ok(out);
+	assert.deepEqual(out, { text: "look\n\n<pi-desk-comments>A5</pi-desk-comments>", images: [] }, "no ack yet");
 	assert.equal(t.held?.id, 5, "not acked at input: the message may never start");
-	assert.deepEqual(t.started({ role: "assistant", content: [{ type: "text", text: out.text }] }), [], "not a user message");
+	assert.deepEqual(t.started({ role: "assistant", content: [{ type: "text", text: out!.text }] }), [], "not a user message");
 	assert.deepEqual(t.started(userMsg("something else")), [], "another message");
-	assert.deepEqual(t.started(userMsg([{ type: "text", text: out.text }, { type: "image", data: PNG, mimeType: "image/png" }])), [5]);
+	assert.deepEqual(t.started(userMsg([{ type: "text", text: out!.text }, { type: "image", data: PNG, mimeType: "image/png" }])), [5]);
 	assert.equal(t.held, undefined, "delivered: dropped");
-	assert.deepEqual(t.started(userMsg(out.text)), [], "acked once");
+	assert.deepEqual(t.started(userMsg(out!.text)), [], "acked once");
 });
 
 test("desk bridge: a message that never starts keeps the comments for the next one", () => {
@@ -862,18 +863,25 @@ test("desk bridge: a message that never starts keeps the comments for the next o
 	assert.deepEqual(t.started(userMsg(again!.text)), [6]);
 });
 
-test("desk bridge: queued messages carry the comments once; pi-desk replacing them meanwhile", () => {
+test("desk bridge: a queued message takes the comments and acks at once; the next one goes alone", () => {
 	const t = new Attacher();
 	t.set({ id: 7, text: "C7", images: [] });
-	const q1 = t.input({ text: "one", source: "interactive", streamingBehavior: "followUp" });
-	assert.ok(q1);
-	assert.equal(t.input({ text: "two", source: "interactive", streamingBehavior: "followUp" }), undefined, "already on a queued message");
-	t.set({ id: 8, text: "C8", images: [] }); // an edit in pi-desk: a new attachment
-	const q3 = t.input({ text: "three", source: "interactive", streamingBehavior: "steer" });
-	assert.deepEqual(q3, { text: "three\n\nC8", images: [] });
-	assert.deepEqual(t.started(userMsg(q1!.text)), [7], "the old one is acked when its message starts");
-	assert.equal(t.held?.id, 8, "the newer one stays");
-	assert.deepEqual(t.started(userMsg(q3!.text)), [8]);
+	assert.deepEqual(t.input({ text: "one", source: "interactive", streamingBehavior: "followUp" }), { text: "one\n\nC7", images: [], ack: 7 });
+	assert.equal(t.held, undefined, "pi has the message: pi-desk clears them now (no Send now, Clear or Edit can double them)");
+	assert.equal(t.input({ text: "two", source: "interactive", streamingBehavior: "steer" }), undefined);
+});
+
+test("desk bridge: a message restored with the block (Esc) gets only the images again", () => {
+	const t = new Attacher();
+	const img = { type: "image" as const, data: PNG, mimeType: "image/png" };
+	t.set({ id: 10, text: "C10", images: [img] });
+	assert.deepEqual(t.input({ text: "mine\n\nC10", source: "interactive" }), { text: "mine\n\nC10", images: [img] });
+});
+
+test("desk bridge: a started message with the held text drops it", () => {
+	const t = new Attacher();
+	t.set({ id: 11, text: "C11", images: [] });
+	assert.deepEqual(t.started(userMsg("x\n\nC11")), [11]);
 	assert.equal(t.held, undefined);
 });
 

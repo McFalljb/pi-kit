@@ -158,7 +158,9 @@ export function parseAttach(m: Record<string, any>): Attachment | string {
  * skills after this hook, and the block would end up in their arguments).
  */
 export function attachInput(e: { text: string; images?: Image[]; source: string }, a: Attachment | undefined): { text: string; images: Image[] } | undefined {
-	if (!a || e.source !== "interactive" || e.text.trimStart().startsWith("/")) return undefined;
+	if (!a || e.source !== "interactive" || e.text.startsWith("/")) return undefined; // pi's own check
+	// restored from pi's queue (Esc) with the block already in it: only the images again
+	if (e.text.includes(a.text)) return { text: e.text, images: [...(e.images ?? []), ...a.images] };
 	return { text: e.text.trim() ? `${e.text}\n\n${a.text}` : a.text, images: [...(e.images ?? []), ...a.images] };
 }
 
@@ -169,17 +171,15 @@ function messageText(content: unknown): string {
 	return content.map((p) => (p?.type === "text" && typeof p.text === "string" ? p.text : "")).join("\n");
 }
 
-const RIDING_MAX = 8; // attachments put on messages that have not started yet, kept for their ack
-
 /**
- * pi-desk's pending comments in the bridge: what `pi.attach` holds, and the attachments put on a
- * message the user typed that has not started yet. pi.attached goes only once that message starts
- * (`started`, from pi's `message_start`): a message pi refuses (no model, no auth) or another
- * extension takes never starts, and the comments go with the next one instead.
+ * pi-desk's pending comments in the bridge: what `pi.attach` holds. A message queued while pi works
+ * takes them and acks at once (pi has it; Esc puts its text, block included, back in the editor),
+ * so pi-desk stops showing them pending (Send now, Clear or Edit cannot double them). An idle
+ * prompt acks once its message starts (`started`, from pi's `message_start`): pi may still refuse
+ * it (no model, no auth) or another extension take it, and then the comments go with the next.
  */
 export class Attacher {
 	held: Attachment | undefined;
-	private riding: { id: string | number; text: string }[] = [];
 
 	/** pi.attach: replaces what is held. */
 	set(a: Attachment) {
@@ -189,33 +189,21 @@ export class Attacher {
 	clear() {
 		this.held = undefined;
 	}
-	/**
-	 * The input transform for the user's message (attachInput), or undefined. A message queued
-	 * while pi works (streamingBehavior) takes an attachment once: a second queued message does not
-	 * repeat it.
-	 */
-	input(e: { text: string; images?: Image[]; source: string; streamingBehavior?: string }) {
+	/** The input transform for the user's message (attachInput), with `ack` for a queued one. */
+	input(e: { text: string; images?: Image[]; source: string; streamingBehavior?: string }): { text: string; images: Image[]; ack?: string | number } | undefined {
 		const a = this.held;
 		const out = attachInput(e, a);
 		if (!out || !a) return undefined;
-		const on = this.riding.some((r) => r.id === a.id);
-		if (on && e.streamingBehavior) return undefined;
-		if (!on) {
-			this.riding.push({ id: a.id, text: a.text });
-			if (this.riding.length > RIDING_MAX) this.riding.shift();
-		}
-		return out;
+		if (!e.streamingBehavior) return out;
+		this.held = undefined;
+		return { ...out, ack: a.id };
 	}
-	/** A message started (pi's message_start): the attachments it carries, now delivered (ack them). */
+	/** A message started (pi's message_start): the held attachment if it carries it (ack it). */
 	started(message: { role?: string; content?: unknown }): (string | number)[] {
-		if (message?.role !== "user") return [];
-		const text = messageText(message.content);
-		const done = this.riding.filter((r) => text.includes(r.text));
-		if (!done.length) return [];
-		this.riding = this.riding.filter((r) => !done.includes(r));
-		const ids = done.map((r) => r.id);
-		if (this.held && ids.includes(this.held.id)) this.held = undefined;
-		return ids;
+		const a = this.held;
+		if (!a || message?.role !== "user" || !messageText(message.content).includes(a.text)) return [];
+		this.held = undefined;
+		return [a.id];
 	}
 }
 

@@ -20,8 +20,9 @@
  *   the result comes after it).
  * - Holds pi-desk's pending comments (`pi.attach` replaces them, `pi.attach_clear` drops them, and
  *   so does a dropped connection) and adds them to the next message the user types in pi (the
- *   `input` hook: text after the user's, images after theirs; not a `/` command), then, once that
- *   message starts (`message_start`), tells pi-desk `pi.attached {attachment_id}` so it clears them.
+ *   `input` hook: text after the user's, images after theirs; not a `/` command), then tells
+ *   pi-desk `pi.attached {attachment_id}` so it clears them: at once for a message queued while pi
+ *   works, once it starts (`message_start`) for one sent while idle.
  *   pi-desk sends them again (or clears them) after every handshake, so a reload loses nothing.
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
@@ -269,11 +270,14 @@ export default function (pi: ExtensionAPI) {
 		connect();
 		subagentsChanged();
 	});
-	// The user's next typed message takes pi-desk's pending comments; once that message starts
-	// (not if pi refuses it or another extension takes it), pi.attached tells pi-desk to clear them.
+	// The user's next typed message takes pi-desk's pending comments; pi.attached tells pi-desk to
+	// clear them (Attacher: at once if queued, else when the message starts).
 	pi.on("input", (e) => {
 		const out = attach.input(e);
-		return out ? { action: "transform", ...out } : { action: "continue" };
+		if (!out) return { action: "continue" };
+		const { ack, ...transform } = out;
+		if (ack !== undefined) acks.push(ack), flushAcks(); // queued: pi has it
+		return { action: "transform", ...transform };
 	});
 	pi.on("message_start", (e) => {
 		const ids = attach.started(e.message as { role?: string; content?: unknown });

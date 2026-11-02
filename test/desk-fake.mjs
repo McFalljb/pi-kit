@@ -455,7 +455,7 @@ try {
 	r = await request("pi.prompt", { text: "x", images: [{ mime: "image/png", data: "%%%" }] });
 	result("pi.prompt with a bad image refused", r.ok === false && /base64/.test(r.error), JSON.stringify(r));
 	const acked = (from) => got.slice(from).filter((g) => g.m.type === "pi.attached").map((g) => g.m.attachment_id);
-	// pi.attached waits until the message carrying the comments starts: queued behind a run here
+	// a message queued behind a run takes the comments and acks at once (pi has it)
 	r = await request("pi.attach", { attachment_id: 46, text: "ATTACH-46" });
 	mark = got.length;
 	await request("pi.prompt", { text: `Steps:\n${step("bash", { command: "sleep 3; echo slow." })}` });
@@ -463,10 +463,9 @@ try {
 	await sleep(300);
 	proc.stdin.write("typed-queued please\r");
 	await sleep(1200);
-	result("no pi.attached while the message with the comments waits in pi's queue", acked(mark).length === 0, acked(mark).join());
-	await until("pi.attached once the queued message starts", (m) => m.type === "pi.attached" && m.attachment_id === 46, 20_000, mark);
+	result("pi.attached at once for a queued message, before the run ends", acked(mark).join() === "46" && !got.slice(qw + 1).some((g) => isStatus(g.m, "idle")), acked(mark).join());
 	await until("idle after the queued message", (m) => isStatus(m, "idle"), 20_000, qw);
-	// a slash command (a prompt template) and a message another extension takes: the comments wait
+	// a slash command (a prompt template) and an idle message another extension takes: the comments wait
 	r = await request("pi.attach", { attachment_id: 47, text: "ATTACH-47" });
 	mark = got.length;
 	await typed("/deskt please");
