@@ -259,8 +259,11 @@ export class CommandCalls {
 		this.early.delete(rid);
 		this.sendCancel(rid);
 	}
-	/** The caller gave up: end it here at once, and stop it in pi-desk (now, or once its request id comes). */
-	cancel(id: string) {
+	/**
+	 * We gave up on it (the caller cancelled, or it timed out): end it here at once with `o`, and stop
+	 * it in pi-desk (now, or once its request id comes).
+	 */
+	cancel(id: string, o: CommandOutcome = { error: "cancelled" }) {
 		const call = this.byId.get(id);
 		if (!call) return;
 		if (call.rid !== undefined) this.cancelRid(call.rid);
@@ -268,7 +271,7 @@ export class CommandCalls {
 			this.cancelledIds.add(id);
 			if (this.cancelledIds.size > 32) this.cancelledIds.delete(this.cancelledIds.values().next().value!);
 		}
-		this.end(id, { error: "cancelled" });
+		this.end(id, o);
 	}
 	/** Waits for line `id`'s outcome. */
 	start(id: string, done: (o: CommandOutcome) => void) {

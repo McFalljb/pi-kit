@@ -30,7 +30,7 @@
  *   {requestId, command, timeoutMs?} on pi.events, answered on `kit:desk:command:reply:<requestId>`
  *   with {result} (a long command's `finished` result) or {error}; `kit:desk:command:cancel`
  *   {requestId} stops waiting and sends pi-desk a `cancel` line for a long command's request id
- *   (once that id is known); its late `finished` is dropped. Not connected: an error at once.
+ *   (once that id is known), as does a call's timeout; its late `finished` is dropped. Not connected: an error at once.
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
  */
@@ -272,7 +272,7 @@ export default function (pi: ExtensionAPI) {
 		if (!sock || !ready || sock.destroyed || closed) return answer({ error: "Not connected to pi-desk (it reconnects on its own; try again shortly)." });
 		const id = `b${++seq}`;
 		const ms = Number(req.timeoutMs) > 0 ? Number(req.timeoutMs) : COMMAND_TIMEOUT_MS;
-		const timer = setTimeout(() => calls.end(id, { error: `pi-desk did not answer within ${Math.round(ms / 1000)}s` }), ms);
+		const timer = setTimeout(() => calls.cancel(id, { error: `pi-desk did not answer within ${Math.round(ms / 1000)}s` }), ms);
 		callIds.set(requestId, id);
 		calls.start(id, (o) => {
 			clearTimeout(timer);

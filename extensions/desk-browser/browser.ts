@@ -108,16 +108,19 @@ export function actRules(kind: "click" | "type" | "scroll" | "upload"): string {
 }
 
 const TARGET = `The target is a selector (${SELECTOR_HELP}; best a ref from browser_read outline) or x and y (CSS px from the viewport's top-left, as in browser_screenshot divided by its scale).`;
-const PROTECTED = "~/.ssh, ~/.gnupg, ~/Library/Keychains, ~/.aws, ~/.config/gh, ~/.netrc, ~/.pi and pi-desk's data and profile folders";
+const PROTECTED =
+	"~/.ssh, ~/.gnupg, ~/Library/Keychains, ~/.aws, ~/.config/gh, ~/.netrc, ~/.git-credentials, ~/.docker, ~/.kube, ~/.npmrc, ~/.pi, the Chrome, Firefox and Safari profile folders and pi-desk's data and profile folders";
+const CHANGED =
+	"Same-page address changes (a single-page app's replaceState or pushState) no longer cause page_changed: only a new document, a main-frame navigation or an origin change does. If the page changes the user's clipboard while your input goes in, the action still succeeds and its result says so (clipboard_changed; pi-desk tells the user).";
 /** The action tools' descriptions, each with the safety rules that apply to it. */
 export const ACT_DESCRIPTIONS: Record<string, string> = {
-	browser_click: `Click an element in a pi-desk browser tab's page as a mouse would (its centre), or a point. ${TARGET} button: left (default), right or middle; double: a double click; modifiers: keys held (shift, control, alt, meta). The result says what it hit, whether the page changed or is loading, a download waiting for the user, a popup (a new tab, behind). A click that opens a native file chooser is refused (use_browser_upload): agents never get it; use browser_upload with the file input. ${actRules("click")}`,
-	browser_type: `Type text into a ${TEXT_FIELD} of a pi-desk browser tab's page (selector: the field, focused first; else the focused element). It inserts the whole text at once: the page sees input events, not a keydown per key (use browser_press for key events). clear: select all and delete first; submit: one Enter after a fresh check. The result says how many characters went in, never the text. ${actRules("type")}`,
-	browser_press: `Press keys in a pi-desk browser tab's page: space-separated keys or chords, e.g. "Tab", "Shift+Tab", "Enter", "Escape", "ArrowDown ArrowDown Enter", "Meta+A". selector: focus that element first. pi-desk sends one chord at a time with a check before each, and stops with page_changed if the page navigates (so "Enter a b c" stops after Enter if Enter submits). Navigation keys (Tab, arrows, Enter, Escape, PageUp/PageDown, Home/End) work anywhere; letters and other printable keys only in a ${TEXT_FIELD}. Meta+V, Meta+C and Meta+X (the user's clipboard) are refused. ${actRules("type")}`,
+	browser_click: `Click an element in a pi-desk browser tab's page as a mouse would (its centre), or a point. ${TARGET} button: left (default), right or middle; double: a double click; modifiers: keys held (shift, control, alt, meta). The result says what it hit, whether the page changed or is loading, a download waiting for the user, a popup (a new tab, behind). A file chooser opening within 5 s after an agent's action is cancelled unless the user clicked or typed in the page since (use_browser_upload): agents never get it; use browser_upload with the file input. ${CHANGED} ${actRules("click")}`,
+	browser_type: `Type text into a ${TEXT_FIELD} of a pi-desk browser tab's page (selector: the field, focused first; else the focused element). It inserts the whole text at once: the page sees input events, not a keydown per key (use browser_press for key events). clear: select all and delete first; submit: one Enter after a fresh check. The result says how many characters went in, never the text. ${CHANGED} ${actRules("type")}`,
+	browser_press: `Press keys in a pi-desk browser tab's page: space-separated keys or chords, e.g. "Tab", "Shift+Tab", "Enter", "Escape", "ArrowDown ArrowDown Enter", "Meta+A". selector: focus that element first. pi-desk sends one chord at a time with a check before each, and stops with page_changed if the page navigates (so "Enter a b c" stops after Enter if Enter submits). Navigation keys (Tab, arrows, Enter, Escape, PageUp/PageDown, Home/End) work anywhere; letters and other printable keys only in a ${TEXT_FIELD}. Backspace, Delete or Meta+A are refused (not_a_field) when focus is on an element pi-desk cannot classify (not the page itself, a button or a link). Meta+V, Meta+C and Meta+X (the user's clipboard) are refused. ${CHANGED} ${actRules("type")}`,
 	browser_scroll: `Scroll a pi-desk browser tab's page: dx/dy (CSS px) scroll the target (selector, or the scrollable thing at x,y) or, with no target, the page; a target alone is scrolled into view. ${actRules("scroll")}`,
 	browser_select: `Choose an option of a <select> in a pi-desk browser tab's page by its label (its text) or its value (exactly one). No match: the error lists the labels. For a custom dropdown, click it and then the option. ${actRules("type")}`,
 	browser_hover: `Move the pointer over an element or a point in a pi-desk browser tab's page (menus, tooltips). ${TARGET} ${actRules("scroll")}`,
-	browser_upload: `Set files on a file input (<input type="file">) of a pi-desk browser tab's page. paths: absolute paths of regular files (no directories). Nothing is sent until the user presses Allow on the bar pi-desk shows, with the full paths (it waits up to 2 minutes): tell the user you are asking. Files under ${PROTECTED}, and symlinks whose real path differs, are refused (path_not_allowed). The result names the files by base name. ${actRules("upload")}`,
+	browser_upload: `Set files on a file input (<input type="file">) of a pi-desk browser tab's page. paths: absolute paths of regular files (no directories). Nothing is sent until the user presses Allow on the bar pi-desk shows, with each file's real path (it waits up to 2 minutes): tell the user you are asking. Files under ${PROTECTED}, symlinks whose real path differs and hard-linked files are refused (path_not_allowed). The result names the files by base name. ${actRules("upload")}`,
 };
 
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
@@ -213,11 +216,10 @@ const HINTS: Record<string, string> = {
 	bad_file: "Each path must be an absolute path to an existing regular file (no directories).",
 	bad_keys: "Use key names such as Enter, Tab, Escape, Backspace, ArrowDown, PageDown, a single character, or chords such as Shift+Tab or Meta+A. Meta+V, Meta+C and Meta+X (the user's clipboard) are refused.",
 	// security review round 1
-	page_changed: "The page navigated or changed document during the action, so pi-desk stopped there; what was sent is in the error. Read the page again before acting.",
+	page_changed: "The page navigated or changed document (a new document, a main-frame navigation or another origin) during the action, so pi-desk stopped there; what was sent is in the error. Read the page again before acting.",
 	sensitive_visible: "Screenshot refused: a revealed password field on the page has text in it. Ask the user to hide it, or to Take over.",
-	path_not_allowed: "That file is under a protected folder (keys, credentials, pi's or pi-desk's data) or is a symlink to somewhere else: ask the user to pick another file.",
-	use_browser_upload: "The click opened a native file chooser, which agents never get: use browser_upload with the file input instead.",
-	clipboard_blocked: "The page wrote the clipboard during the action; pi-desk restored the old contents. Do not rely on the page's copy buttons.",
+	path_not_allowed: "That file is under a protected folder (keys, credentials, browser profiles, pi's or pi-desk's data), is a symlink to somewhere else or is hard-linked: ask the user to pick another file.",
+	use_browser_upload: "A native file chooser opened after your action, which agents never get (pi-desk cancelled it): use browser_upload with the file input instead.",
 	cancelled: "The call was cancelled (it was interrupted here), and pi-desk stopped the action. Check the page before trying again.",
 };
 /** An action's own hints where a code means something else for it. */
@@ -354,6 +356,7 @@ export function actText(cmd: R, d: R): string {
 	if (d?.loading === true) say.push(`It is still loading: browser_wait {tab: ${tab}, for: "load"} before reading it.`);
 	if (d?.download === "waiting_for_user") say.push("It started a download, which waits for the user's Allow in pi-desk (agent input never counts as the user's): tell the user; you cannot accept it.");
 	if (Number.isInteger(d?.popup) && d.popup > 0) say.push(`A popup opened as tab ${d.popup} (behind the user's view).`);
+	if (d?.clipboard_changed === true) say.push("The page changed the user's clipboard during this action (pi-desk told the user): don't rely on what's on it, and tell the user if it matters.");
 	body.push(`URL: ${cap(String(d?.url ?? ""), LINE_MAX)}`);
 	return fenced(say.join(" "), "page", body.join("\n"));
 }

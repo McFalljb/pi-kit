@@ -212,7 +212,7 @@ export default function (pi: ExtensionAPI) {
 	// ---- actions (step 8) ----
 	/** An action: the command (checked), its result as actText, a failure with the typed text hidden. */
 	async function act(command: R, signal: AbortSignal | undefined) {
-		const ms = command.type === "browser_upload" ? UPLOAD_TIMEOUT_MS : ACT_TIMEOUT_MS;
+		const ms = command.type === "browser_upload" ? UPLOAD_TIMEOUT_MS : Number(process.env.PI_KIT_DESK_ACT_TIMEOUT_MS) || ACT_TIMEOUT_MS; // the env: tests only
 		const r = await call(command, ms, signal);
 		return text(r.ok ? actText(command, r.data ?? {}) : errorText(command.type, r, command.type === "browser_type" && command.text.length >= 3 ? command.text : undefined));
 	}

@@ -28,8 +28,8 @@
  * - Browser tabs: extensions/desk-browser's tools go through this connection here (Home may name
  *   any session): `kit:desk:control:command` {requestId, command, timeoutMs?} (browser_* commands only, with
  *   desk_run's refusals) answered on
- *   `kit:desk:control:command:reply:<requestId>` with {result} or {error}; `:cancel` {requestId}
- *   also sends pi-desk a `cancel` line for a long command's request id; `kit:desk:control`
+ *   `kit:desk:control:command:reply:<requestId>` with {result} or {error}; `:cancel` {requestId},
+ *   or the call's timeout, also sends pi-desk a `cancel` line for a long command's request id; `kit:desk:control`
  *   says whether the connection is up.
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
@@ -123,15 +123,17 @@ export default function (pi: ExtensionAPI) {
 		const res: R = r.result ?? { ok: false, error: "no result" };
 		const rid = r.request_id;
 		if (!res.pending || typeof rid !== "number") return { result: res, waited: false };
+		let ended = false; // pi-desk finished it (else we gave up: abort, timeout, closed connection)
 		const result = await wait(ms, signal, `still running in pi-desk after ${ms / 1000}s`, (done) => {
-			if (early.has(rid)) return done(early.get(rid)!);
-			finished.set(rid, done);
+			const end = (r: R) => ((ended = true), done(r));
+			if (early.has(rid)) return end(early.get(rid)!);
+			finished.set(rid, end);
 		});
 		finished.delete(rid);
 		early.delete(rid);
 		ours.delete(rid); // a late finished is dropped
-		// `cancel`: the caller gave up (desk-browser's call): stop it in pi-desk too, fire and forget
-		if (cancel && signal?.aborted && result.error === "cancelled") void request({ type: "cancel", request_id: rid }).catch(() => {});
+		// `cancel` (desk-browser's calls): we gave up on it, so stop it in pi-desk too, fire and forget
+		if (cancel && !ended) void request({ type: "cancel", request_id: rid }).catch(() => {});
 		return { result, waited: true };
 	}
 

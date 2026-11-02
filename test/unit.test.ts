@@ -1551,7 +1551,6 @@ test("desk-browser round 1: hints for the new codes; text keys only in plain tex
 	assert.match(hint("sensitive_visible", "browser_screenshot"), /password.*(hide|Take over)/);
 	assert.match(hint("path_not_allowed", "browser_upload"), /protected folder.*symlink.*another file/);
 	assert.match(hint("use_browser_upload"), /file chooser.*browser_upload/);
-	assert.match(hint("clipboard_blocked"), /clipboard.*restored/);
 	assert.match(hint("busy"), /upload bar.*wait/i);
 	assert.match(hint("cancelled"), /cancel/i);
 	for (const code of ["frame_focused", "not_a_field", "sensitive_field"]) assert.match(hint(code, "browser_type"), /plain text field/, code);
@@ -1574,9 +1573,62 @@ test("desk-browser round 1: the act descriptions say how typing, keys, uploads a
 	assert.match(d.browser_press, /page_changed/);
 	assert.match(d.browser_press, /Tab, arrows, Enter, Escape, PageUp\/PageDown, Home\/End/);
 	assert.match(d.browser_press, /plain text field/);
-	assert.match(d.browser_upload, /full paths/);
+	assert.match(d.browser_upload, /real path/);
 	for (const p of ["~/.ssh", "~/.gnupg", "~/Library/Keychains", "~/.aws", "~/.config/gh", "~/.netrc", "~/.pi"]) assert.ok(d.browser_upload.includes(p), p);
 	assert.match(d.browser_upload, /symlink/);
 	assert.match(d.browser_upload, /path_not_allowed/);
 	assert.match(d.browser_click, /file chooser.*browser_upload/);
+});
+
+// ---- step 8, security review round 2 ----
+
+test("desk bridge: a command given up on for any reason (a timeout too) is cancelled in pi-desk, with that outcome", async () => {
+	const proto: Record<string, any> = await import("../extensions/desk-bridge/protocol.ts");
+	const sent: number[] = [];
+	const calls = new proto.CommandCalls((rid: number) => sent.push(rid));
+	const got: any[] = [];
+	calls.start("t1", (o: any) => got.push(["t1", o]));
+	calls.onResult({ id: "t1", request_id: 50, result: { ok: true, pending: true } });
+	calls.cancel("t1", { error: "pi-desk did not answer within 40s" });
+	assert.deepEqual(sent, [50], "the timed-out request is cancelled in pi-desk");
+	assert.deepEqual(got, [["t1", { error: "pi-desk did not answer within 40s" }]], "the caller gets the timeout, not 'cancelled'");
+	assert.equal(calls.onFinished({ request_id: 50, result: { ok: false, data: { code: "cancelled" } } }), true, "its late finished is dropped");
+	// timed out before pi-desk's pending reply: the cancel goes once the id comes
+	calls.start("t2", (o: any) => got.push(["t2", o]));
+	calls.cancel("t2", { error: "pi-desk did not answer within 40s" });
+	assert.deepEqual(got.at(-1), ["t2", { error: "pi-desk did not answer within 40s" }]);
+	assert.deepEqual(sent, [50]);
+	calls.onResult({ id: "t2", request_id: 51, result: { ok: true, pending: true } });
+	assert.deepEqual(sent, [50, 51]);
+	assert.equal(calls.onFinished({ request_id: 51, result: {} }), true);
+	assert.equal(calls.size, 0);
+});
+
+test("desk-browser round 2: a clipboard the page changed is a note on a successful action, not an error", async () => {
+	const b: Record<string, any> = await import("../extensions/desk-browser/browser.ts");
+	const cmd = { type: "browser_click", tab_id: 5, selector: "a" };
+	const hit = { role: "button", name: "Copy", tag: "button" };
+	const changed = b.actText(cmd, { action: "click", hit, x: 1, y: 2, url: "u", clipboard_changed: true });
+	const head = changed.slice(0, changed.indexOf(WEB_NOTE));
+	assert.match(head, /the page changed the user's clipboard during this action.*don't rely on what's on it.*tell the user/i);
+	assert.doesNotMatch(b.actText(cmd, { action: "click", hit, x: 1, y: 2, url: "u" }), /clipboard/);
+	assert.doesNotMatch(b.actText(cmd, { action: "click", hit, x: 1, y: 2, url: "u", clipboard_changed: "yes" }), /clipboard/);
+	const err = b.errorText("browser_click", { ok: false, error: "x", data: { code: "clipboard_blocked" } });
+	assert.equal(err.split("\n")[1], WEB_NOTE, "no clipboard_blocked hint any more");
+});
+
+test("desk-browser round 2: descriptions say what changes a page, which keys need a field, file choosers and the upload deny list", async () => {
+	const b: Record<string, any> = await import("../extensions/desk-browser/browser.ts");
+	const d: Record<string, string> = b.ACT_DESCRIPTIONS;
+	for (const t of ["browser_click", "browser_type", "browser_press"]) {
+		assert.match(d[t], /replaceState or pushState.*no longer.*page_changed|page_changed.*only.*new document/s, t);
+		assert.match(d[t], /clipboard_changed|changed the user's clipboard/, t);
+	}
+	assert.match(d.browser_press, /new document, a main-frame navigation or an origin change/);
+	assert.match(d.browser_press, /Backspace, Delete or Meta\+A.*not_a_field/);
+	assert.match(d.browser_click, /file chooser.*within 5 s.*unless the user clicked or typed/);
+	for (const p of ["~/.git-credentials", "~/.docker", "~/.kube", "~/.npmrc", "Chrome", "Firefox", "Safari", "~/.ssh"]) assert.ok(d.browser_upload.includes(p), p);
+	assert.match(d.browser_upload, /hard-linked/);
+	assert.match(d.browser_upload, /real path/);
+	assert.doesNotMatch(Object.values(d).join(" "), /clipboard_blocked/);
 });
