@@ -65,16 +65,19 @@ The `browser_*` tools are in every pi tab too: there they see only their own ses
   `browser_navigate` loads another address; then `browser_wait {for: "load"}`.
 - **Read** with `browser_read`: `text` (default), `outline` (roles, names, link targets, refs
   `e3` usable as `selector: "ref=e3"`), `html` (one element's markup); `selector` reads a part,
-  `max` caps it. Form values are never read (`[value hidden]`, also for a selector into a field,
-  a select's options or editable content); selectors on a field's state (`:checked`, `[value…]`,
-  `:valid`…) are refused (`field_state`). **Look** with `browser_screenshot` (a tab the user is
+  `max` caps it. Selectors are simple: tag names, `#id`s and `.class`es joined by spaces or `>`
+  (`main article p`, `div.card > a#buy`), or a ref from the latest outline; attributes,
+  pseudo-classes (`:checked`…), commas, `*`, `+` and `~` are refused (`selector_unsupported`):
+  read an outline and use its refs instead. Form values are never read (`[value hidden]`; a
+  selector that matches only inside a field or editable text is "nothing matches"). **Look** with `browser_screenshot` (a tab the user is
   not looking at is painted for it, unseen; it shows typed text in visible fields). **Wait** for
   an element or a text with `browser_wait`.
 - `browser_console` / `browser_network` start recording on their first call (off by default: it
   is a bot-detection tell); the first call returns nothing from before, so call again (or reload
   the page). Recording stops 5 minutes after your last call, when the page goes to another site,
   or on the user's Stop, and what it recorded is then gone. Secret-looking address parameters
-  (tokens, OAuth codes, keys, signatures) show as `***`.
+  (tokens, OAuth codes, keys, signatures, sessions) show as `***` in requests, console text and
+  a read's page address.
 - `browser_comments` reads the user's pending comments on pages (they also come with the user's
   next message).
 - No site is off limits and nothing asks first; `file:` addresses are the user's only. The user

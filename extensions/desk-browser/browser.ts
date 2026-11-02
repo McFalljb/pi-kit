@@ -38,6 +38,9 @@ const fenced = (head: string, label: string, body: string) => [head, WEB_NOTE, f
 // ---- commands ----
 
 export const MODES = ["text", "outline", "html"] as const;
+/** The selectors pi-desk takes (anything else: selector_unsupported). */
+export const SELECTOR_HELP =
+	'tag names, #ids and .classes joined by spaces or > (e.g. "main article p", "div.card > a#buy"), or "ref=e3" from the latest outline; no attributes, pseudo-classes (:checked…), commas, *, + or ~';
 export const WAIT_FOR = ["load", "selector", "text"] as const;
 
 export function tabsCommand(session?: number): R {
@@ -53,7 +56,7 @@ export function navigateCommand(tab: unknown, url: unknown): R {
 }
 export function readCommand(tab: unknown, mode?: unknown, selector?: unknown, max?: unknown): R {
 	if (mode !== undefined && !MODES.includes(mode as any)) throw new Error(`mode is one of ${MODES.join(", ")}.`);
-	if (selector !== undefined && (typeof selector !== "string" || !selector.trim())) throw new Error('selector must be a CSS selector, or "ref=e3" from an outline.');
+	if (selector !== undefined && (typeof selector !== "string" || !selector.trim())) throw new Error(`selector must be ${SELECTOR_HELP}.`);
 	if (max !== undefined && (typeof max !== "number" || !(max > 0))) throw new Error("max must be a positive number of characters.");
 	return { type: "browser_read", tab_id: tabId(tab), ...(mode !== undefined && { mode }), ...(selector !== undefined && { selector }), ...(max !== undefined && { max: Math.min(Math.floor(max as number), TEXT_MAX) }) };
 }
@@ -66,7 +69,7 @@ export function screenshotCommand(tab: unknown, rect?: unknown): R {
 }
 export function waitCommand(tab: unknown, what: unknown, value?: unknown, timeout_s?: unknown): R {
 	if (!WAIT_FOR.includes(what as any)) throw new Error(`for is one of ${WAIT_FOR.join(", ")}.`);
-	if (what !== "load" && (typeof value !== "string" || !value)) throw new Error(`value is required for "${what}" (the ${what === "selector" ? "CSS selector" : "text"} to wait for).`);
+	if (what !== "load" && (typeof value !== "string" || !value)) throw new Error(`value is required for "${what}" (${what === "selector" ? `the selector to wait for: ${SELECTOR_HELP}` : "the text to wait for"}).`);
 	const s = timeout_s === undefined ? 10 : Math.min(MAX_WAIT_S, Math.max(0.1, Number(timeout_s) || 10));
 	return { type: "browser_wait", tab_id: tabId(tab), for: what, ...(what !== "load" && { value }), timeout_ms: Math.round(s * 1000) };
 }
@@ -86,6 +89,7 @@ const HINTS: Record<string, string> = {
 	tab_gone: "The tab closed; browser_tabs lists the open ones.",
 	no_frame: "The page has painted nothing yet; wait for it to load (browser_wait) and try again.",
 	bad_args: "Fix the call (a selector that matches, a ref from the latest outline, a rect inside the page).",
+	selector_unsupported: `Use a simple selector: ${SELECTOR_HELP}. Read an outline for refs to anything else.`,
 	stopped: "The user pressed Stop on the page: stop using this tab and ask the user before going on.",
 	busy: "Screenshots are still being written; try again in a moment.",
 	page_error: "The page did not answer; it may be navigating. Try again after browser_wait.",
@@ -137,7 +141,7 @@ export function logText(tab: number, kind: "console" | "network", d: R): string 
 	const rec = d?.recording ?? {};
 	const mins = Math.round((Number(rec.for_s) || 300) / 60);
 	const ends = `When it ends (after ${mins} minutes, on another site, or the user's Stop), what it recorded is gone.`;
-	const masked = kind === "network" ? " The values of secret-looking address parameters (tokens, codes, keys, signatures) show as ***." : "";
+	const masked = ` The values of secret-looking address parameters (tokens, codes, keys, signatures, sessions) show as ***${kind === "console" ? " in the messages' addresses" : ""}.`;
 	const started = rec.started_now
 		? `Recording ${kind} on tab ${tab} started now: what happened before is not available. Call again to see new entries (reload the page with browser_navigate to see its load). It stays on for ${mins} minutes after your last call, and the user sees it on the page. ${ends}${masked}`
 		: `Recording ${kind} on tab ${tab} (on for ${mins} minutes after your last call). ${ends}${masked}`;

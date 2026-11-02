@@ -1354,3 +1354,13 @@ test("desk-browser: screenshots carry the page-data note; recordings say what en
 	assert.match(started, /When it ends \(after 5 minutes, on another site, or the user's Stop\), what it recorded is gone/);
 	assert.match(started, /secret-looking address parameters .*show as \*\*\*/);
 });
+
+test("desk-browser: selectors are the simple forms pi-desk takes, and its refusal says which", async () => {
+	const b: Record<string, any> = await import("../extensions/desk-browser/browser.ts");
+	assert.match(b.SELECTOR_HELP ?? "", /tag names, #ids and \.classes/);
+	assert.match(b.SELECTOR_HELP ?? "", /ref=e3/);
+	const err = errorText("browser_read", { ok: false, error: "only simple selectors", data: { code: "selector_unsupported" } });
+	assert.match(err, /browser_read failed \(selector_unsupported\)\.\nUse a simple selector: tag names, #ids and \.classes/);
+	assert.throws(() => readCommand(5, "text", ""), /tag names, #ids and \.classes/);
+	assert.throws(() => waitCommand(5, "selector", ""), /tag names, #ids and \.classes/);
+});
