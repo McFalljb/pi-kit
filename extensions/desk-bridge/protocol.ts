@@ -211,3 +211,74 @@ export class Attacher {
 export function promptContent(text: string, images: Image[]): string | ({ type: "text"; text: string } | Image)[] {
 	return images.length ? [{ type: "text", text }, ...images] : text;
 }
+
+// ---- commands other extensions send over the bridge's connection (kit:desk:command) ----
+
+/** The pi.events names of the command RPC: desk-bridge serves COMMAND_EVENT, desk (Home) CONTROL_EVENT. */
+export const COMMAND_EVENT = "kit:desk:command";
+export const CONTROL_EVENT = "kit:desk:control:command";
+/** desk (Home) says whether its control connection is up: true / false. */
+export const CONTROL_READY = "kit:desk:control";
+export type CommandOutcome = { result: Record<string, any> } | { error: string };
+
+/**
+ * pi-desk commands in flight on one connection, by our line id: a command's `result` line ends it,
+ * or, when pending, the `finished` event with its request_id (pi-desk sends that to the requester
+ * even without a subscription). A finished event seen before its result line is kept (a few).
+ */
+export class CommandCalls {
+	private byId = new Map<string, { done: (o: CommandOutcome) => void; rid?: number }>();
+	private byRid = new Map<number, string>();
+	private early = new Map<number, Record<string, any>>();
+	/** Waits for line `id`'s outcome. */
+	start(id: string, done: (o: CommandOutcome) => void) {
+		this.byId.set(id, { done, rid: undefined });
+	}
+	/** A `result` line: true if it was one of ours. */
+	onResult(m: Record<string, any>): boolean {
+		const call = this.byId.get(m.id);
+		if (!call) return false;
+		const result = m.result ?? { ok: false, error: "no result" };
+		if (result.pending && typeof m.request_id === "number") {
+			if (this.early.has(m.request_id)) {
+				const r = this.early.get(m.request_id)!;
+				this.early.delete(m.request_id);
+				this.end(m.id, { result: r });
+			} else {
+				call.rid = m.request_id;
+				this.byRid.set(m.request_id, m.id);
+			}
+			return true;
+		}
+		this.end(m.id, { result });
+		return true;
+	}
+	/** A `finished` event: true if it ended one of ours. */
+	onFinished(m: Record<string, any>): boolean {
+		if (typeof m.request_id !== "number") return false;
+		const id = this.byRid.get(m.request_id);
+		if (id === undefined) {
+			this.early.set(m.request_id, m.result ?? {});
+			if (this.early.size > 32) this.early.delete(this.early.keys().next().value!);
+			return false;
+		}
+		this.end(id, { result: m.result ?? {} });
+		return true;
+	}
+	/** Stop waiting for one (cancelled, timed out). */
+	end(id: string, o: CommandOutcome) {
+		const call = this.byId.get(id);
+		if (!call) return;
+		this.byId.delete(id);
+		if (call.rid !== undefined) this.byRid.delete(call.rid);
+		call.done(o);
+	}
+	/** The connection closed: every call ends with `error`. */
+	failAll(error: string) {
+		for (const id of [...this.byId.keys()]) this.end(id, { error });
+		this.early.clear();
+	}
+	get size() {
+		return this.byId.size;
+	}
+}
