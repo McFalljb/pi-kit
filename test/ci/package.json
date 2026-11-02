@@ -3,7 +3,7 @@
   "private": true,
   "description": "The kit's version pins: pi and the recommended packages that CI installs and tests (npm ci --ignore-scripts --prefix test/ci). Dependabot bumps these; install.sh, the tests and extensions/versions read them here.",
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.5.0",
     "pi-subagents": "0.84.0",
     "pi-ask-user": "0.17.0",
     "@ff-labs/pi-fff": "0.11.0",
@@ -15,7 +15,8 @@
     "@earendil-works/pi-tui": "$@earendil-works/pi-coding-agent",
     "@earendil-works/pi-codemode": "$@earendil-works/pi-coding-agent",
     "@earendil-works/pi-agent-core": "$@earendil-works/pi-coding-agent",
-    "@earendil-works/pi-telemetry": "$@earendil-works/pi-coding-agent"
+    "@earendil-works/pi-telemetry": "$@earendil-works/pi-coding-agent",
+    "@earendil-works/pi-schema": "$@earendil-works/pi-coding-agent"
   },
   "devDependencies": {
     "@xterm/headless": "6.0.0"

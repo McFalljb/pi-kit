@@ -343,8 +343,9 @@ clear when a pi release bumps it.
 2. CI runs the typecheck, unit, contract, merge and smoke tests at the new versions; the smoke
    test loads pi-subagents and the rest of the recommended set from `test/ci`
    (`PI_KIT_RECOMMENDED=1`). A failing contract check means the kit file it names needs a change
-   before merging. On the first PR that bumps pi, check in the lockfile diff that the pi sibling
-   packages (`pi-ai`, `pi-tui`, `pi-agent-core`, ...) moved to the same version via `overrides`.
+   before merging. On a PR that bumps pi, check in the lockfile diff that the pi sibling
+   packages (`pi-ai`, `pi-tui`, `pi-agent-core`, ...) moved to the same version via `overrides`,
+   and add an override for any new sibling (pi 1.5.0 added `pi-schema`).
 3. Read the changelogs and security advisories of what changed.
 4. On one machine, check out the PR branch in a worktree and run its `scripts/install.sh --update`:
    it points pi at that checkout (removing the other configured pi-kit) and installs the PR's
@@ -364,10 +365,17 @@ Without `--update`, `install.sh` keeps a package already configured under anothe
 including an unpinned one such as `npm:pi-ask-user`, and prints `kept:`. With `--update` it backs
 up `settings.json`, moves each recommended package to its pin with `pi install npm:<name>@<version>`
 (which replaces the entry) and removes another configured pi-kit checkout. It never upgrades pi
-itself: when the running pi differs from the pin it prints the
-`npm install -g --ignore-scripts @earendil-works/pi-coding-agent@<version>` command to run.
+itself: when the running pi differs from the pin it prints how to get there. For a global npm
+install it prints `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@<version>`. That
+includes a Mac where `/opt/homebrew/bin/pi` links into `/opt/homebrew/lib/node_modules`: that is npm
+under Homebrew's Node, and `brew upgrade` leaves it alone. Only a pi from the Homebrew formula
+(`brew install pi-coding-agent`, under `Cellar/`) gets `brew upgrade pi-coding-agent`, which may
+lag behind the pin. For a pi from the pi.dev installer (`curl -fsSL https://pi.dev/install.sh | sh`)
+it says `pi update`, which installs the latest release; npm -g would only add a second pi.
+`readlink -f "$(command -v pi)"` shows which one you have.
 `extensions/versions` warns once, when an interactive session starts, if pi or a configured
-recommended package is older than its pin or not pinned; newer versions are not reported.
+recommended package is older than its pin or not pinned; newer versions are not reported. The
+warning names the fix: this checkout's `scripts/install.sh --update`.
 
 Sidebar test prompt (paste it into a new interactive session):
 

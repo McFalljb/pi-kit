@@ -29,3 +29,12 @@ export function drift(pins: Record<string, string>, piVersion: string, configure
 	}
 	return out;
 }
+
+/** The warning shown for `drift()` lines, with the fix: install.sh --update in this kit checkout. */
+export function driftNotice(lines: string[], kitDir: string): string {
+	return (
+		`pi-kit version drift: ${lines.join("; ")}. ` +
+		`Fix: run ${kitDir}/scripts/install.sh --update (it moves the packages to their pins and prints the command to upgrade pi); ` +
+		`see GUIDE.md "Updating".`
+	);
+}

@@ -4,7 +4,8 @@
 import { type ExtensionAPI, getAgentDir, VERSION } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { drift } from "./drift.ts";
+import { fileURLToPath } from "node:url";
+import { drift, driftNotice } from "./drift.ts";
 
 const json = (f: string | URL) => {
 	try {
@@ -22,6 +23,7 @@ export default function versions(pi: ExtensionAPI) {
 		const pins = json(new URL("../../test/ci/package.json", import.meta.url))?.dependencies;
 		if (!pins) return;
 		const lines = drift(pins, VERSION, json(path.join(getAgentDir(), "settings.json"))?.packages ?? []);
-		if (lines.length) ctx.ui.notify(`pi-kit version drift: ${lines.join("; ")}. See GUIDE.md "Updating".`, "warning");
+		const kit = path.resolve(fileURLToPath(new URL("../..", import.meta.url)));
+		if (lines.length) ctx.ui.notify(driftNotice(lines, kit), "warning");
 	});
 }

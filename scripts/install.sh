@@ -45,7 +45,19 @@ node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(
 command -v pi >/dev/null || { echo "pi not found: npm install -g --ignore-scripts @earendil-works/pi-coding-agent" >&2; exit 1; }
 echo "node $(node --version), pi $(pi --version), agent dir $AGENT_DIR"
 PI_PIN="$(node -p 'require(process.argv[1]).dependencies["@earendil-works/pi-coding-agent"]' "$KIT/test/ci/package.json")"
-[ "$(pi --version)" = "$PI_PIN" ] || echo "note: the kit is tested with pi $PI_PIN; to match: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@$PI_PIN"
+# The upgrade hint fits how pi was installed: a global npm install (Homebrew's Node included) gets
+# the npm command for the pin; the Homebrew formula gets brew; elsewhere (the pi.dev installer,
+# another package manager) npm -g would add a second pi, so point at `pi update` instead.
+if [ "$(pi --version)" != "$PI_PIN" ]; then
+	NPM_ROOT="$(readlink -f "$(npm root -g 2>/dev/null)" 2>/dev/null || true)"
+	case "$(readlink -f "$(command -v pi)")" in
+		"${NPM_ROOT:-/nonexistent}/@earendil-works/pi-coding-agent/"*)
+			echo "note: the kit is tested with pi $PI_PIN; to match: npm install -g --ignore-scripts @earendil-works/pi-coding-agent@$PI_PIN" ;;
+		*/Cellar/pi-coding-agent/*)
+			echo "note: the kit is tested with pi $PI_PIN; to update: brew upgrade pi-coding-agent (Homebrew may not have $PI_PIN yet)" ;;
+		*) echo "note: the kit is tested with pi $PI_PIN; update pi the way it was installed: pi update (pi.dev installer; installs the latest release) or your package manager" ;;
+	esac
+fi
 mkdir -p "$AGENT_DIR"
 
 # 2. Packages: install each pinned spec unless a package of that name is already configured.

@@ -13,7 +13,7 @@ import { APP_IMAGE_MAX, appCallCommand, appEventsText, appInputEvents, appReplyT
 import fs from "node:fs";
 import { deskPanels, hideCompleted, nextHide, sidebarLines, subagentTask, summary, todosFromBranch, todoView, trackFinished, trackTodos } from "../extensions/sidebar/rows.ts";
 import { addRules, isGpt } from "../extensions/model-rules/match.ts";
-import { drift } from "../extensions/versions/drift.ts";
+import { drift, driftNotice } from "../extensions/versions/drift.ts";
 import { checkinText, clip, compilePattern, evictable, footerText, groupAlive, groupGone, groupSize, KEY_REDACTED, keyFilter, lastLines, lineMatcher, MATCH_CAP, MAX_LINE, panelRows, short, splitLines } from "../extensions/shell/lines.ts";
 
 test("splitLines carries the unterminated tail", () => {
@@ -720,6 +720,14 @@ test("version drift: older or unpinned warns, newer and equal are silent", () =>
 		"npm:pi-ask-user (kit tested with npm:pi-ask-user@0.17.0)",
 		"npm:@juicesharp/rpiv-todo@^2.15.0 (kit tested with npm:@juicesharp/rpiv-todo@2.15.0)",
 	]);
+});
+
+test("version drift: the notice names the fix (install.sh --update in this kit checkout)", () => {
+	const notice = driftNotice(["pi 1.4.0 (kit tested with 1.5.0)"], "/home/u/pi-kit");
+	assert.match(notice, /^pi-kit version drift: pi 1\.4\.0 \(kit tested with 1\.5\.0\)\./);
+	assert.match(notice, /Fix: run \/home\/u\/pi-kit\/scripts\/install\.sh --update/);
+	assert.match(notice, /prints the command to upgrade pi/);
+	assert.match(notice, /GUIDE\.md "Updating"/);
 });
 
 test("desk bridge: messages carry v and type; replies echo the id; bad lines are dropped", () => {
