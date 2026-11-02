@@ -26,7 +26,7 @@ install() {
 	mkdir -p "$PI_CODING_AGENT_DIR"
 	[ -f "$PI_CODING_AGENT_DIR/settings.json" ] || echo "{\"packages\":$PKGS}" > "$PI_CODING_AGENT_DIR/settings.json"
 	[ "$f" = - ] || [ -f "$PI_CODING_AGENT_DIR/AGENTS.md" ] || cp "$f" "$PI_CODING_AGENT_DIR/AGENTS.md"
-	PATH="$T/bin:$PATH" "$KIT/scripts/install.sh" "$@" > "$T/$c.out" 2>&1
+	PATH="${PI_BIN:-$T/bin}:$PATH" "$KIT/scripts/install.sh" "$@" > "$T/$c.out" 2>&1
 	echo $? > "$T/$c.exit"
 }
 A() { echo "$T/$1/AGENTS.md"; }
@@ -141,9 +141,22 @@ if ls "$T/upd/settings.json.bak."* >/dev/null 2>&1; then ok "--update: settings 
 install updry - --update --dry-run
 has "--update dry-run: says what it would run" "would run: pi install $SUB" "$T/updry.out"
 if [ ! -e "$T/updry/calls" ] && ! ls "$T/updry/settings.json.bak."* >/dev/null 2>&1; then ok "--update dry-run: nothing run or written"; else bad "--update dry-run: ran or wrote"; fi
-PI_STUB_VERSION=0.1.0 install oldpi -
-has "pi older than the pin: upgrade command printed" "npm install -g --ignore-scripts @earendil-works/pi-coding-agent@$PI_PIN" "$T/oldpi.out"
+# pi from a global npm install (also what Homebrew's Node gives): the npm command for the pin.
+G="$T/npmg/lib/node_modules/@earendil-works/pi-coding-agent"
+mkdir -p "$G" "$T/npmg/bin" && cp "$T/bin/pi" "$G/cli.js" && ln -s "$G/cli.js" "$T/npmg/bin/pi"
+PI_STUB_VERSION=0.1.0 PI_BIN="$T/npmg/bin" npm_config_prefix="$T/npmg" install oldpi -
+has "pi older than the pin (npm -g): upgrade command printed" "npm install -g --ignore-scripts @earendil-works/pi-coding-agent@$PI_PIN" "$T/oldpi.out"
 hasnt "upgrade command not run" "-g" "$T/oldpi/calls"
+# pi from the Homebrew formula: brew upgrade, no npm -g.
+C="$T/brew/Cellar/pi-coding-agent/0.1.0"
+mkdir -p "$C/libexec" "$T/brew/bin" && cp "$T/bin/pi" "$C/libexec/pi" && ln -s "$C/libexec/pi" "$T/brew/bin/pi"
+PI_STUB_VERSION=0.1.0 PI_BIN="$T/brew/bin" install oldpi3 -
+has "pi older than the pin (Homebrew formula): brew upgrade" "brew upgrade pi-coding-agent" "$T/oldpi3.out"
+hasnt "pi older than the pin (Homebrew formula): no npm -g command" "npm install -g" "$T/oldpi3.out"
+# pi from elsewhere (the pi.dev installer, another package manager): no npm -g, which would add a second pi.
+PI_STUB_VERSION=0.1.0 install oldpi2 -
+has "pi older than the pin (not npm -g): says how to update" "pi update" "$T/oldpi2.out"
+hasnt "pi older than the pin (not npm -g): no npm -g command" "npm install -g" "$T/oldpi2.out"
 
 echo "merge tests: $n run, fail=$fail"
 exit $fail
