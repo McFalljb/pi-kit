@@ -25,7 +25,8 @@
  *   works, once it starts (`message_start`) for one sent while idle.
  *   pi-desk sends them again (or clears them) after every handshake, so a reload loses nothing.
  * - Sends pi-desk commands for other extensions over this connection (caller `panel`: the pi
- *   tab's own session's queries and browser tabs; extensions/desk-browser): `kit:desk:command`
+ *   tab's own session's browser tabs; extensions/desk-browser; only its command types,
+ *   browserRefusal): `kit:desk:command`
  *   {requestId, command, timeoutMs?} on pi.events, answered on `kit:desk:command:reply:<requestId>`
  *   with {result} (a long command's `finished` result) or {error}; `kit:desk:command:cancel`
  *   {requestId} stops waiting. Not connected: an error at once.
@@ -37,7 +38,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Panel, type Run, type ShellRow, SUBAGENT_EVENTS } from "../sidebar/rows.ts";
-import { Attacher, backoff, busyReasons, COMMAND_EVENT, CommandCalls, type CommandOutcome, deskToken, keepReconnectToken, line, parse, parseAttach, promptContent, promptRefusal, reply, runOutcome, status, wireImages } from "./protocol.ts";
+import { Attacher, backoff, browserRefusal, busyReasons, COMMAND_EVENT, CommandCalls, type CommandOutcome, deskToken, keepReconnectToken, line, parse, parseAttach, promptContent, promptRefusal, reply, runOutcome, status, wireImages } from "./protocol.ts";
 
 export { inDesk } from "./protocol.ts";
 
@@ -261,7 +262,9 @@ export default function (pi: ExtensionAPI) {
 	pi.events.on(COMMAND_EVENT, (req: any) => {
 		const requestId = String(req?.requestId ?? "");
 		const answer = (o: CommandOutcome) => pi.events.emit(`${COMMAND_EVENT}:reply:${requestId}`, o);
-		if (!requestId || typeof req?.command?.type !== "string") return answer({ error: "a command with a type is required" });
+		if (!requestId) return answer({ error: "a requestId is required" });
+		const why = browserRefusal(req?.command);
+		if (why) return answer({ error: why });
 		if (!sock || !ready || sock.destroyed || closed) return answer({ error: "Not connected to pi-desk (it reconnects on its own; try again shortly)." });
 		const id = `b${++seq}`;
 		const ms = Number(req.timeoutMs) > 0 ? Number(req.timeoutMs) : COMMAND_TIMEOUT_MS;

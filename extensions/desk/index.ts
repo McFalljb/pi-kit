@@ -26,7 +26,8 @@
  *   send_text into a pi tab or a tab waiting for the user (see refusal in state.ts).
  *
  * - Browser tabs: extensions/desk-browser's tools go through this connection here (Home may name
- *   any session): `kit:desk:control:command` {requestId, command, timeoutMs?} answered on
+ *   any session): `kit:desk:control:command` {requestId, command, timeoutMs?} (browser_* commands only, with
+ *   desk_run's refusals) answered on
  *   `kit:desk:control:command:reply:<requestId>` with {result} or {error}; `kit:desk:control`
  *   says whether the connection is up.
  *
@@ -36,7 +37,7 @@
 import net from "node:net";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { backoff, CONTROL_EVENT, CONTROL_READY, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
+import { backoff, browserRefusal, CONTROL_EVENT, CONTROL_READY, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
 import { appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "./app.ts";
 import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
 import { alreadyTrue, eventsText, exited, filterState, findTab, fires, type Notice, noticeFor, type On, piTabOf, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
@@ -582,7 +583,10 @@ export default function (pi: ExtensionAPI) {
 	pi.events.on(CONTROL_EVENT, (req: any) => {
 		const requestId = String(req?.requestId ?? "");
 		const answer = (o: { result: R } | { error: string }) => pi.events.emit(`${CONTROL_EVENT}:reply:${requestId}`, o);
-		if (!requestId || typeof req?.command?.type !== "string") return answer({ error: "a command with a type is required" });
+		if (!requestId) return answer({ error: "a requestId is required" });
+		// the browser tools' commands only, and never on Home's own tab (as desk_run)
+		const why = browserRefusal(req?.command) ?? refusal(req.command, undefined, own());
+		if (why) return answer({ error: why });
 		const ac = new AbortController();
 		cancels.set(requestId, ac);
 		const ms = Number(req.timeoutMs) > 0 ? Number(req.timeoutMs) : 60_000;

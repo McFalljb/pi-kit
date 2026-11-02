@@ -220,6 +220,13 @@ export const CONTROL_EVENT = "kit:desk:control:command";
 /** desk (Home) says whether its control connection is up: true / false. */
 export const CONTROL_READY = "kit:desk:control";
 export type CommandOutcome = { result: Record<string, any> } | { error: string };
+/** The commands extensions/desk-browser sends: the only ones either route forwards. */
+export const BROWSER_COMMANDS: ReadonlySet<string> = new Set(["browser_tabs", "browser_open", "browser_navigate", "browser_read", "browser_screenshot", "browser_wait", "browser_console", "browser_network", "browser_comments"]);
+/** Why a command may not go over kit:desk:command / kit:desk:control:command, or undefined. */
+export function browserRefusal(cmd: unknown): string | undefined {
+	const type = (cmd as Record<string, unknown> | undefined)?.type;
+	if (typeof type !== "string" || !BROWSER_COMMANDS.has(type)) return `This route forwards only the browser tools' commands (${[...BROWSER_COMMANDS].join(", ")}), not ${JSON.stringify(type ?? null)}.`;
+}
 
 /**
  * pi-desk commands in flight on one connection, by our line id: a command's `result` line ends it,
