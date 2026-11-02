@@ -25,13 +25,19 @@
  *   never targeted: desk_run, desk_prompt, desk_wait and desk_watch refuse them; desk_run also refuses
  *   send_text into a pi tab or a tab waiting for the user (see refusal in state.ts).
  *
+ * - Browser tabs: extensions/desk-browser's tools go through this connection here (Home may name
+ *   any session): `kit:desk:control:command` {requestId, command, timeoutMs?} (browser_* commands only, with
+ *   desk_run's refusals) answered on
+ *   `kit:desk:control:command:reply:<requestId>` with {result} or {error}; `kit:desk:control`
+ *   says whether the connection is up.
+ *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
  */
 
 import net from "node:net";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { backoff, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
+import { backoff, browserRefusal, CONTROL_EVENT, CONTROL_READY, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
 import { appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "./app.ts";
 import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
 import { alreadyTrue, eventsText, exited, filterState, findTab, fires, type Notice, noticeFor, type On, piTabOf, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
@@ -263,6 +269,7 @@ export default function (pi: ExtensionAPI) {
 						controlTab = Number(m.result.data?.tab_id) || 0;
 						ready = true;
 						attempt = 0;
+						pi.events.emit(CONTROL_READY, true);
 						void setup();
 					} else if (m.type === "result") {
 						if (m.result?.pending && typeof m.request_id === "number") ours.add(m.request_id);
@@ -278,6 +285,7 @@ export default function (pi: ExtensionAPI) {
 			if (sock !== s) return;
 			sock = undefined;
 			ready = false;
+			pi.events.emit(CONTROL_READY, false);
 			for (const r of replies.values()) r.reject(new Error("The pi-desk connection closed before the reply; check desk_state."));
 			replies.clear();
 			for (const done of [...waits]) done({ ok: false, error: "the pi-desk connection closed before the result; check desk_state" });
@@ -570,6 +578,24 @@ export default function (pi: ExtensionAPI) {
 		connect();
 	});
 	pi.events.on("kit:desk:tab", (id) => void (bridgeTab = Number(id) || 0));
+	// desk-browser's commands (Home names any session); a long one's finished result
+	const cancels = new Map<string, AbortController>();
+	pi.events.on(CONTROL_EVENT, (req: any) => {
+		const requestId = String(req?.requestId ?? "");
+		const answer = (o: { result: R } | { error: string }) => pi.events.emit(`${CONTROL_EVENT}:reply:${requestId}`, o);
+		if (!requestId) return answer({ error: "a requestId is required" });
+		// the browser tools' commands only, and never on Home's own tab (as desk_run)
+		const why = browserRefusal(req?.command) ?? refusal(req.command, undefined, own());
+		if (why) return answer({ error: why });
+		const ac = new AbortController();
+		cancels.set(requestId, ac);
+		const ms = Number(req.timeoutMs) > 0 ? Number(req.timeoutMs) : 60_000;
+		run(req.command, ms, ac.signal)
+			.then(({ result }) => answer(result.error === "cancelled" && ac.signal.aborted ? { error: "cancelled" } : { result }))
+			.catch((e) => answer({ error: (e as Error)?.message ?? String(e) }))
+			.finally(() => cancels.delete(requestId));
+	});
+	pi.events.on(`${CONTROL_EVENT}:cancel`, (req: any) => cancels.get(String(req?.requestId ?? ""))?.abort());
 	pi.on("session_shutdown", () => {
 		if (closed || !ctx) return;
 		closed = true;
