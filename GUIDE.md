@@ -279,8 +279,10 @@ bash, no background shells), which is handy for a look-only session.
 optional, read again before every command (an edit applies to the next one):
 `<agent-dir>/extensions/guardrails/config.json` (global; `<agent-dir>` is `~/.pi/agent` or
 `$PI_CODING_AGENT_DIR`) and `.pi/guardrails.json` in the session's working directory (per
-project). The project file adds to the global one and wins where both set the same preset or
-rule name, including `"off"`.
+project). The project file is tighten-only, because a cloned repo or an agent can write it: it
+may add presets and rules and raise `"ask"` to `"block"`, but an entry that would turn off or
+lower something the global file enabled, or give a global rule of the same name another pattern,
+is ignored with one warning naming the file.
 ```json
 {
   "enable": { "force-push": "ask", "push-main": "ask", "kubernetes": "block" },
@@ -302,7 +304,7 @@ rule name, including `"off"`.
 - `rules` are your own: `pattern` (a JavaScript regex matched against the whole command; escape
   backslashes in JSON), `reason` (shown in the dialog or block message), `action` (`"ask"`,
   the default, `"block"` or `"off"`), optional `flags` (e.g. `"i"`) and `name` (lets the project
-  file replace or turn off a global rule of the same name).
+  file raise a global rule of the same name, with the same pattern, to `"block"`).
 - `ask` shows a confirm dialog; without a UI it blocks with "Needs user approval (...) ... Report
   it to the orchestrator instead." `block` always blocks. If both match, block wins.
 - Bad config never turns guardrails off silently and never stops pi: each problem (invalid JSON,

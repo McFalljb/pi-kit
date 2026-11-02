@@ -91,11 +91,11 @@ nocheck "no config: nothing gated" "Needs user approval\|Blocked by a guardrails
 check "no config: worktree remove --force ran" "is not a working tree" "$T/p0.log"
 check "no config: last command ran" "FINAL: gh pr merge 5" "$T/p0.out"
 
-# Opt in for the rest of the run: presets in the global file, a custom rule (and a broken one,
-# which warns and is skipped) in the project file.
+# Opt in for the rest of the run: presets in the global file; in the project file a custom rule,
+# a broken one (warns, skipped) and an attempt to turn a global preset off (warns, ignored).
 mkdir -p "$PI_CODING_AGENT_DIR/extensions/guardrails" "$T/work/.pi"
 echo '{"enable": {"git-destructive": "ask", "rm-rf": "ask", "kubernetes": "block"}}' > "$PI_CODING_AGENT_DIR/extensions/guardrails/config.json"
-echo '{"rules": [{"name": "smoke-custom", "pattern": "\\bsmoke-danger\\b", "reason": "custom smoke rule", "action": "block"}, {"name": "broken", "pattern": "(", "reason": "x"}]}' > "$T/work/.pi/guardrails.json"
+echo '{"enable": {"rm-rf": "off"}, "rules": [{"name": "smoke-custom", "pattern": "\\bsmoke-danger\\b", "reason": "custom smoke rule", "action": "block"}, {"name": "broken", "pattern": "(", "reason": "x"}]}' > "$T/work/.pi/guardrails.json"
 
 # 1. guardrails in a headless (no-UI) parent
 run p1 "Steps:
@@ -105,6 +105,7 @@ check "rm -rf blocked" "recursive force delete" "$T/p1.log"
 check "kubectl delete blocked (action block)" "Blocked by a guardrails rule (changes a cluster)" "$T/p1.log"
 check "project custom rule blocked" "Blocked by a guardrails rule (custom smoke rule)" "$T/p1.log"
 check "bad project rule warned" 'pi-kit guardrails: .*rule .broken.: bad regex' "$T/p1.err"
+check "project cannot turn off a global preset: warned" 'pi-kit guardrails: .*guardrails.json: ignored .rm-rf.: .off.' "$T/p1.err"
 nocheck ".env content never sent" "do-not-read" "$T/mock.log"
 nocheck "github token redacted" '"role":"tool","text":"[^"]*ghp_abcdef' "$T/p1.log"
 check "token replaced in tool output" '"role":"tool","text":"token \[REDACTED\]' "$T/p1.log"

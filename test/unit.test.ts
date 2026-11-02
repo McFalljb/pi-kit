@@ -44,8 +44,8 @@ test("guardrails are opt-in: with no config, no command asks or is blocked", () 
 	}
 });
 
-/** Active rules from config texts, in merge order (global, then project). */
-const rulesOf = (...texts: string[]) => mergeLayers(texts.map((t, i) => parseConfig(t, `f${i}`).layer!));
+/** Active rules from config texts, in merge order (global, then project files, which are tighten-only). */
+const rulesOf = (...texts: string[]) => mergeLayers(texts.map((t, i) => ({ ...parseConfig(t, `f${i}`).layer!, tightenOnly: i > 0 })));
 
 test("commandVerdict: presets ask once enabled, read-only blocks mutation", () => {
 	const git = rulesOf('{"enable": {"git-destructive": "ask"}}');
@@ -104,19 +104,53 @@ test("guardrails custom rules: regex plus reason, ask or block", () => {
 	assert.match(describeRules(["g", "p"], [], [], false), /No command rules are on/);
 });
 
-test("guardrails project file adds to and overrides the global one", () => {
-	const global = JSON.stringify({ enable: { "force-push": "block", kubernetes: "ask", helm: "ask" }, rules: [{ name: "prod", pattern: "prod", reason: "global prod", action: "ask" }, { name: "vault", pattern: "vault write", reason: "vault" }] });
-	const project = JSON.stringify({ enable: { "force-push": "off", kubernetes: "block", terraform: "ask" }, rules: [{ name: "prod", pattern: "prod", reason: "project prod", action: "block" }, { name: "vault", pattern: "x", action: "off" }] });
-	const rules = rulesOf(global, project);
+test("guardrails project file is tighten-only: adds rules and raises ask to block", () => {
+	const global = JSON.stringify({ enable: { "force-push": "ask", kubernetes: "ask", helm: "ask" }, rules: [{ name: "prod", pattern: "prod", reason: "global prod", action: "ask" }] });
+	const project = JSON.stringify({ enable: { kubernetes: "block", terraform: "ask" }, rules: [{ name: "prod", pattern: "prod", reason: "project prod", action: "block" }, { name: "extra", pattern: "extra-danger", reason: "extra" }] });
+	const warnings: string[] = [];
+	const rules = mergeLayers([{ ...parseConfig(global, "g").layer!, tightenOnly: false }, { ...parseConfig(project, "p").layer!, tightenOnly: true }], warnings);
 	const by = (n: string) => rules.filter((r) => r.name === n).map((r) => `${r.action}@${r.source}`);
-	assert.deepEqual(by("force-push"), [], "project turned it off");
-	assert.deepEqual(by("kubernetes"), ["block@f1"]);
-	assert.deepEqual(by("helm"), ["ask@f0"], "global rule kept");
-	assert.deepEqual(by("terraform"), ["ask@f1"], "project adds");
-	assert.deepEqual(by("prod"), ["block@f1"]);
-	assert.deepEqual(by("vault"), [], "project turned a named custom rule off");
-	// Project "all" overrides the global file's named presets.
-	assert.deepEqual(rulesOf(global, '{"enable": {"all": "off"}}').filter((r) => PRESETS[r.name]), []);
+	assert.deepEqual(by("force-push"), ["ask@g"], "global rule kept");
+	assert.deepEqual(by("kubernetes"), ["block@p"], "raised to block");
+	assert.deepEqual(by("terraform"), ["ask@p"], "project adds a preset");
+	assert.deepEqual(by("prod"), ["block@p"], "same pattern, raised to block");
+	assert.deepEqual(by("extra"), ["ask@p"], "project adds a rule");
+	assert.deepEqual(warnings, []);
+});
+
+test("guardrails project file cannot turn off or weaken the global config (one warning naming the file)", () => {
+	const global = JSON.stringify({ enable: { "force-push": "block", kubernetes: "ask", helm: "block" }, rules: [{ name: "prod", pattern: "prod", reason: "global prod", action: "block" }, { name: "vault", pattern: "vault write", reason: "vault" }, { name: "ci", pattern: "ci-run", reason: "ci" }] });
+	const project = JSON.stringify({
+		enable: { "force-push": "off", kubernetes: "off", helm: "ask", terraform: "ask" },
+		rules: [{ name: "prod", pattern: "prod", reason: "weaker", action: "ask" }, { name: "vault", pattern: "x", action: "off" }, { name: "ci", pattern: "never-matches", reason: "swapped pattern", action: "block" }],
+	});
+	const warnings: string[] = [];
+	const rules = mergeLayers([{ ...parseConfig(global, "g").layer!, tightenOnly: false }, { ...parseConfig(project, "/repo/.pi/guardrails.json").layer!, tightenOnly: true }], warnings);
+	const by = (n: string) => rules.filter((r) => r.name === n).map((r) => `${r.action}@${r.source}:${r.pattern.source}`);
+	assert.deepEqual(by("force-push").map((x) => x.split(":")[0]), ["block@g"]);
+	assert.deepEqual(by("kubernetes").map((x) => x.split(":")[0]), ["ask@g"]);
+	assert.deepEqual(by("helm").map((x) => x.split(":")[0]), ["block@g"], "block is not lowered to ask");
+	assert.deepEqual(by("terraform").map((x) => x.split(":")[0]), ["ask@/repo/.pi/guardrails.json"], "the valid entries still apply");
+	assert.deepEqual(by("prod"), ["block@g:prod"]);
+	assert.deepEqual(by("vault"), ["ask@g:vault write"]);
+	assert.deepEqual(by("ci"), ["ask@g:ci-run"], "a different pattern cannot replace a global rule");
+	assert.equal(warnings.length, 1, "one warning for the file");
+	assert.match(warnings[0], /^\/repo\/\.pi\/guardrails\.json: ignored /);
+	for (const w of ['"force-push": "off"', '"kubernetes": "off"', '"helm": "ask"', 'rule "prod"', 'rule "vault"', 'rule "ci"']) assert.ok(warnings[0].includes(w), w);
+
+	// "all": "off" in a project file is ignored for everything the global file enabled.
+	const w2: string[] = [];
+	const r2 = mergeLayers([{ ...parseConfig(global, "g").layer!, tightenOnly: false }, { ...parseConfig('{"enable": {"all": "off"}}', "p").layer!, tightenOnly: true }], w2);
+	assert.deepEqual(r2.filter((r) => PRESETS[r.name]).map((r) => r.name), ["force-push", "kubernetes", "helm"]);
+	assert.equal(w2.length, 1);
+	// A project "all": "ask" turns the rest on and leaves "block" presets at block, without a warning.
+	const w3: string[] = [];
+	const r3 = mergeLayers([{ ...parseConfig(global, "g").layer!, tightenOnly: false }, { ...parseConfig('{"enable": {"all": "ask"}}', "p").layer!, tightenOnly: true }], w3);
+	assert.equal(r3.find((r) => r.name === "helm")!.action, "block");
+	assert.equal(r3.find((r) => r.name === "terraform")!.action, "ask");
+	assert.deepEqual(w3, []);
+	// Without a global file the project file is still tighten-only against nothing: it just adds.
+	assert.deepEqual(mergeLayers([{ ...parseConfig('{"enable": {"helm": "ask"}}', "p").layer!, tightenOnly: true }]).map((r) => r.name), ["helm"]);
 });
 
 test("guardrails bad config warns and keeps the valid rules", () => {
@@ -177,7 +211,10 @@ test("checkCommand: config files, ask vs block, with a UI and headless", async (
 		mkdirSync(path.join(agent, "extensions/guardrails"), { recursive: true });
 		mkdirSync(path.join(cwd, ".pi"), { recursive: true });
 		writeFileSync(path.join(agent, "extensions/guardrails/config.json"), '{"enable": {"pr-merge": "ask", "kubernetes": "ask"}}');
-		writeFileSync(path.join(cwd, ".pi/guardrails.json"), '{"enable": {"kubernetes": "block"}, "rules": [{"pattern": "drop-prod-db", "reason": "drops the prod db", "action": "ask"}]}');
+		writeFileSync(path.join(cwd, ".pi/guardrails.json"), '{"enable": {"kubernetes": "block", "pr-merge": "off"}, "rules": [{"pattern": "drop-prod-db", "reason": "drops the prod db", "action": "ask"}]}');
+		const loaded = loadRules(configPaths(cwd));
+		assert.equal(loaded.warnings.length, 1);
+		assert.match(loaded.warnings[0], /\.pi\/guardrails\.json: ignored "pr-merge": "off"/);
 
 		// ask: the UI decides; headless blocks with the report-it message.
 		assert.equal(await checkCommand("gh pr merge 5", false, ctx(true, true)), undefined);

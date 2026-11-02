@@ -4,9 +4,11 @@
  * - Command rules are opt-in: with no config no command asks or is blocked. The user turns on
  *   named presets (destructive git, rm -rf, deploys, cluster/infra changes, alert silencing, SQL
  *   drops, ...) or adds their own regex rules, each with action `ask` or `block`, in
- *   <agent-dir>/extensions/guardrails/config.json and, per project, <cwd>/.pi/guardrails.json
- *   (which adds to or overrides the global file). `ask` confirms with a UI; without one (print/json
- *   mode, subagent children) it blocks. Bad config warns once and keeps the valid rules.
+ *   <agent-dir>/extensions/guardrails/config.json and, per project, <cwd>/.pi/guardrails.json.
+ *   The project file is tighten-only: it can add rules and raise `ask` to `block`, never turn off
+ *   or weaken what the global file enabled (a repo or an agent could write it). `ask` confirms
+ *   with a UI; without one (print/json mode, subagent children) it blocks. Bad config warns once
+ *   and keeps the valid rules.
  * - In read-only sessions blocks file edits and mutating bash commands (always on).
  * - Redacts secret-shaped strings from tool output before the model sees it (always on).
  *
@@ -76,6 +78,8 @@ interface CustomRule {
 /** One parsed config file. */
 export interface Layer {
 	source: string;
+	/** A project file: may add rules or raise ask to block, never turn off or weaken earlier layers. */
+	tightenOnly?: boolean;
 	enable: Record<string, Setting>;
 	rules: [string, CustomRule][];
 }
@@ -141,28 +145,58 @@ export function parseConfig(text: string, source: string): { layer?: Layer; warn
 	return { layer, warnings };
 }
 
+const RANK: Record<Setting, number> = { off: 0, ask: 1, block: 2 };
+
 /**
- * Active rules from layers in order (global, then project): for a preset, the last layer that sets
- * it (by name, else through "all") wins; a custom rule with the same name as an earlier one
- * replaces it, and "off" removes it.
+ * Active rules from layers in order (global, then project). For a preset, the last layer that sets
+ * it (by name, else through "all") wins, and a custom rule replaces an earlier one of the same
+ * name ("off" removes it). A tightenOnly layer may only add or raise ask to block: an entry that
+ * would turn off or weaken a preset or rule from a trusted layer (or swap a rule's pattern) is
+ * ignored, and the layer gets one warning listing them, pushed to `warnings`.
  */
-export function mergeLayers(layers: Layer[]): Rule[] {
+export function mergeLayers(layers: Layer[], warnings: string[] = []): Rule[] {
+	const ignored = new Map<Layer, string[]>();
+	const ignore = (l: Layer, what: string) => ignored.set(l, [...(ignored.get(l) ?? []), what]);
+
 	const rules: Rule[] = [];
 	for (const [name, patterns] of Object.entries(PRESETS)) {
 		let set: Setting = "off";
 		let source = "";
 		for (const l of layers) {
-			const v = l.enable[name] ?? l.enable.all;
-			if (v) [set, source] = [v, l.source];
+			const named = l.enable[name];
+			const v = named ?? l.enable.all;
+			if (!v) continue;
+			if (l.tightenOnly && RANK[v] < RANK[set]) {
+				// Through "all" only "off" is worth a warning; "all": "ask" just leaves block presets at block.
+				if (named || v === "off") ignore(l, `"${name}": "${v}"`);
+				continue;
+			}
+			[set, source] = [v, l.source];
 		}
 		if (set !== "off") for (const [pattern, reason] of patterns) rules.push({ name, pattern, reason, action: set, source });
 	}
+
 	const custom = new Map<string, Rule>();
-	for (const l of layers)
+	const trusted = new Map<string, Rule>(); // custom rules as the trusted (non-tightenOnly) layers left them
+	for (const l of layers) {
 		for (const [name, r] of l.rules) {
+			const t = trusted.get(name);
+			if (l.tightenOnly && t && (r.action === "off" || RANK[r.action] < RANK[t.action] || r.pattern.source !== t.pattern.source || r.pattern.flags !== t.pattern.flags)) {
+				ignore(l, `rule "${name}"`);
+				continue;
+			}
 			custom.delete(name);
 			if (r.action !== "off") custom.set(name, { name, pattern: r.pattern, reason: r.reason, action: r.action, source: l.source });
 		}
+		if (!l.tightenOnly) {
+			trusted.clear();
+			for (const [k, v] of custom) trusted.set(k, v);
+		}
+	}
+
+	for (const [l, what] of ignored) {
+		warnings.push(`${l.source}: ignored ${what.join(", ")}: a project file can add rules or raise "ask" to "block", but not turn off or weaken the global config`);
+	}
 	return [...rules, ...custom.values()];
 }
 
@@ -172,7 +206,7 @@ function agentDir(): string {
 	return e === "~" ? os.homedir() : e.startsWith("~/") ? path.join(os.homedir(), e.slice(2)) : e;
 }
 
-/** The config files, in merge order: global, then the project's (relative to the session cwd). */
+/** The config files, in merge order: global, then the project's (relative to the session cwd; tighten-only). */
 export function configPaths(cwd: string): string[] {
 	return [path.join(agentDir(), "extensions", "guardrails", "config.json"), path.join(cwd, ".pi", "guardrails.json")];
 }
@@ -184,7 +218,7 @@ const parsed = new Map<string, { text: string; layer?: Layer; warnings: string[]
 export function loadRules(files: string[]): { rules: Rule[]; warnings: string[] } {
 	const layers: Layer[] = [];
 	const warnings: string[] = [];
-	for (const f of files) {
+	for (const [i, f] of files.entries()) {
 		let text: string;
 		try {
 			text = readFileSync(f, "utf8");
@@ -194,10 +228,11 @@ export function loadRules(files: string[]): { rules: Rule[]; warnings: string[] 
 		}
 		let p = parsed.get(f);
 		if (!p || p.text !== text) parsed.set(f, (p = { text, ...parseConfig(text, f) }));
-		if (p.layer) layers.push(p.layer);
+		// Every file after the first (global) one is a project file: tighten-only.
+		if (p.layer) layers.push({ ...p.layer, tightenOnly: i > 0 });
 		warnings.push(...p.warnings);
 	}
-	return { rules: mergeLayers(layers), warnings };
+	return { rules: mergeLayers(layers, warnings), warnings };
 }
 
 const warned = new Set<string>();
@@ -282,7 +317,7 @@ export async function checkCommand(cmd: string, readonly: boolean, ctx: Pick<Ext
 
 /** Text for /guardrails: the files read, the active rules and where each came from. */
 export function describeRules(files: string[], rules: Rule[], warnings: string[], readonly: boolean): string {
-	const out = [`Guardrails config (global, then project; project wins): ${files.join(", ")}`];
+	const out = [`Guardrails config (global, then project; the project file can only add or tighten): ${files.join(", ")}`];
 	if (readonly) out.push("Read-only session: mutating commands and file edits are blocked.");
 	if (rules.length === 0) out.push("No command rules are on: no command asks or is blocked.");
 	else for (const r of rules) out.push(`- ${r.action} ${r.name}: ${r.reason} [${r.source}]`);
