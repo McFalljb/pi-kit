@@ -142,7 +142,7 @@ const deskState = () => ({
 	selected_project: 1,
 	sessions: [],
 	open_sessions: [
-		{ id: 10, pi_session_id: "s10", project_id: 1, active_tab: 2, tabs: [piTab(2), { id: 5, kind: "shell", title: "shell 1", status: "running" }] },
+		{ id: 10, pi_session_id: "s10", project_id: 1, active_tab: 2, tabs: [piTab(2), { id: 5, kind: "shell", title: "shell 1", status: "running" }, { id: 13, kind: "app", title: "fake", status: "running", app_status: "stalled" }] },
 		{ id: 11, pi_session_id: "s11", project_id: 2, active_tab: 7, tabs: [piTab(7)] },
 		{ id: 12, pi_session_id: "s12", project_id: 3, active_tab: 8, tabs: [piTab(8)] },
 	].filter((s) => !closed.has(s.id)),
@@ -191,6 +191,25 @@ function control(c, m) {
 			userEvent({ ok: true });
 		}, 1500);
 	}
+	// app tab 13 (pi-desk passes app_call through: the fake app knows tab.describe and game.get)
+	if (cmd.type === "app_call") {
+		answer({ ok: true, pending: true }, { request_id: rid });
+		const replies = {
+			"tab.describe": { ok: true, data: { name: "fake", methods: [{ name: "game.get", params: { path: "square" } }] } },
+			"game.get": { ok: true, data: { value: { x: 100, y: 60 } } },
+		};
+		return finish(replies[cmd.method] ?? { ok: false, error: "not supported by the fake app", data: { code: "not_supported", method: cmd.method } }, 100);
+	}
+	if (cmd.type === "app_screenshot") {
+		answer({ ok: true, pending: true }, { request_id: rid });
+		const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+		const file = path.join(dir, "apps", "shots", "13-1.png"); // where pi-desk writes them: <data dir>/apps/shots/
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		fs.writeFileSync(file, png);
+		return finish({ ok: true, data: { path: file, w: 2, h: 2, bytes: png.length, seq: 5, tick: 7, scale: 2, rect: { x: 0, y: 0, w: 2, h: 2 }, visible: true } }, 100);
+	}
+	if (cmd.type === "app_input") return answer({ ok: true, data: { sent: cmd.events.length } }, { request_id: rid });
+	if (cmd.type === "app_events") return answer({ ok: true, data: { events: [{ seq: 3, event: { v: 1, type: "event", event: "tab.log", text: "tick 61" } }], next: 3 } }, { request_id: rid });
 	if (cmd.type === "pi_prompt") {
 		answer({ ok: true, pending: true }, { request_id: rid });
 		return send(c, { type: "event", event: "finished", request_id: rid, result: { ok: true } }); // at once: before the tool waits for it
@@ -271,7 +290,7 @@ function request(type, fields = {}, ms = 30_000) {
 const step = (name, args) => `@@ ${JSON.stringify({ name, arguments: args })}`;
 const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
-const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) });
+const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, PI_DESK_SHOTS_DIR: path.join(dir, "apps", "shots"), ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) });
 try {
 	if (mode === "reloads") {
 		await until("handshake", (m) => m.type === "hello", 30_000);
@@ -317,6 +336,13 @@ try {
 			step("desk_wait", { session: 10, timeout_s: 5 }),
 			step("desk_watch", {}),
 			step("desk_run", { command: { type: "nope" } }),
+			step("app_call", { tab: 13, method: "tab.describe" }),
+			step("app_call", { tab: 13, method: "game.get", params: { path: "square" }, timeout_s: 5 }),
+			step("app_call", { tab: 13, method: "game.nope" }),
+			step("app_call", { tab: 1, method: "tab.describe" }),
+			step("app_screenshot", { tab: 13, rect: { x: 0, y: 0, w: 1, h: 1 } }),
+			step("app_input", { tab: 13, events: [{ event: "key", action: "down", key: "w", mods: [] }] }),
+			step("app_events", { tab: 13, topic: "log" }),
 			step("bash", { command: "echo desk-control token=[$PI_DESK_CONTROL_TOKEN]" }),
 		];
 		let mark = got.length;
@@ -329,12 +355,18 @@ try {
 		const w1 = await until("and waits with pi_wait_idle", cmdAt("pi_wait_idle", (c) => c.tab_id === 2 && c.timeout_ms === 5000), 10_000, mark);
 		const w = await until("desk_wait by session waits on its pi tab", cmdAt("pi_wait_idle", (c) => c.tab_id === 2), 20_000, Math.max(w1 + 1, mark));
 		result("close_tab is never resent with a token", !got.some((g) => g.m.command?.type === "close_tab" && g.m.command.confirm));
-		result("nothing aimed at Home's own tab or send_text into a pi tab reaches pi-desk", !got.some((g) => g.m.command?.tab_id === 1 || g.m.command?.type === "send_text"));
 		// Home's run ends with the fired watches' messages answered (followed up in the same run, or a run of their own).
 		await until("Home idle after the steps", (m) => isStatus(m, "idle"), 30_000, Math.max(w, mark));
 		await sleep(3000);
 		const lastStatus = () => got.findLast((g) => g.m.type === "pi.status")?.m;
 		await until("Home settled", (m) => m === lastStatus() && isStatus(m, "idle"), 15_000, mark);
+		result("nothing aimed at Home's own tab or send_text into a pi tab reaches pi-desk", !got.some((g) => g.m.command?.tab_id === 1 || g.m.command?.type === "send_text"));
+		const sent = (type, pred) => got.some((g) => g.m.type === "command" && g.m.command?.type === type && pred(g.m.command));
+		result("app_call sends the app's method as given", sent("app_call", (c) => c.tab_id === 13 && c.method === "tab.describe" && !("params" in c)));
+		result("app_call passes params and the timeout", sent("app_call", (c) => c.method === "game.get" && JSON.stringify(c.params) === '{"path":"square"}' && c.timeout_ms === 5000));
+		result("app_screenshot sends the crop", sent("app_screenshot", (c) => c.tab_id === 13 && JSON.stringify(c.rect) === '{"x":0,"y":0,"w":1,"h":1}'));
+		result("app_input sends the events as given", sent("app_input", (c) => c.tab_id === 13 && JSON.stringify(c.events) === '[{"event":"key","action":"down","key":"w","mods":[]}]'));
+		result("app_events asks for the topic", sent("app_events", (c) => c.tab_id === 13 && c.topic === "log"));
 		mark = got.length;
 		conns.findLast((x) => x.caller === "control").sock.destroy();
 		await until("control reconnects with the reconnect token", (m) => m.type === "hello" && m.token === CTL_RE, 10_000, mark);

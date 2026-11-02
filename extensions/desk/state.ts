@@ -31,6 +31,7 @@ export function filterState(state: any, f: Filter): any {
 export function tabLine(t: any): string {
 	const parts = [`tab ${t.id} ${one(t.kind)} "${one(t.title)}"`];
 	if (t.status && t.status !== "running") parts.push(one(t.status));
+	if (t.kind === "app" && t.app_status && t.app_status !== "running" && t.app_status !== t.status) parts.push(one(t.app_status));
 	if (t.kind === "pi") {
 		const agent = t.waiting ? "waiting for the user" : t.agent === "idle" && t.question ? "idle, asked a question" : one(t.agent) || "unknown";
 		parts.push(agent);

@@ -18,6 +18,9 @@
  *   fresh state after a reconnect, a dropped stream or another command event, for exits) sends one
  *   message that starts a turn, and ends the watch. desk_events reads pi-desk's notifications on
  *   demand.
+ * - App tabs (a program such as a game engine drawing into a tab): app_call passes any method of
+ *   the app's own through pi-desk (agents call `tab.describe` first), app_screenshot returns the
+ *   frame the tab shows, app_input and app_events. No per-feature tools (see app.ts).
  * - Home's own tabs (the control hello's `tab_id`, and the bridge's tab via `kit:desk:tab`) are
  *   never targeted: desk_run, desk_prompt, desk_wait and desk_watch refuse them; desk_run also refuses
  *   send_text into a pi tab or a tab waiting for the user (see refusal in state.ts).
@@ -29,6 +32,7 @@ import net from "node:net";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { backoff, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
+import { appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "./app.ts";
 import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
 import { alreadyTrue, eventsText, exited, filterState, findTab, fires, type Notice, noticeFor, type On, piTabOf, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
 
@@ -456,6 +460,91 @@ export default function (pi: ExtensionAPI) {
 				watches.set(tab, { on, label: tabLabel(st, tab), gen: ++gen });
 				const shell = t.kind !== "pi" ? " It is a shell tab: only its exit can fire." : "";
 				return text(`${said ? `${said}, so that is not watched. ` : ""}Watching tab ${tab} (${on.join(", ")}): you get one message when it happens.${shell} ${now}`);
+			},
+		});
+
+		const appTab = Type.Number({ description: "The app tab's id (desk_state: tabs of kind app)" });
+		/** An app command's result (waited for if long-running); refuses Home's own tabs. */
+		async function appRun(cmd: R, ms: number, signal?: AbortSignal): Promise<R> {
+			const why = refusal(cmd, undefined, own());
+			if (why) throw new Error(why);
+			const { result } = await run(cmd, ms, signal);
+			return result;
+		}
+
+		pi.registerTool({
+			name: "app_call",
+			label: "Call an app tab",
+			description:
+				'Call a method of the program in a pi-desk app tab (a game engine or another app drawing into the tab). The methods are the app\'s own, not pi-desk\'s: first call method "tab.describe" to learn what it offers (its methods with their params, its events), then call those; never guess method names. `params` is a JSON object passed to the app as given. Returns the app\'s reply, or its error with a code (not_supported: no such method; timeout; tab_gone: it exited). pi-desk keeps tab.quit and tab.visible for itself. App tab ids are in desk_state; desk_run new_app_tab opens one and app_restart restarts one.',
+			promptSnippet: "Call a method of the app in a pi-desk app tab (ask it with tab.describe first)",
+			promptGuidelines: ['For a pi-desk app tab, call app_call with method "tab.describe" before anything else, and use only the methods it lists.'],
+			parameters: Type.Object({
+				tab: appTab,
+				method: Type.String({ description: 'The app\'s method, e.g. "tab.describe"' }),
+				params: Type.Optional(Type.Object({}, { additionalProperties: true, description: "The method's parameters (a JSON object)" })),
+				timeout_s: Type.Optional(Type.Number({ description: "Seconds the app has to answer (default 10, max 600)" })),
+			}),
+			async execute(_id, p, signal) {
+				const cmd = appCallCommand(p.tab, p.method, p.params as R | undefined, p.timeout_s);
+				const ms = (cmd.timeout_ms ?? 10_000) + 5000;
+				return text(appReplyText(p.tab, p.method, await appRun(cmd, ms, signal)));
+			},
+		});
+
+		pi.registerTool({
+			name: "app_screenshot",
+			label: "Screenshot an app tab",
+			description:
+				"See what a pi-desk app tab shows now: a PNG of its current frame, taken by pi-desk (it works while the app is busy or stalled, and shows the last frame after it exited). `rect` {x, y, w, h} crops it, in the tab's logical px (the same coordinates as app_input and the app's boxes).",
+			promptSnippet: "See the frame a pi-desk app tab shows now (optionally a crop)",
+			parameters: Type.Object({
+				tab: appTab,
+				rect: Type.Optional(Type.Object({ x: Type.Number(), y: Type.Number(), w: Type.Number(), h: Type.Number() }, { description: "Crop, in the tab's logical px" })),
+			}),
+			async execute(_id, p, signal) {
+				const result = await appRun({ type: "app_screenshot", tab_id: p.tab, ...(p.rect && { rect: p.rect }) }, 40_000, signal);
+				if (!result.ok) return text(appReplyText(p.tab, "app_screenshot", result));
+				const d = result.data ?? {};
+				const about = shotText(p.tab, d);
+				const shot = shotFile(p.tab, d.path);
+				if ("why" in shot) return text(`${about}\n(Not attached: ${shot.why}.)`);
+				const png = shot.png;
+				return { content: [{ type: "text" as const, text: about }, { type: "image" as const, data: png.toString("base64"), mimeType: "image/png" }], details: undefined };
+			},
+		});
+
+		pi.registerTool({
+			name: "app_input",
+			label: "Input to an app tab",
+			description:
+				'Send input to the program in a pi-desk app tab as the user\'s would go. `events` are input objects, in order: {"event":"key","action":"down"|"up","key":"w","mods":[]}, {"event":"char","text":"a"}, {"event":"mouse","action":"down"|"up","button":"left","x":120,"y":44,"clicks":1}, {"event":"move","x":121,"y":45}, {"event":"scroll","dx":0,"dy":-3,"x":120,"y":44}. Keys are sokol key names in lower case (a, 1, space, enter, left, left_shift, f6); x and y are the tab\'s logical px. A key stays down until its "up". Many apps offer their own input, time or step methods: check tab.describe (app_call).',
+			promptSnippet: "Send keys, text and mouse input to a pi-desk app tab",
+			parameters: Type.Object({ tab: appTab, events: Type.Array(Type.Object({ event: Type.String() }, { additionalProperties: true }), { description: "Input objects, in order" }) }),
+			async execute(_id, p, signal) {
+				const result = await appRun({ type: "app_input", tab_id: p.tab, events: appInputEvents(p.events) }, 10_000, signal);
+				if (!result.ok) throw new Error(`pi-desk: ${result.error ?? "input not sent"}`);
+				return text(`Sent ${result.data?.sent ?? p.events.length} input event(s) to tab ${p.tab}.`);
+			},
+		});
+
+		pi.registerTool({
+			name: "app_events",
+			label: "App tab events",
+			description:
+				"Read the recent events a pi-desk app tab's program sent, one topic at a time (`log` for its tab.log lines; the app's tab.describe lists its other topics), oldest first. pi-desk keeps the last 500 per topic; nothing is pushed to you. Pass the returned `next` as `since` to read only newer ones.",
+			promptSnippet: "Read a pi-desk app tab's recent events (its log and other topics)",
+			parameters: Type.Object({
+				tab: appTab,
+				topic: Type.String({ description: 'The topic, e.g. "log" (tab.log)' }),
+				since: Type.Optional(Type.Number({ description: "Only events after this seq (the last call's next)" })),
+				limit: Type.Optional(Type.Number({ description: "At most this many (default 100)" })),
+			}),
+			async execute(_id, p, signal) {
+				const cmd = { type: "app_events", tab_id: p.tab, topic: p.topic, ...(p.since !== undefined && { since: p.since }), ...(p.limit !== undefined && { limit: p.limit }) };
+				const result = await appRun(cmd, 10_000, signal);
+				if (!result.ok) throw new Error(`pi-desk: ${result.error ?? "no events"}`);
+				return text(appEventsText(p.tab, p.topic, result.data));
 			},
 		});
 

@@ -202,7 +202,16 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   `desk_events` reads pi-desk's `notifications_list` when `list_commands` lists it (else says it
   is unavailable): `{notifications: [{id, time, kind, title, ...}]}` as one line each, at most
   300 characters, the latest 20 (`limit`), fenced and marked as data; another shape as at most
-  4 KB of JSON. pi-desk itself
+  4 KB of JSON. App tabs (a program such as a game engine drawing into a tab, pi-desk's
+  `docs/ENGINE-BRIDGE.md`) get four general tools, no per-feature ones: `app_call {tab, method,
+  params?, timeout_s?}` passes any method of the app's own through pi-desk's `app_call` (the
+  description sends the agent to `tab.describe` first; the reply is fenced data, an error says its
+  code with a hint), `app_screenshot {tab, rect?}` (pi-desk writes a PNG of the frame it shows; the
+  tool attaches it as an image up to 4 MB, only from directly in `PI_DESK_SHOTS_DIR`, which pi-desk
+  sets for the pi sessions it starts; the shape-only fallback, any `.../apps/shots/<tab>-<n>.png`,
+  is for older pi-desk builds that do not set it), `app_input {tab, events}` and `app_events {tab, topic,
+  since?, limit?}`; `new_app_tab` and `app_restart` go through `desk_run` (`extensions/desk/app.ts`).
+  pi-desk itself
   never sends a caller its own events. After a `dropped` event stream the extension subscribes
   again and re-checks pending confirmations and watches.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
