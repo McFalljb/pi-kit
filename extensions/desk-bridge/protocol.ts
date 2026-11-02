@@ -220,8 +220,14 @@ export const CONTROL_EVENT = "kit:desk:control:command";
 /** desk (Home) says whether its control connection is up: true / false. */
 export const CONTROL_READY = "kit:desk:control";
 export type CommandOutcome = { result: Record<string, any> } | { error: string };
-/** The commands extensions/desk-browser sends: the only ones either route forwards. */
-export const BROWSER_COMMANDS: ReadonlySet<string> = new Set(["browser_tabs", "browser_open", "browser_navigate", "browser_read", "browser_screenshot", "browser_wait", "browser_console", "browser_network", "browser_comments"]);
+/**
+ * The commands extensions/desk-browser sends: the only ones either route forwards. Never the
+ * user-only ones (browser_upload_answer, browser_agent_take_over, browser_agent_stop).
+ */
+export const BROWSER_COMMANDS: ReadonlySet<string> = new Set([
+	"browser_tabs", "browser_open", "browser_navigate", "browser_read", "browser_screenshot", "browser_wait", "browser_console", "browser_network", "browser_comments",
+	"browser_click", "browser_type", "browser_press", "browser_scroll", "browser_select", "browser_hover", "browser_upload",
+]);
 /** Why a command may not go over kit:desk:command / kit:desk:control:command, or undefined. */
 export function browserRefusal(cmd: unknown): string | undefined {
 	const type = (cmd as Record<string, unknown> | undefined)?.type;
