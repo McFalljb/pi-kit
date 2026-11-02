@@ -18,10 +18,11 @@
  *   `pi.wait_idle` (when pi is idle with nothing queued and no blockers, or a timeout) and
  *   `pi.reload` (refused unless that same idle holds: a reload kills the kit's background shells;
  *   the result comes after it).
- * - Holds pi-desk's pending comments (`pi.attach` replaces them, `pi.attach_clear` drops them) and
- *   adds them to the next message the user types in pi (the `input` hook: text after the user's,
- *   images after theirs), then tells pi-desk `pi.attached {attachment_id}` so it clears them.
- *   pi-desk sends them again after every handshake (pi.session), so a reload loses nothing.
+ * - Holds pi-desk's pending comments (`pi.attach` replaces them, `pi.attach_clear` drops them, and
+ *   so does a dropped connection) and adds them to the next message the user types in pi (the
+ *   `input` hook: text after the user's, images after theirs; not a `/` command), then, once that
+ *   message starts (`message_start`), tells pi-desk `pi.attached {attachment_id}` so it clears them.
+ *   pi-desk sends them again (or clears them) after every handshake, so a reload loses nothing.
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
  */
@@ -30,7 +31,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Panel, type Run, type ShellRow, SUBAGENT_EVENTS } from "../sidebar/rows.ts";
-import { type Attachment, attachInput, backoff, busyReasons, deskToken, keepReconnectToken, line, parse, parseAttach, promptContent, promptRefusal, reply, runOutcome, status, wireImages } from "./protocol.ts";
+import { Attacher, backoff, busyReasons, deskToken, keepReconnectToken, line, parse, parseAttach, promptContent, promptRefusal, reply, runOutcome, status, wireImages } from "./protocol.ts";
 
 export { inDesk } from "./protocol.ts";
 
@@ -64,8 +65,8 @@ export default function (pi: ExtensionAPI) {
 	let panelTimer: NodeJS.Timeout | undefined;
 	let idleTimer: NodeJS.Timeout | undefined;
 	const waiters = new Map<unknown, NodeJS.Timeout | undefined>(); // pi.wait_idle id -> its timeout
-	let attachment: Attachment | undefined; // pi-desk's pending comments (pi.attach), for the next typed message
-	const acks: (string | number)[] = []; // pi.attached not sent yet (no connection when the message went)
+	const attach = new Attacher(); // pi-desk's pending comments (pi.attach), for the next typed message
+	const acks: (string | number)[] = []; // pi.attached not sent yet (no connection when the message started)
 
 	const send = (msg: Record<string, unknown>) => {
 		if (sock && ready && !sock.destroyed) sock.write(line({ id: `b${++seq}`, ...msg }));
@@ -137,11 +138,11 @@ export default function (pi: ExtensionAPI) {
 		if (m.type === "pi.attach") {
 			const a = parseAttach(m);
 			if (typeof a === "string") return answer(m.id, { ok: false, error: a });
-			attachment = a;
+			attach.set(a);
 			return answer(m.id, { ok: true });
 		}
 		if (m.type === "pi.attach_clear") {
-			attachment = undefined;
+			attach.clear();
 			return answer(m.id, { ok: true });
 		}
 		if (m.type === "pi.wait_idle") {
@@ -213,6 +214,9 @@ export default function (pi: ExtensionAPI) {
 			for (const t of waiters.values()) clearTimeout(t); // their connection is gone
 			waiters.clear();
 			reloadId = undefined; // a reload still running answers nobody
+			// pi-desk may clear or change the comments while we are away and cannot say so: after the
+			// handshake it sends them again, or pi.attach_clear
+			attach.clear();
 			if (!connected && !closed) pi.events.emit("kit:desk:mode", false); // no pi-desk: the sidebar draws as usual
 			if (!closed) retry = setTimeout(connect, backoff(attempt++));
 		});
@@ -265,14 +269,17 @@ export default function (pi: ExtensionAPI) {
 		connect();
 		subagentsChanged();
 	});
-	// The user's next typed message takes pi-desk's pending comments; pi-desk clears them on pi.attached.
+	// The user's next typed message takes pi-desk's pending comments; once that message starts
+	// (not if pi refuses it or another extension takes it), pi.attached tells pi-desk to clear them.
 	pi.on("input", (e) => {
-		const out = attachInput(e, attachment);
-		if (!out) return { action: "continue" };
-		acks.push(attachment!.id);
-		attachment = undefined;
+		const out = attach.input(e);
+		return out ? { action: "transform", ...out } : { action: "continue" };
+	});
+	pi.on("message_start", (e) => {
+		const ids = attach.started(e.message as { role?: string; content?: unknown });
+		if (!ids.length) return;
+		acks.push(...ids);
 		flushAcks();
-		return { action: "transform", ...out };
 	});
 	pi.on("ui_prompt_start", () => {
 		dialogs++;

@@ -293,7 +293,8 @@ const isStatus = (m, agent) => m.type === "pi.status" && m.agent === agent;
 
 const proc = startPi(screen, { PI_DESK_SOCKET: sockPath, PI_DESK_TOKEN: TOKEN, PI_DESK_SHOTS_DIR: path.join(dir, "apps", "shots"), ...(mode === "control" && { PI_DESK_CONTROL_TOKEN: CTL }) },
 	// the pending-comments steps send images: a model that takes them (smoke.sh's models.json)
-	mode === "desk" ? ["--model", "mock/mock-img"] : []);
+	// and another extension that takes some typed messages ("drop-me ...") before they start
+	mode === "desk" ? ["--model", "mock/mock-img", "-e", path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures", "desk-drop-input.ts")] : []);
 try {
 	if (mode === "reloads") {
 		await until("handshake", (m) => m.type === "hello", 30_000);
@@ -453,6 +454,35 @@ try {
 	await until("idle after Send now", (m) => isStatus(m, "idle"), 20_000, Math.max(sw, mark));
 	r = await request("pi.prompt", { text: "x", images: [{ mime: "image/png", data: "%%%" }] });
 	result("pi.prompt with a bad image refused", r.ok === false && /base64/.test(r.error), JSON.stringify(r));
+	const acked = (from) => got.slice(from).filter((g) => g.m.type === "pi.attached").map((g) => g.m.attachment_id);
+	// pi.attached waits until the message carrying the comments starts: queued behind a run here
+	r = await request("pi.attach", { attachment_id: 46, text: "ATTACH-46" });
+	mark = got.length;
+	await request("pi.prompt", { text: `Steps:\n${step("bash", { command: "sleep 3; echo slow." })}` });
+	const qw = await until("a slow run", (m) => isStatus(m, "working"), 20_000, mark);
+	await sleep(300);
+	proc.stdin.write("typed-queued please\r");
+	await sleep(1200);
+	result("no pi.attached while the message with the comments waits in pi's queue", acked(mark).length === 0, acked(mark).join());
+	await until("pi.attached once the queued message starts", (m) => m.type === "pi.attached" && m.attachment_id === 46, 20_000, mark);
+	await until("idle after the queued message", (m) => isStatus(m, "idle"), 20_000, qw);
+	// a slash command (a prompt template) and a message another extension takes: the comments wait
+	r = await request("pi.attach", { attachment_id: 47, text: "ATTACH-47" });
+	mark = got.length;
+	await typed("/deskt please");
+	proc.stdin.write("drop-me please\r");
+	await sleep(1500);
+	result("no pi.attached for a slash command or a message that never started", acked(mark).length === 0, acked(mark).join());
+	await typed("typed-five please");
+	result("the next message took them", acked(mark).join() === "47", acked(mark).join());
+	// the connection drops while pi holds an attachment: it is forgotten (pi-desk sends it again, or clears it)
+	r = await request("pi.attach", { attachment_id: 48, text: "ATTACH-48" });
+	const nb = conns.length;
+	mark = got.length;
+	conns.findLast((x) => x.caller !== "control").sock.destroy();
+	await until("the bridge reconnects", (m, n) => m.type === "pi.session" && n === nb, 10_000, mark);
+	await typed("typed-after-drop please");
+	result("a dropped connection's attachment does not go", acked(mark).length === 0, acked(mark).join());
 	r = await request("pi.nonsense");
 	result("unknown type refused", r.ok === false && /unknown/.test(r.error), JSON.stringify(r));
 

@@ -154,11 +154,69 @@ export function parseAttach(m: Record<string, any>): Attachment | string {
 /**
  * The input transform: the user's next message typed in pi (source `interactive`) gets the pending
  * attachment after its own text and images. undefined: leave the input as it is (nothing pending,
- * or a message from pi.prompt, RPC or another extension).
+ * a message from pi.prompt, RPC or another extension, or a `/` command: pi expands templates and
+ * skills after this hook, and the block would end up in their arguments).
  */
 export function attachInput(e: { text: string; images?: Image[]; source: string }, a: Attachment | undefined): { text: string; images: Image[] } | undefined {
-	if (!a || e.source !== "interactive") return undefined;
+	if (!a || e.source !== "interactive" || e.text.trimStart().startsWith("/")) return undefined;
 	return { text: e.text.trim() ? `${e.text}\n\n${a.text}` : a.text, images: [...(e.images ?? []), ...a.images] };
+}
+
+/** A message's text (a user message's content is a string or text and image parts). */
+function messageText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content.map((p) => (p?.type === "text" && typeof p.text === "string" ? p.text : "")).join("\n");
+}
+
+const RIDING_MAX = 8; // attachments put on messages that have not started yet, kept for their ack
+
+/**
+ * pi-desk's pending comments in the bridge: what `pi.attach` holds, and the attachments put on a
+ * message the user typed that has not started yet. pi.attached goes only once that message starts
+ * (`started`, from pi's `message_start`): a message pi refuses (no model, no auth) or another
+ * extension takes never starts, and the comments go with the next one instead.
+ */
+export class Attacher {
+	held: Attachment | undefined;
+	private riding: { id: string | number; text: string }[] = [];
+
+	/** pi.attach: replaces what is held. */
+	set(a: Attachment) {
+		this.held = a;
+	}
+	/** pi.attach_clear, or the connection dropped (pi-desk sends it again, or clears it). */
+	clear() {
+		this.held = undefined;
+	}
+	/**
+	 * The input transform for the user's message (attachInput), or undefined. A message queued
+	 * while pi works (streamingBehavior) takes an attachment once: a second queued message does not
+	 * repeat it.
+	 */
+	input(e: { text: string; images?: Image[]; source: string; streamingBehavior?: string }) {
+		const a = this.held;
+		const out = attachInput(e, a);
+		if (!out || !a) return undefined;
+		const on = this.riding.some((r) => r.id === a.id);
+		if (on && e.streamingBehavior) return undefined;
+		if (!on) {
+			this.riding.push({ id: a.id, text: a.text });
+			if (this.riding.length > RIDING_MAX) this.riding.shift();
+		}
+		return out;
+	}
+	/** A message started (pi's message_start): the attachments it carries, now delivered (ack them). */
+	started(message: { role?: string; content?: unknown }): (string | number)[] {
+		if (message?.role !== "user") return [];
+		const text = messageText(message.content);
+		const done = this.riding.filter((r) => text.includes(r.text));
+		if (!done.length) return [];
+		this.riding = this.riding.filter((r) => !done.includes(r));
+		const ids = done.map((r) => r.id);
+		if (this.held && ids.includes(this.held.id)) this.held = undefined;
+		return ids;
+	}
 }
 
 /** pi.prompt's message for sendUserMessage: the text alone, or text then images. */

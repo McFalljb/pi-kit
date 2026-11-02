@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { checkCommand, commandVerdict, configPaths, describeRules, isShellLog, loadRules, mergeLayers, parseConfig, PRESETS, redact, warnOnce } from "../extensions/guardrails/core.ts";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { ATTACH_IMAGES_MAX, attachInput, backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, parseAttach, promptContent, reply, runOutcome, status, wireImages } from "../extensions/desk-bridge/protocol.ts";
+import { ATTACH_IMAGES_MAX, Attacher, attachInput, backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, parseAttach, promptContent, reply, runOutcome, status, wireImages } from "../extensions/desk-bridge/protocol.ts";
 import { COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
 import { alreadyTrue, DATA_NOTE, tabLine, eventsText, EVENTS_END, EVENTS_START, exited, filterState, fires, noticeFor, type On, piTabOf, refusal, seenFrom, stateText, summarize, tabLabel, watchHits, watchText } from "../extensions/desk/state.ts";
 import { APP_IMAGE_MAX, appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "../extensions/desk/app.ts";
@@ -825,6 +825,63 @@ test("desk bridge: the attachment goes with the next message typed in pi, after 
 	assert.equal(attachInput({ text: "x", source: "interactive" }, undefined), undefined, "nothing pending");
 	assert.equal(attachInput({ text: "x", source: "extension" }, a), undefined, "pi.prompt and other extensions' messages: not the user's next message");
 	assert.equal(attachInput({ text: "x", source: "rpc" }, a), undefined);
+});
+
+test("desk bridge: a slash command keeps its text; the attachment waits for the next message", () => {
+	const a = { id: 3, text: "<pi-desk-comments>", images: [] };
+	assert.equal(attachInput({ text: "/review the diff", source: "interactive" }, a), undefined, "a prompt template");
+	assert.equal(attachInput({ text: "  /skill:foo go", source: "interactive" }, a), undefined, "a skill, after spaces");
+	const t = new Attacher();
+	t.set(a);
+	assert.equal(t.input({ text: "/review", source: "interactive" }), undefined);
+	assert.equal(t.held?.id, 3, "still pending");
+	assert.deepEqual(t.input({ text: "now this", source: "interactive" }), { text: "now this\n\n<pi-desk-comments>", images: [] });
+});
+
+const userMsg = (content: unknown) => ({ role: "user", content });
+test("desk bridge: pi.attached only once the message carrying the comments starts", () => {
+	const t = new Attacher();
+	const a = { id: 5, text: "<pi-desk-comments>A5</pi-desk-comments>", images: [] };
+	t.set(a);
+	const out = t.input({ text: "look", source: "interactive" });
+	assert.ok(out);
+	assert.equal(t.held?.id, 5, "not acked at input: the message may never start");
+	assert.deepEqual(t.started({ role: "assistant", content: [{ type: "text", text: out.text }] }), [], "not a user message");
+	assert.deepEqual(t.started(userMsg("something else")), [], "another message");
+	assert.deepEqual(t.started(userMsg([{ type: "text", text: out.text }, { type: "image", data: PNG, mimeType: "image/png" }])), [5]);
+	assert.equal(t.held, undefined, "delivered: dropped");
+	assert.deepEqual(t.started(userMsg(out.text)), [], "acked once");
+});
+
+test("desk bridge: a message that never starts keeps the comments for the next one", () => {
+	const t = new Attacher();
+	t.set({ id: 6, text: "C6", images: [] });
+	assert.ok(t.input({ text: "first", source: "interactive" })); // then pi threw (no model, no auth) or a handler took it
+	const again = t.input({ text: "second", source: "interactive" });
+	assert.deepEqual(again, { text: "second\n\nC6", images: [] }, "goes again");
+	assert.deepEqual(t.started(userMsg(again!.text)), [6]);
+});
+
+test("desk bridge: queued messages carry the comments once; pi-desk replacing them meanwhile", () => {
+	const t = new Attacher();
+	t.set({ id: 7, text: "C7", images: [] });
+	const q1 = t.input({ text: "one", source: "interactive", streamingBehavior: "followUp" });
+	assert.ok(q1);
+	assert.equal(t.input({ text: "two", source: "interactive", streamingBehavior: "followUp" }), undefined, "already on a queued message");
+	t.set({ id: 8, text: "C8", images: [] }); // an edit in pi-desk: a new attachment
+	const q3 = t.input({ text: "three", source: "interactive", streamingBehavior: "steer" });
+	assert.deepEqual(q3, { text: "three\n\nC8", images: [] });
+	assert.deepEqual(t.started(userMsg(q1!.text)), [7], "the old one is acked when its message starts");
+	assert.equal(t.held?.id, 8, "the newer one stays");
+	assert.deepEqual(t.started(userMsg(q3!.text)), [8]);
+	assert.equal(t.held, undefined);
+});
+
+test("desk bridge: a dropped connection forgets the attachment (pi-desk sends it again or clears it)", () => {
+	const t = new Attacher();
+	t.set({ id: 9, text: "C9", images: [] });
+	t.clear();
+	assert.equal(t.input({ text: "x", source: "interactive" }), undefined);
 });
 
 test("desk bridge: pi.prompt with images is sent as text plus image content", () => {

@@ -51,6 +51,8 @@ cat > "$PI_CODING_AGENT_DIR/models.json" <<JSON
  "mock":{"baseUrl":"http://127.0.0.1:$PORT/v1","api":"openai-completions","apiKey":"mock","models":[{"id":"mock-1"},{"id":"mock-img","input":["text","image"]}]},
  "mockb":{"baseUrl":"http://127.0.0.1:$PORT/v1","api":"openai-completions","apiKey":"mock","models":[{"id":"mock-b"}]}}}
 JSON
+mkdir -p "$PI_CODING_AGENT_DIR/prompts" # a prompt template for the pi-desk bridge run (25)
+printf 'TEMPLATE-EXPANDED $ARGUMENTS\n' > "$PI_CODING_AGENT_DIR/prompts/deskt.md"
 cat > "$PI_CODING_AGENT_DIR/settings.json" <<JSON
 {"defaultProvider":"mock","defaultModel":"mock-1","defaultThinkingLevel":"off","enableInstallTelemetry":false,
  "packages":["$SUBAGENTS","$KIT"$EXTRA],
@@ -384,6 +386,11 @@ check "desk: the typed message took the comments, text and image" '"text":"typed
 check "desk: the next typed message goes alone" '"text":"typed-two please"}' "$T/mock.log"
 check "desk: a cleared attachment does not go" '"text":"typed-three please"}' "$T/mock.log"
 check "desk: pi.prompt with images reaches the model" '"text":"SEND-NOW comments","images":1' "$T/mock.log"
+check "desk: a queued message took its comments" '"text":"typed-queued please\\n\\nATTACH-46"' "$T/mock.log"
+check "desk: a prompt template expands without the comments" '"text":"TEMPLATE-EXPANDED please\\n"}' "$T/mock.log"
+check "desk: the comments went with the next message instead" '"text":"typed-five please\\n\\nATTACH-47"}' "$T/mock.log"
+nocheck "desk: a message another extension took never reached the model" 'drop-me please' "$T/mock.log"
+check "desk: a dropped connection's attachment does not go" '"text":"typed-after-drop please"}' "$T/mock.log"
 nocheck "desk: no sidebar column in pi-desk" "No subagents, todos or shells" "$T/desk.screen"
 node "$KIT/test/desk-fake.mjs" plain "$T/plain.screen"
 check "desk: sidebar column outside pi-desk" "No subagents, todos or shells" "$T/plain.screen"
