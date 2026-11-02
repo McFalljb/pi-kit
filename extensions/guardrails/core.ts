@@ -22,7 +22,7 @@
  * Commands the user types with `!` go through user_bash, not tool_call, and are not gated.
  */
 
-import { readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 // Type-only import, so the pure functions here load under plain node for test/unit.test.ts.
@@ -66,6 +66,8 @@ export interface Rule {
 	reason: string;
 	action: Action;
 	source: string;
+	/** A user-written rule (not a preset): tested only against the first MAX_TESTED chars. */
+	custom?: boolean;
 }
 
 type Setting = Action | "off";
@@ -86,25 +88,21 @@ export interface Layer {
 
 /**
  * Parses one config file. Every problem becomes a warning and only the bad entry is skipped;
- * invalid JSON yields no layer (nothing in that file can be trusted).
+ * invalid JSON (or a non-object) yields no layer and an `error` instead.
  *
  * {"enable": {"<preset>" | "all": "ask" | "block" | "off"},
  *  "rules": [{"name"?, "pattern", "reason"?, "action"?: "ask" | "block" | "off", "flags"?}]}
  */
-export function parseConfig(text: string, source: string): { layer?: Layer; warnings: string[] } {
+export function parseConfig(text: string, source: string): { layer?: Layer; error?: string; warnings: string[] } {
 	const warnings: string[] = [];
 	const warn = (m: string) => warnings.push(`${source}: ${m}`);
 	let raw: unknown;
 	try {
 		raw = JSON.parse(text);
 	} catch (e) {
-		warn(`invalid JSON (${(e as Error).message}); none of its rules apply until it is fixed`);
-		return { warnings };
+		return { error: `invalid JSON (${(e as Error).message})`, warnings };
 	}
-	if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-		warn("expected a JSON object; none of its rules apply until it is fixed");
-		return { warnings };
-	}
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { error: "expected a JSON object", warnings };
 	const obj = raw as Record<string, unknown>;
 	for (const k of Object.keys(obj)) if (k !== "enable" && k !== "rules" && !k.startsWith("//")) warn(`unknown key "${k}" ignored (expected "enable" and "rules")`);
 	const layer: Layer = { source, enable: {}, rules: [] };
@@ -113,7 +111,7 @@ export function parseConfig(text: string, source: string): { layer?: Layer; warn
 		if (!obj.enable || typeof obj.enable !== "object" || Array.isArray(obj.enable)) warn(`"enable" must be an object like {"force-push": "ask"}; ignored`);
 		else
 			for (const [name, v] of Object.entries(obj.enable as Record<string, unknown>)) {
-				if (name !== "all" && !(name in PRESETS)) warn(`unknown preset "${name}" ignored (presets: ${Object.keys(PRESETS).join(", ")})`);
+				if (name !== "all" && !Object.hasOwn(PRESETS, name)) warn(`unknown preset "${name}" ignored (presets: ${Object.keys(PRESETS).join(", ")})`);
 				else if (typeof v !== "string" || !SETTINGS.has(v)) warn(`preset "${name}": action must be "ask", "block" or "off"; ignored`);
 				else layer.enable[name] = v as Setting;
 			}
@@ -186,7 +184,7 @@ export function mergeLayers(layers: Layer[], warnings: string[] = []): Rule[] {
 				continue;
 			}
 			custom.delete(name);
-			if (r.action !== "off") custom.set(name, { name, pattern: r.pattern, reason: r.reason, action: r.action, source: l.source });
+			if (r.action !== "off") custom.set(name, { name, pattern: r.pattern, reason: r.reason, action: r.action, source: l.source, custom: true });
 		}
 		if (!l.tightenOnly) {
 			trusted.clear();
@@ -211,39 +209,86 @@ export function configPaths(cwd: string): string[] {
 	return [path.join(agentDir(), "extensions", "guardrails", "config.json"), path.join(cwd, ".pi", "guardrails.json")];
 }
 
-// Parsed files by path, re-parsed only when the text changes, so an edit applies to the next command.
-const parsed = new Map<string, { text: string; layer?: Layer; warnings: string[] }>();
+export const MAX_CONFIG = 64 * 1024;
 
-/** Reads and merges the config files. A missing file is no layer; nothing here throws. */
+/**
+ * Reads a config file without ever blocking or reading without bound: opens it non-blocking (a
+ * FIFO would otherwise wait for a writer), then reads only a regular file of at most MAX_CONFIG
+ * bytes. undefined text means the file does not exist.
+ */
+function readConfig(f: string): { text?: string; error?: string } {
+	let fd: number;
+	try {
+		fd = openSync(f, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+	} catch (e) {
+		const code = (e as NodeJS.ErrnoException).code;
+		return code === "ENOENT" || code === "ENOTDIR" ? {} : { error: `cannot read (${(e as Error).message})` };
+	}
+	try {
+		const st = fstatSync(fd);
+		if (!st.isFile()) return { error: "not a regular file" };
+		if (st.size > MAX_CONFIG) return { error: `larger than ${MAX_CONFIG / 1024} KB` };
+		const buf = Buffer.alloc(MAX_CONFIG + 1);
+		let n = 0;
+		for (let r; n < buf.length && (r = readSync(fd, buf, n, buf.length - n, n)) > 0; ) n += r;
+		if (n > MAX_CONFIG) return { error: `larger than ${MAX_CONFIG / 1024} KB` };
+		return { text: buf.subarray(0, n).toString("utf8") };
+	} catch (e) {
+		return { error: `cannot read (${(e as Error).message})` };
+	} finally {
+		closeSync(fd);
+	}
+}
+
+// Parsed files by path, re-parsed only when the text changes, so an edit applies to the next command.
+const parsed = new Map<string, { text: string; layer?: Layer; error?: string; warnings: string[] }>();
+// The last layer each path parsed to, kept while the file is unreadable or half-written.
+const lastGood = new Map<string, Layer>();
+
+/**
+ * Reads and merges the config files. A missing file is no layer. A file that cannot be read or
+ * parsed keeps that path's last good rules for this process (or none) and warns. Never throws.
+ */
 export function loadRules(files: string[]): { rules: Rule[]; warnings: string[] } {
 	const layers: Layer[] = [];
 	const warnings: string[] = [];
 	for (const [i, f] of files.entries()) {
-		let text: string;
-		try {
-			text = readFileSync(f, "utf8");
-		} catch (e) {
-			if ((e as NodeJS.ErrnoException).code !== "ENOENT") warnings.push(`${f}: cannot read (${(e as Error).message}); none of its rules apply`);
+		const { text, error: readError } = readConfig(f);
+		let layer: Layer | undefined;
+		let error = readError;
+		if (text === undefined && !readError) {
+			lastGood.delete(f); // deleted on purpose: its rules go
 			continue;
 		}
-		let p = parsed.get(f);
-		if (!p || p.text !== text) parsed.set(f, (p = { text, ...parseConfig(text, f) }));
+		if (text !== undefined) {
+			let p = parsed.get(f);
+			if (!p || p.text !== text) parsed.set(f, (p = { text, ...parseConfig(text, f) }));
+			warnings.push(...p.warnings);
+			layer = p.layer;
+			error = p.error;
+			if (layer) lastGood.set(f, layer);
+		}
+		if (error) {
+			layer = lastGood.get(f);
+			warnings.push(`${f}: ${error}; ${layer ? "keeping its last good rules until it is fixed" : "none of its rules apply until it is fixed"}`);
+		}
 		// Every file after the first (global) one is a project file: tighten-only.
-		if (p.layer) layers.push({ ...p.layer, tightenOnly: i > 0 });
-		warnings.push(...p.warnings);
+		if (layer) layers.push({ ...layer, tightenOnly: i > 0 });
 	}
 	return { rules: mergeLayers(layers, warnings), warnings };
 }
 
-const warned = new Set<string>();
-/** Shows each config warning once per process: a UI notice, or stderr without a UI. */
+// Warnings shown and still current: each is shown once while it persists, and again if it comes
+// back after a load without it.
+let warned = new Set<string>();
+/** Shows new config warnings from a full, current list: a UI notice, or stderr without a UI. */
 export function warnOnce(warnings: string[], ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
-	for (const w of warnings) {
+	for (const w of new Set(warnings)) {
 		if (warned.has(w)) continue;
-		warned.add(w);
 		if (ctx.hasUI) ctx.ui.notify(`pi-kit guardrails: ${w}`, "warning");
 		else console.error(`pi-kit guardrails: ${w}`);
 	}
+	warned = new Set(warnings);
 }
 
 // Mutating commands blocked outright in read-only children (reviewers).
@@ -284,6 +329,8 @@ export function redact(s: string, assignments: boolean): string {
 	return out;
 }
 
+export const MAX_TESTED = 64 * 1024;
+
 /**
  * Pure verdict for one shell command against the active rules: a block reason, or the reasons it
  * needs confirmation. Read-only sessions block mutating commands whatever the rules say.
@@ -292,7 +339,9 @@ export function commandVerdict(cmd: string, readonly: boolean, rules: Rule[] = [
 	if (readonly && MUTATING.some((r) => r.test(cmd))) {
 		return { block: "Read-only session: mutating commands are not allowed.", confirm: [] };
 	}
-	const hits = rules.filter((r) => r.pattern.test(cmd));
+	// User regexes see at most the first MAX_TESTED chars, so a slow pattern cannot stall on a huge command.
+	const head = cmd.length > MAX_TESTED ? cmd.slice(0, MAX_TESTED) : cmd;
+	const hits = rules.filter((r) => r.pattern.test(r.custom ? head : cmd));
 	const blocked = hits.filter((r) => r.action === "block").map((r) => r.reason);
 	if (blocked.length) return { block: `Blocked by a guardrails rule (${blocked.join("; ")}). Report it to the orchestrator or ask the user instead.`, confirm: [] };
 	return { confirm: hits.map((r) => r.reason) };

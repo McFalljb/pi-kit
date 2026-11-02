@@ -38,7 +38,7 @@ instructions for an agent, including what to ask you and what never to touch.
   turn on named presets (`force-push`, `kubernetes`, `rm-rf`, ...) or your own regex rules, each
   `ask` or `block`, in `~/.pi/agent/extensions/guardrails/config.json`. A repo's
   `.pi/guardrails.json` can add rules or tighten them, never turn yours off. `/guardrails` shows
-  what is on. See GUIDE.md.
+  what is on. Best-effort: an agent with write access can change these files. See GUIDE.md.
 - **GPT rules.** On OpenAI GPT models only, a short rule set cuts over-testing, over-exploring and
   long reports. Put your own version in `~/.pi/agent/rules/gpt.md` to override it. For
   gpt-6.1-sol, set thinking to `medium` (OpenAI's Codex ships it at `low`).

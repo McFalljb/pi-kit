@@ -301,18 +301,23 @@ is ignored with one warning naming the file.
   kill), `systemctl` (restart, stop, disable, kill), `deploy` (`deploy*` scripts, `make deploy`,
   `npm run deploy`, ...), `alerts` (amtool silence, alert ack), `sql-destructive`, `raw-disk`,
   `npm-publish`, `curl-pipe-sh`. The patterns are `PRESETS` in `extensions/guardrails/core.ts`.
-- `rules` are your own: `pattern` (a JavaScript regex matched against the whole command; escape
-  backslashes in JSON), `reason` (shown in the dialog or block message), `action` (`"ask"`,
+- `rules` are your own: `pattern` (a JavaScript regex matched against the command, at most its
+  first 64 KB; escape backslashes in JSON; a slow pattern slows every command), `reason` (shown in the dialog or block message), `action` (`"ask"`,
   the default, `"block"` or `"off"`), optional `flags` (e.g. `"i"`) and `name` (lets the project
   file raise a global rule of the same name, with the same pattern, to `"block"`).
 - `ask` shows a confirm dialog; without a UI it blocks with "Needs user approval (...) ... Report
   it to the orchestrator instead." `block` always blocks. If both match, block wins.
 - Bad config never turns guardrails off silently and never stops pi: each problem (invalid JSON,
-  a bad regex, an unknown preset or action) is shown once as a warning (stderr without a UI),
-  only the bad entry is skipped, and the other rules apply. A file with invalid JSON contributes
-  nothing until it is fixed; the other file still applies.
+  a bad regex, an unknown preset or action) is shown as a warning (stderr without a UI) once
+  while it lasts, and again if it comes back after a fix. Only the bad entry is skipped and the
+  other rules apply. A file that cannot be read or parsed (invalid JSON, half-written, not a
+  regular file, over 64 KB) keeps the rules it last loaded in this pi process, or none, until it
+  is fixed; the other file still applies. Deleting a file removes its rules.
 - `/guardrails` lists the active rules, the file each came from, and any warnings.
 - Read-only mode and secret redaction do not depend on this config.
+- Best-effort, not a boundary: an agent with write access can change these files (the global one
+  too), and, like every guardrail, the patterns match shell text that aliases, scripts or `eval`
+  get around. `block` stops honest mistakes, not a determined agent.
 
 ### Updating
 

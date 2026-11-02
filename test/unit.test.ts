@@ -1,11 +1,11 @@
 // Unit tests for pure logic: node --test test/unit.test.ts (Node 22.18+ strips the types).
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { checkCommand, commandVerdict, configPaths, describeRules, isShellLog, loadRules, mergeLayers, parseConfig, PRESETS, redact, warnOnce } from "../extensions/guardrails/core.ts";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { backoff, blockers, busyReasons, deskToken, envToken, promptRefusal, inDesk, keepReconnectToken, keepToken, line, parse, reply, runOutcome, status } from "../extensions/desk-bridge/protocol.ts";
 import { COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription, sameCommand } from "../extensions/desk/commands.ts";
 import { alreadyTrue, DATA_NOTE, eventsText, EVENTS_END, EVENTS_START, exited, filterState, fires, noticeFor, type On, piTabOf, refusal, seenFrom, stateText, summarize, tabLabel, watchHits, watchText } from "../extensions/desk/state.ts";
@@ -167,8 +167,10 @@ test("guardrails bad config warns and keeps the valid rules", () => {
 	// Invalid JSON: no layer from that file, a warning, and the other file's rules still apply.
 	const broken = parseConfig("{ enable: ", "p");
 	assert.equal(broken.layer, undefined);
-	assert.match(broken.warnings[0], /^p: invalid JSON .* none of its rules apply until it is fixed/);
-	assert.equal(parseConfig("[]", "p").layer, undefined);
+	assert.match(broken.error!, /^invalid JSON/);
+	assert.match(parseConfig("[]", "p").error!, /expected a JSON object/);
+	// Only own preset names count: "toString" is not a preset.
+	assert.match(parseConfig('{"enable": {"toString": "ask"}}', "p").warnings[0], /unknown preset "toString"/);
 
 	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-kit-guard-"));
 	const g = path.join(dir, "global.json"), p = path.join(dir, "project.json");
@@ -177,19 +179,75 @@ test("guardrails bad config warns and keeps the valid rules", () => {
 	const loaded = loadRules([g, p, path.join(dir, "missing.json")]);
 	assert.deepEqual(loaded.rules.map((r) => r.name), ["kubernetes"]);
 	assert.equal(loaded.warnings.length, 1, "a missing file is not a warning");
+	assert.match(loaded.warnings[0], /project\.json: invalid JSON .*none of its rules apply until it is fixed/);
 	// An edit applies to the next load.
 	writeFileSync(p, '{"enable": {"helm": "block"}}');
 	assert.deepEqual(loadRules([g, p]).rules.map((r) => r.name), ["kubernetes", "helm"]);
 	assert.deepEqual(loadRules([g, p]).warnings, []);
 	// A directory where the file should be is a warning, not a crash.
-	assert.match(loadRules([dir]).warnings[0], /cannot read/);
+	assert.match(loadRules([dir]).warnings[0], /not a regular file/);
 
-	// Each warning is shown once: a UI notice, or stderr without a UI.
+	// Each warning is shown once while it persists: a UI notice, or stderr without a UI.
 	const notes: string[] = [];
 	const ui = { notify: (m: string) => notes.push(m) } as never;
 	warnOnce(["w-unique-1", "w-unique-1"], { hasUI: true, ui });
 	warnOnce(["w-unique-1"], { hasUI: true, ui });
 	assert.deepEqual(notes, ["pi-kit guardrails: w-unique-1"]);
+	// Fixed, then broken again: warned again.
+	warnOnce([], { hasUI: true, ui });
+	warnOnce(["w-unique-1"], { hasUI: true, ui });
+	assert.deepEqual(notes, ["pi-kit guardrails: w-unique-1", "pi-kit guardrails: w-unique-1"]);
+});
+
+test("guardrails config: a half-written file keeps that path's last good rules", () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-kit-guard-"));
+	const f = path.join(dir, "config.json");
+	writeFileSync(f, '{"enable": {"force-push": "block"}}');
+	assert.deepEqual(loadRules([f]).rules.map((r) => r.name), ["force-push"]);
+	writeFileSync(f, '{"enable": {"force-push": "blo');
+	const half = loadRules([f]);
+	assert.deepEqual(half.rules.map((r) => `${r.name}:${r.action}`), ["force-push:block"]);
+	assert.match(half.warnings[0], /invalid JSON .*keeping its last good rules until it is fixed/);
+	writeFileSync(f, '{"enable": {"helm": "ask"}}');
+	assert.deepEqual(loadRules([f]), { rules: loadRules([f]).rules, warnings: [] });
+	assert.deepEqual(loadRules([f]).rules.map((r) => r.name), ["helm"]);
+	// Deleting the file is a deliberate change: its rules go.
+	rmSync(f);
+	assert.deepEqual(loadRules([f]), { rules: [], warnings: [] });
+});
+
+test("guardrails config: only regular files up to 64 KB are read", () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-kit-guard-"));
+	const big = path.join(dir, "big.json");
+	writeFileSync(big, `{"enable": {"helm": "ask"}}${" ".repeat(70 * 1024)}`);
+	const r = loadRules([big]);
+	assert.deepEqual(r.rules, []);
+	assert.match(r.warnings[0], /larger than 64 KB/);
+	// A symlink to a device is not a regular file.
+	const dev = path.join(dir, "dev.json");
+	symlinkSync("/dev/zero", dev);
+	assert.match(loadRules([dev]).warnings[0], /not a regular file/);
+});
+
+test("guardrails config: a FIFO is skipped, not read (it would hang pi)", () => {
+	const dir = mkdtempSync(path.join(os.tmpdir(), "pi-kit-guard-"));
+	const fifo = path.join(dir, "guardrails.json");
+	execFileSync("mkfifo", [fifo]);
+	const core = new URL("../extensions/guardrails/core.ts", import.meta.url).href;
+	const r = spawnSync(process.execPath, ["--input-type=module", "-e", `import { loadRules } from ${JSON.stringify(core)}; console.log(JSON.stringify(loadRules([${JSON.stringify(fifo)}])))`], { timeout: 10_000, encoding: "utf8" });
+	assert.equal(r.signal, null, "loadRules hung on a FIFO");
+	assert.match(JSON.parse(r.stdout).warnings[0], /not a regular file/);
+});
+
+test("guardrails custom rules see at most the first 64 KB of a command; presets see all of it", () => {
+	const rules = rulesOf('{"enable": {"rm-rf": "ask"}, "rules": [{"name": "tail", "pattern": "tail-marker", "reason": "tail"}]}');
+	const pad = "a".repeat(70 * 1024);
+	assert.deepEqual(commandVerdict(`echo ${pad} tail-marker`, false, rules), { confirm: [] });
+	assert.deepEqual(commandVerdict(`echo tail-marker ${pad}`, false, rules).confirm, ["tail"]);
+	assert.deepEqual(commandVerdict(`echo ${pad}; rm -rf build`, false, rules).confirm, ["recursive force delete"]);
+	// A custom rule named like a preset is still a custom rule.
+	const named = rulesOf('{"rules": [{"name": "kubernetes", "pattern": "tail-marker", "reason": "tail"}]}');
+	assert.deepEqual(commandVerdict(`echo ${pad} tail-marker`, false, named), { confirm: [] });
 });
 
 test("checkCommand: config files, ask vs block, with a UI and headless", async () => {
