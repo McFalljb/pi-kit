@@ -28,12 +28,11 @@
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
  */
 
-import fs from "node:fs";
 import net from "node:net";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { backoff, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
-import { APP_IMAGE_MAX, appCallCommand, appEventsText, appInputEvents, appReplyText, shotText } from "./app.ts";
+import { appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "./app.ts";
 import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
 import { alreadyTrue, eventsText, exited, filterState, findTab, fires, type Notice, noticeFor, type On, piTabOf, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
 
@@ -508,11 +507,9 @@ export default function (pi: ExtensionAPI) {
 				if (!result.ok) return text(appReplyText(p.tab, "app_screenshot", result));
 				const d = result.data ?? {};
 				const about = shotText(p.tab, d);
-				let png: Buffer | undefined;
-				try {
-					if (typeof d.path === "string" && (d.bytes ?? 0) <= APP_IMAGE_MAX) png = fs.readFileSync(d.path);
-				} catch {}
-				if (!png) return text(`${about}\n(Not attached: ${(d.bytes ?? 0) > APP_IMAGE_MAX ? "over 4 MB; ask for a smaller rect" : "the file could not be read"}.)`);
+				const shot = shotFile(p.tab, d.path, process.env.PI_DESK_DATA_DIR || undefined);
+				if ("why" in shot) return text(`${about}\n(Not attached: ${shot.why}.)`);
+				const png = shot.png;
 				return { content: [{ type: "text" as const, text: about }, { type: "image" as const, data: png.toString("base64"), mimeType: "image/png" }], details: undefined };
 			},
 		});

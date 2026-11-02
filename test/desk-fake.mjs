@@ -203,7 +203,8 @@ function control(c, m) {
 	if (cmd.type === "app_screenshot") {
 		answer({ ok: true, pending: true }, { request_id: rid });
 		const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
-		const file = path.join(dir, "13-1.png");
+		const file = path.join(dir, "apps", "shots", "13-1.png"); // where pi-desk writes them: <data dir>/apps/shots/
+		fs.mkdirSync(path.dirname(file), { recursive: true });
 		fs.writeFileSync(file, png);
 		return finish({ ok: true, data: { path: file, w: 2, h: 2, bytes: png.length, seq: 5, tick: 7, scale: 2, rect: { x: 0, y: 0, w: 2, h: 2 }, visible: true } }, 100);
 	}

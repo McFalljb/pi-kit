@@ -3,6 +3,8 @@
 // methods are the app's own (pi-desk docs/ENGINE-BRIDGE.md, PROTOCOL.md `app_call`), so these are
 // general tools and agents learn an app's features from its `tab.describe`, never from us.
 
+import fs from "node:fs";
+import path from "node:path";
 import { DATA_NOTE } from "./state.ts";
 
 type R = Record<string, any>;
@@ -35,14 +37,61 @@ const HINTS: Record<string, string> = {
 	tab_gone: "The app exited or its tab closed: desk_state shows it; desk_run app_restart starts it again.",
 };
 
-/** app_call's output: the app's reply as fenced data, or its error with the code and a hint. */
+/**
+ * app_call's output: the app's reply as fenced data, or its error with the code and a hint. Only
+ * pi-desk's known codes are shown outside the fence; the app's error text stays inside it.
+ */
 export function appReplyText(tab: number, method: string, result: R): string {
-	const data = cap(JSON.stringify(result?.data ?? {}), REPLY_MAX);
-	const fenced = ["<<<app reply", data, "app reply>>>"];
-	if (result?.ok) return [DATA_NOTE, `The app in tab ${tab} answered ${method}:`, ...fenced].join("\n");
-	const code = typeof result?.data?.code === "string" ? result.data.code : "";
-	const head = `The app in tab ${tab} answered ${method} with an error${code ? ` (${code})` : ""}: ${result?.error ?? "unknown"}`;
-	return [head, ...(HINTS[code] ? [HINTS[code]] : []), DATA_NOTE, ...fenced].join("\n");
+	if (result?.ok) return [DATA_NOTE, `The app in tab ${tab} answered ${method}:`, "<<<app reply", cap(JSON.stringify(result?.data ?? {}), REPLY_MAX), "app reply>>>"].join("\n");
+	const code = typeof result?.data?.code === "string" && /^[a-z0-9_]{1,40}$/.test(result.data.code) ? result.data.code : "";
+	const head = `The app in tab ${tab} answered ${method} with an error${code ? ` (${code})` : ""}.`;
+	const body = cap(JSON.stringify({ error: cap(String(result?.error ?? "unknown"), 1000), data: result?.data ?? {} }), REPLY_MAX);
+	return [head, ...(HINTS[code] ? [HINTS[code]] : []), DATA_NOTE, "<<<app reply", body, "app reply>>>"].join("\n");
+}
+
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * The PNG pi-desk wrote for app_screenshot, checked rather than trusted: after resolving symlinks
+ * it must be `.../apps/shots/<tab>-<n>.png` (under `dataDir`/apps/shots when given:
+ * PI_DESK_DATA_DIR), a regular file of at most APP_IMAGE_MAX bytes (its own size, not the reply's)
+ * starting with the PNG signature. Otherwise why not.
+ */
+export function shotFile(tab: number, file: unknown, dataDir?: string): { png: Buffer; bytes: number } | { why: string } {
+	const no = { why: "not a pi-desk screenshot of this tab" };
+	if (typeof file !== "string" || !path.isAbsolute(file)) return no;
+	let real: string;
+	try {
+		real = fs.realpathSync(file);
+	} catch {
+		return { why: "the file could not be read" };
+	}
+	const dir = path.dirname(real);
+	if (!new RegExp(`^${tab}-\\d+\\.png$`).test(path.basename(real)) || !dir.endsWith(`${path.sep}apps${path.sep}shots`)) return no;
+	if (dataDir !== undefined) {
+		let want: string;
+		try {
+			want = fs.realpathSync(path.join(dataDir, "apps", "shots"));
+		} catch {
+			return no;
+		}
+		if (dir !== want) return no;
+	}
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(real, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+		const st = fs.fstatSync(fd);
+		if (!st.isFile()) return no;
+		if (st.size > APP_IMAGE_MAX) return { why: "over 4 MB; ask for a smaller rect" };
+		const png = Buffer.alloc(st.size);
+		fs.readSync(fd, png, 0, st.size, 0);
+		if (png.length < 8 || !png.subarray(0, 8).equals(PNG_MAGIC)) return { why: "not a PNG" };
+		return { png, bytes: st.size };
+	} catch {
+		return { why: "the file could not be read" };
+	} finally {
+		if (fd !== undefined) fs.closeSync(fd);
+	}
 }
 
 /** app_screenshot's text: size, frame and file. */
