@@ -3,7 +3,7 @@
 An orchestrator-plus-workers setup for the [pi coding agent](https://www.npmjs.com/package/@earendil-works/pi-coding-agent),
 modelled on how Claude Code is used day to day: one main session that plans, delegates and
 talks to you; background workers in their own git worktrees; a read-only reviewer on a
-different model; guardrails around dangerous shell commands; background shells and monitors
+different model; opt-in guardrails for the shell commands you choose; background shells and monitors
 that wake the session instead of sleep-and-poll loops.
 
 It is a pi package: two agent definitions for [pi-subagents](https://github.com/nicobailon/pi-subagents),
@@ -34,7 +34,11 @@ instructions for an agent, including what to ask you and what never to touch.
   talks to you (`AGENTS.md`, skills `delegate` and `adversarial-review`).
 - **Background shells.** `bash_bg`, `monitor` and `wake_later` wake the session when something
   happens instead of sleep-and-poll loops.
-- **Guardrails.** Dangerous commands ask first; secret-shaped output is redacted.
+- **Guardrails.** Secret-shaped output is redacted. Command confirmations are off by default:
+  turn on named presets (`force-push`, `kubernetes`, `rm-rf`, ...) or your own regex rules, each
+  `ask` or `block`, in `~/.pi/agent/extensions/guardrails/config.json`. A repo's
+  `.pi/guardrails.json` can add rules or tighten them, never turn yours off. `/guardrails` shows
+  what is on. Best-effort: an agent with write access can change these files. See GUIDE.md.
 - **GPT rules.** On OpenAI GPT models only, a short rule set cuts over-testing, over-exploring and
   long reports. Put your own version in `~/.pi/agent/rules/gpt.md` to override it. For
   gpt-6.1-sol, set thinking to `medium` (OpenAI's Codex ships it at `low`).
@@ -80,7 +84,7 @@ removes the kit entirely.
 | Path | What |
 |---|---|
 | `agents/worker.md`, `agents/reviewer.md` | `kit.worker` (writer, verifies before reporting) and `kit.reviewer` (read-only, adversarial) |
-| `extensions/guardrails` | Confirms dangerous commands, redacts secret-shaped output; read-only mode |
+| `extensions/guardrails` | Opt-in command rules (presets or your own regex; ask or block), `/guardrails`; redacts secret-shaped output; read-only mode |
 | `extensions/shell` | `bash_bg`, `monitor`, `shell_stop`, `shell_list`, `wake_later`, `/shells` |
 | `extensions/sidebar` | Right-hand column with background subagents, todos and shells instead of widgets under the transcript; `/sidebar` |
 | `extensions/desk-bridge` | In a pi-desk tab: reports session, status (idle/working, waiting on a dialog, question, blockers) and the sidebar's sections as panels; answers prompt, reload and wait-idle requests; `inDesk()` |
@@ -109,7 +113,7 @@ removes the kit entirely.
 | TodoWrite | `todo` from `@juicesharp/rpiv-todo` |
 | AskUserQuestion | `ask_user` from `pi-ask-user` |
 | PreToolUse / PostToolUse hooks | Extension `tool_call` / `tool_result` events (the guardrails) |
-| Permission prompts | Guardrail confirmations for dangerous commands only; no sandbox |
+| Permission prompts | Opt-in guardrail rules (ask or block) for the commands you choose; none by default; no sandbox |
 | Plugins, skills, slash commands | pi packages, the same `SKILL.md` format, prompt templates |
 
 [GUIDE.md](GUIDE.md) has the full mapping, the daily workflow and the known limitations.

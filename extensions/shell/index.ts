@@ -10,7 +10,7 @@
  *   shell_list and /shells: running and recent tasks (/shells can stop one). A widget above the editor
  *   (or the kit sidebar, when it is loaded) shows each active task and timer; the footer counts them.
  *
- * Every command goes through the kit guardrails' checkCommand (confirm dangerous commands). Every
+ * Every command goes through the kit guardrails' checkCommand (the user's opt-in command rules). Every
  * delivered line is redacted like bash output before it is cut, and private key blocks are dropped. Not registered
  * in read-only sessions (PI_KIT_READONLY=1). Tasks belong to this pi process: they are killed
  * when the session ends or reloads and do not survive a restart. Processes left in a task's
