@@ -1,6 +1,7 @@
 /**
  * pi-desk control for the Home agent: tools to read pi-desk's state and recent notifications, run
- * any pi-desk command, prompt and wait for other pi tabs, and watch one on the user's request. Per
+ * any pi-desk command, prompt and wait for other pi or Claude Code tabs (pi_prompt/pi_wait_idle,
+ * claude_prompt/claude_wait_idle), and watch one on the user's request. Per
  * pi-desk's docs/PROTOCOL.md (§2 handshake, §3 commands, confirmation, events). Inert unless PI_DESK_SOCKET
  * and PI_DESK_CONTROL_TOKEN are set and pi runs in the interactive TUI.
  *
@@ -14,7 +15,8 @@
  *   confirmation, for the user's confirmed resend or the confirmation's disappearance.
  * - No automatic notices: other sessions' status changes never reach the agent on their own (the
  *   user sees them in pi-desk's notification bell). desk_watch arms a one-shot watch on a tab the
- *   user asked about (at most MAX_WATCHES): its first matching change (from pi.status events, or a
+ *   user asked about (at most MAX_WATCHES): its first matching change (from pi.status events; a
+ *   Claude tab's claude.turn and program_status (OSC 7501) events; or a
  *   fresh state after a reconnect, a dropped stream or another command event, for exits) sends one
  *   message that starts a turn, and ends the watch. desk_events reads pi-desk's notifications on
  *   demand.
@@ -41,7 +43,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { backoff, browserRefusal, CONTROL_EVENT, CONTROL_READY, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
 import { appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "./app.ts";
 import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
-import { alreadyTrue, eventsText, exited, filterState, findTab, fires, type Notice, noticeFor, type On, piTabOf, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
+import { agentTabOf, agentTarget, type AgentKind, alreadyTrue, eventsText, exited, filterState, findTab, fires, idleCommand, type Notice, noticeFor, type On, promptCommand, promptSent, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
 
 const ENV = "PI_DESK_CONTROL_TOKEN";
 const HELLO_TIMEOUT_MS = 5000;
@@ -188,7 +190,7 @@ export default function (pi: ExtensionAPI) {
 		if (n && w && fires(w.on, n.kind)) return fire([n]);
 		// A tab may have exited or closed: pi-desk's own events, a bridge gone, any other command.
 		const type = String(m.command?.type ?? "");
-		if (watches.size && (m.caller === "internal" || (type !== "pi.status" && !type.startsWith("panel.")))) void checkWatches();
+		if (watches.size && ((m.caller === "internal" && type !== "program_status") || (type !== "pi.status" && type !== "claude.turn" && type !== "program_status" && !type.startsWith("panel.")))) void checkWatches();
 	}
 
 	/**
@@ -301,20 +303,13 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	/** The pi tab to prompt or wait for: `tab_id`, or the pi tab of open session `session`. */
-	async function piTab(p: { tab_id?: number; session?: number }): Promise<number> {
-		if (typeof p.tab_id === "number") return p.tab_id;
-		if (typeof p.session !== "number") throw new Error("Give tab_id or session.");
-		const tab = piTabOf(await getState(), p.session);
-		if (tab === undefined) throw new Error(`Open session ${p.session} has no pi tab (desk_state lists them).`);
-		return tab;
-	}
-	/** piTab, refusing Home's own tab. */
-	async function otherPiTab(p: { tab_id?: number; session?: number }): Promise<number> {
-		const tab = await piTab(p);
-		const why = refusal({ tab_id: tab }, undefined, own());
+	/** The pi or Claude tab to prompt or wait for (agentTarget), refusing Home's own tab. */
+	async function agentTab(p: { tab_id?: number; session?: number }): Promise<{ tab: number; kind: AgentKind }> {
+		const t = agentTarget(await getState(), p);
+		if ("error" in t) throw new Error(t.error);
+		const why = refusal({ tab_id: t.tab }, undefined, own());
 		if (why) throw new Error(why);
-		return tab;
+		return t;
 	}
 	async function tabStatus(tab: number): Promise<string> {
 		try {
@@ -325,10 +320,10 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 	/** Wait until `tab` is idle; a watch on it for a finished run ends then (the result says so already). */
-	async function waitIdle(tab: number, sec: number, signal?: AbortSignal): Promise<string> {
+	async function waitIdle(tab: number, kind: AgentKind, sec: number, signal?: AbortSignal): Promise<string> {
 		waitedOn.set(tab, (waitedOn.get(tab) ?? 0) + 1);
 		try {
-			const { result } = await run({ type: "pi_wait_idle", tab_id: tab, timeout_ms: sec * 1000 }, sec * 1000 + 5000, signal);
+			const { result } = await run(idleCommand(kind, tab, sec * 1000), sec * 1000 + 5000, signal);
 			const ended = endedInWait.delete(tab) || (result.ok && watches.get(tab)?.on.includes("finished") && watches.delete(tab));
 			return `${result.ok ? `Tab ${tab} is idle.` : `Tab ${tab} is not idle: ${result.error ?? "unknown"}.`}${ended ? " Its watch ended." : ""}\n${await tabStatus(tab)}`;
 		} finally {
@@ -339,8 +334,8 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	const target = {
-		tab_id: Type.Optional(Type.Number({ description: "The pi tab's id (desk_state)" })),
-		session: Type.Optional(Type.Number({ description: "Or an open session id: its pi tab" })),
+		tab_id: Type.Optional(Type.Number({ description: "The pi or Claude tab's id (desk_state)" })),
+		session: Type.Optional(Type.Number({ description: "Or an open session id: its pi (or Claude) tab" })),
 	};
 	const timeout_s = Type.Optional(Type.Number({ description: `Seconds to wait (default ${WAIT_S}, max ${MAX_WAIT_S})` }));
 
@@ -386,7 +381,7 @@ export default function (pi: ExtensionAPI) {
 			name: "desk_state",
 			label: "pi-desk state",
 			description:
-				"Read pi-desk's state: projects, open sessions with their tabs (pi tabs with agent status, waiting/question, blockers and panels; shell tabs), the selected project's saved pi sessions, and confirmations waiting for the user. A compact summary by default; `full: true` returns the raw JSON snapshot. Filter by `project` (id, or a piece of its name or path) and `session` (open session id).",
+				"Read pi-desk's state: projects, open sessions with their tabs (pi tabs with agent status, waiting/question, blockers and panels; Claude Code tabs with turn and held texts; shell tabs), the selected project's saved pi sessions, and confirmations waiting for the user. A compact summary by default; `full: true` returns the raw JSON snapshot. Filter by `project` (id, or a piece of its name or path) and `session` (open session id).",
 			promptSnippet: "Read pi-desk's projects, sessions, tabs and their status",
 			promptGuidelines: ["Before acting on a pi-desk project, session or tab, read its id from desk_state; ids never change while pi-desk runs."],
 			parameters: Type.Object({
@@ -404,16 +399,17 @@ export default function (pi: ExtensionAPI) {
 
 		pi.registerTool({
 			name: "desk_prompt",
-			label: "Prompt a pi tab",
-			description: `Send a prompt to another pi session in pi-desk (its pi tab, by tab_id or open session id), as a user message there. With wait: true, also wait until that pi is idle (nothing running or queued) and return its status; otherwise return at once. Refused while that pi has a dialog open (it is waiting for the user). You cannot prompt your own tab.`,
-			promptSnippet: "Send a prompt to another pi session in pi-desk, optionally waiting until it is idle",
+			label: "Prompt a pi or Claude tab",
+			description: `Send a prompt to another session in pi-desk (its pi or Claude Code tab, by tab_id or open session id), as a user message there. A Claude tab's text is held until Claude is idle and the user types nothing (the result says "held: why"). With wait: true, also wait until it is idle and return its status; otherwise return at once. Refused while pi has a dialog open. You cannot prompt your own tab.`,
+			promptSnippet: "Send a prompt to another pi or Claude session in pi-desk, optionally waiting until it is idle",
 			parameters: Type.Object({ ...target, text: Type.String({ description: "The prompt" }), wait: Type.Optional(Type.Boolean({ description: "Wait until it is idle" })), timeout_s }),
 			async execute(_id, p, signal) {
-				const tab = await otherPiTab(p);
+				const { tab, kind } = await agentTab(p);
 				const go = async () => {
-					const { result } = await run({ type: "pi_prompt", tab_id: tab, text: p.text }, 60_000, signal);
+					const { result } = await run(promptCommand(kind, tab, p.text), 60_000, signal);
 					if (!result.ok) throw new Error(`pi-desk did not deliver the prompt to tab ${tab}: ${result.error ?? "unknown"}`);
-					return p.wait ? `Prompt delivered. ${await waitIdle(tab, seconds(p.timeout_s), signal)}` : `Prompt delivered to tab ${tab}. ${await tabStatus(tab)}`;
+					const sent = promptSent(kind, tab, result);
+					return p.wait ? `${sent} ${await waitIdle(tab, kind, seconds(p.timeout_s), signal)}` : `${sent} ${await tabStatus(tab)}`;
 				};
 				return text(await go());
 			},
@@ -421,20 +417,20 @@ export default function (pi: ExtensionAPI) {
 
 		pi.registerTool({
 			name: "desk_wait",
-			label: "Wait for a pi tab",
-			description: "Wait until another pi session in pi-desk is idle (no run, nothing queued, no background shells or workers), then return its status, or say it is still busy at the timeout.",
-			promptSnippet: "Wait until another pi session in pi-desk is idle",
+			label: "Wait for a pi or Claude tab",
+			description: "Wait until another session in pi-desk is idle (pi: no run, nothing queued, no background shells or workers; Claude: its turn ended, nothing held, the user not typing), then return its status, or say it is still busy at the timeout.",
+			promptSnippet: "Wait until another pi or Claude session in pi-desk is idle",
 			parameters: Type.Object({ ...target, timeout_s }),
 			async execute(_id, p, signal) {
-				const tab = await otherPiTab(p);
-				return text(await waitIdle(tab, seconds(p.timeout_s), signal));
+				const { tab, kind } = await agentTab(p);
+				return text(await waitIdle(tab, kind, seconds(p.timeout_s), signal));
 			},
 		});
 
 		pi.registerTool({
 			name: "desk_watch",
 			label: "Watch a pi-desk tab",
-			description: `Only when the user asks to be told about another session: watch its tab (tab_id, or open session id) and get one message, which starts a turn, at the first matching change: "finished" (its run ended: idle, a question or an error), "needs_user" (a dialog is waiting or it asked a question), "exited" (the tab closed or its process ended). Default: all three; an error or an exit always fires. A shell tab can only fire on its exit. What is already true when you set it (e.g. it is idle, or already waiting for the user) is not watched: the result says so; tell the user then. The watch ends when it fires, or when a desk_wait or desk_prompt wait on that tab sees it idle. A new watch on the same tab replaces it; at most ${MAX_WATCHES} at once. cancel: true ends the watch on that tab (or all, without a target). With no target and no cancel, lists the watches. Watches end when this pi reloads or exits.`,
+			description: `Only when the user asks to be told about another session: watch its tab (tab_id, or open session id) and get one message, which starts a turn, at the first matching change: "finished" (its run ended: idle, a question or an error), "needs_user" (a dialog is waiting or it asked a question), "exited" (the tab closed or its process ended). Default: all three; an error or an exit always fires. pi and Claude tabs; a shell tab can only fire on its exit. What is already true when you set it (e.g. it is idle, or already waiting for the user) is not watched: the result says so; tell the user then. The watch ends when it fires, or when a desk_wait or desk_prompt wait on that tab sees it idle. A new watch on the same tab replaces it; at most ${MAX_WATCHES} at once. cancel: true ends the watch on that tab (or all, without a target). With no target and no cancel, lists the watches. Watches end when this pi reloads or exits.`,
 			promptSnippet: "Get told once when another pi-desk session finishes, needs the user or exits (only when the user asks)",
 			promptGuidelines: [
 				"Other sessions' status changes are not sent to you; the user sees them in pi-desk's notification bell. Use desk_watch only when the user asks to be told about a session, and desk_state or desk_events when they ask what happened.",
@@ -456,7 +452,13 @@ export default function (pi: ExtensionAPI) {
 					return text(["Watches:", ...[...watches].map(([tab, w]) => `- tab ${tab}: ${w.on.join(", ")}`)].join("\n"));
 				}
 				if (!own().size) throw new Error("pi-desk has not said which tab is yours yet; try again shortly.");
-				const tab = await otherPiTab(p);
+				let tab = p.tab_id;
+				if (typeof tab !== "number") {
+					tab = agentTabOf(await getState(), p.session!);
+					if (tab === undefined) throw new Error(`Open session ${p.session} has no pi or Claude tab (desk_state lists them).`);
+				}
+				const mine = refusal({ tab_id: tab }, undefined, own());
+				if (mine) throw new Error(mine);
 				if (p.cancel) return text(watches.delete(tab) ? `Stopped watching tab ${tab}.` : `Tab ${tab} was not watched.`);
 				if (!watches.has(tab) && watches.size >= MAX_WATCHES) throw new Error(`At most ${MAX_WATCHES} watches at once; cancel one first (desk_watch with no target lists them).`);
 				const st = await getState();
@@ -464,14 +466,15 @@ export default function (pi: ExtensionAPI) {
 				const where = findTab(st, tab)!;
 				const t = where.tab;
 				const now = `Now: ${tabLine(t)} (session ${where.session.id}).`;
-				const asked: On[] = t.kind !== "pi" ? ["exited"] : p.on?.length ? [...new Set(p.on as On[])] : [...WATCH_ON];
+				const agent = t.kind === "pi" || t.kind === "claude";
+				const asked: On[] = !agent ? ["exited"] : p.on?.length ? [...new Set(p.on as On[])] : [...WATCH_ON];
 				const already = alreadyTrue(t, asked);
 				const on = asked.filter((o) => !already.includes(o));
 				const said = already.length ? `Tab ${tab} is already ${already.map((o) => (o === "finished" ? "finished (not running)" : "waiting for the user")).join(" and ")}` : "";
 				if (!on.length) return text(`${said}; nothing to watch. Tell the user now. ${now}`);
-				if (t.kind === "pi") seen.set(tab, seenOf(t)); // compare with its status from now on
+				if (agent) seen.set(tab, seenOf(t)); // compare with its status from now on
 				watches.set(tab, { on, label: tabLabel(st, tab), gen: ++gen });
-				const shell = t.kind !== "pi" ? " It is a shell tab: only its exit can fire." : "";
+				const shell = !agent ? " It is not a pi or Claude tab: only its exit can fire." : "";
 				return text(`${said ? `${said}, so that is not watched. ` : ""}Watching tab ${tab} (${on.join(", ")}): you get one message when it happens.${shell} ${now}`);
 			},
 		});

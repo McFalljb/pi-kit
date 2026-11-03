@@ -184,8 +184,11 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   description is generated from pi-desk's `list_commands`, or from a built-in list in
   `extensions/desk/commands.ts` while pi-desk has none; it waits for long-running commands, and for
   the user's answer when a command needs confirmation, never resending it), `desk_prompt` (a
-  user message in another pi tab, optionally waiting until it is idle), `desk_wait`, `desk_watch`
-  and `desk_events`. Home's own
+  user message in another pi or Claude Code tab, optionally waiting until it is idle), `desk_wait`, `desk_watch`
+  and `desk_events`. A Claude tab (or a Claude-only session's tab) gets pi-desk's `claude_prompt`,
+  which holds the text until Claude is idle and the user types nothing (desk_prompt says
+  "held: <why>"), and `claude_wait_idle` (idle per Claude's hooks and its OSC 7501 status, nothing
+  held, nobody typing); its watch reads the `claude.turn` and `program_status` events. Home's own
   tabs (the control hello's `tab_id`, and its bridge's tab) are never targeted, and desk_run
   refuses `send_text` into a pi tab or a tab waiting for the user. desk_state output is marked as
   data, not instructions. Other sessions' status changes are not sent to Home on their own (the
@@ -211,6 +214,8 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   sets for the pi sessions it starts; the shape-only fallback, any `.../apps/shots/<tab>-<n>.png`,
   is for older pi-desk builds that do not set it), `app_input {tab, events}` and `app_events {tab, topic,
   since?, limit?}`; `new_app_tab` and `app_restart` go through `desk_run` (`extensions/desk/app.ts`).
+  A pi tab gets the same four (shorter descriptions) plus `app_tabs` from `extensions/desk-browser`,
+  over its bridge, for its own session's app tabs only.
   pi-desk itself
   never sends a caller its own events. After a `dropped` event stream the extension subscribes
   again and re-checks pending confirmations and watches.
