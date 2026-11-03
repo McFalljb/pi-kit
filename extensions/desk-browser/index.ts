@@ -1,8 +1,10 @@
 /**
- * pi-desk browser tabs for agents (pi-desk docs/BROWSER.md §4, step 7: agents read pages). In a
- * pi-desk pi tab: browser_tabs, browser_open, browser_navigate, browser_read, browser_screenshot,
- * browser_wait, browser_console, browser_network and browser_comments. Inert outside pi-desk
- * (no PI_DESK_SOCKET / desk token) and outside the interactive TUI.
+ * pi-desk browser tabs for agents (pi-desk docs/BROWSER.md §4; step 7: agents read pages, step 8:
+ * agents act). In a pi-desk pi tab: browser_tabs, browser_open, browser_navigate, browser_read,
+ * browser_screenshot, browser_wait, browser_console, browser_network and browser_comments; and
+ * browser_click, browser_type, browser_press, browser_scroll, browser_select, browser_hover and
+ * browser_upload. Inert outside pi-desk (no PI_DESK_SOCKET / desk token) and outside the
+ * interactive TUI.
  *
  * - The commands go through the pi tab's own connection (extensions/desk-bridge,
  *   `kit:desk:command`: caller `panel`): pi-desk lets a pi tab see and drive only its own
@@ -12,6 +14,12 @@
  * - Agents read any site without asking (the user's decision); pi-desk shows an agent strip with
  *   **Stop** on a tab an agent uses. `file:` addresses are the user's only. Console and network
  *   recording is off until browser_console / browser_network is first called on a tab.
+ * - Actions (pi-desk's rules, said in each description): no JavaScript evaluation; typing, keys and
+ *   choices in password, card and one-time-code fields (or a focused iframe) are refused, so the
+ *   user enters them after Take over; an upload waits for the user's Allow on the page, and so
+ *   does a download an agent's input starts; the user's Take over or Stop ends the agent's use of
+ *   the tab (user_has_control / stopped); file: pages are refused; nothing brings the tab to the
+ *   front. Typed text is never echoed in a result; an upload's result names base names only.
  * - Everything a page wrote is fenced as data (browser.ts), and a screenshot carries the same note;
  *   screenshots are checked before they are attached (desk/app.ts shotFile: <PI_DESK_SHOTS_DIR>/<tab>-<n>.png, a real PNG, ≤ 4 MB).
  *
@@ -23,7 +31,10 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { COMMAND_EVENT, CONTROL_EVENT, CONTROL_READY, type CommandOutcome, inDesk } from "../desk-bridge/protocol.ts";
 import { shotFile } from "../desk/app.ts";
-import { commentsCommand, commentsText, errorText, logCommand, logText, MAX_WAIT_S, MODES, navigateCommand, SELECTOR_HELP, openCommand, readCommand, readText, screenshotCommand, screenshotText, tabsCommand, tabsText, WAIT_FOR, waitCommand, waitText } from "./browser.ts";
+import {
+	ACT_DESCRIPTIONS, ACT_TIMEOUT_MS, actText, BUTTONS, clickCommand, commentsCommand, commentsText, errorText, hoverCommand, logCommand, logText, MAX_WAIT_S, MODES, MODIFIERS, navigateCommand, openCommand, pressCommand, readCommand, readText,
+	screenshotCommand, screenshotText, scrollCommand, SELECTOR_HELP, selectCommand, tabsCommand, tabsText, typeCommand, UPLOAD_TIMEOUT_MS, uploadCommand, WAIT_FOR, waitCommand, waitText,
+} from "./browser.ts";
 
 type R = Record<string, any>;
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }], details: undefined });
@@ -198,8 +209,136 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// ---- actions (step 8) ----
+	/** An action: the command (checked), its result as actText, a failure with the typed text hidden. */
+	async function act(command: R, signal: AbortSignal | undefined) {
+		const ms = command.type === "browser_upload" ? UPLOAD_TIMEOUT_MS : Number(process.env.PI_KIT_DESK_ACT_TIMEOUT_MS) || ACT_TIMEOUT_MS; // the env: tests only
+		const r = await call(command, ms, signal);
+		return text(r.ok ? actText(command, r.data ?? {}) : errorText(command.type, r, command.type === "browser_type" && command.text.length >= 3 ? command.text : undefined));
+	}
+	const selector = (what: string) => Type.Optional(Type.String({ description: `${what}: ${SELECTOR_HELP}` }));
+	const xy = {
+		x: Type.Optional(Type.Number({ description: "Or a point: CSS px from the viewport's top-left (as browser_screenshot shows it, divided by its scale); with y" })),
+		y: Type.Optional(Type.Number({ description: "With x" })),
+	};
+
+	function registerActs() {
+		pi.registerTool({
+			name: "browser_click",
+			label: "Click in a web page",
+			description: ACT_DESCRIPTIONS.browser_click,
+			promptSnippet: "Click an element or a point in a pi-desk browser tab's page",
+			promptGuidelines: [
+				"pi-desk browser actions (browser_click, browser_type, browser_press, browser_scroll, browser_select, browser_hover, browser_upload): read an outline first and target refs; never try to type passwords, card numbers or one-time codes (ask the user to Take over); stop and ask the user on user_has_control or stopped.",
+			],
+			parameters: Type.Object({
+				tab,
+				selector: selector("The element to click"),
+				...xy,
+				button: Type.Optional(Type.Union(BUTTONS.map((b) => Type.Literal(b)), { description: "left (default), right or middle" })),
+				double: Type.Optional(Type.Boolean({ description: "A double click" })),
+				modifiers: Type.Optional(Type.Array(Type.Union(MODIFIERS.map((m) => Type.Literal(m))), { description: "Keys held during the click" })),
+			}),
+			async execute(_id, p, signal) {
+				return act(clickCommand(p), signal);
+			},
+		});
+
+		pi.registerTool({
+			name: "browser_type",
+			label: "Type in a web page",
+			description: ACT_DESCRIPTIONS.browser_type,
+			promptSnippet: "Type text into a field of a pi-desk browser tab's page",
+			parameters: Type.Object({
+				tab,
+				text: Type.String({ description: "What to type" }),
+				selector: selector("The field (else the focused element)"),
+				clear: Type.Optional(Type.Boolean({ description: "Empty the field first" })),
+				submit: Type.Optional(Type.Boolean({ description: "Press Enter after" })),
+			}),
+			async execute(_id, p, signal) {
+				return act(typeCommand(p), signal);
+			},
+		});
+
+		pi.registerTool({
+			name: "browser_press",
+			label: "Press keys in a web page",
+			description: ACT_DESCRIPTIONS.browser_press,
+			promptSnippet: "Press keys or chords in a pi-desk browser tab's page",
+			parameters: Type.Object({
+				tab,
+				keys: Type.String({ description: 'Space-separated keys or chords, e.g. "Shift+Tab" or "ArrowDown Enter"' }),
+				selector: selector("Focus this first"),
+			}),
+			async execute(_id, p, signal) {
+				return act(pressCommand(p), signal);
+			},
+		});
+
+		pi.registerTool({
+			name: "browser_scroll",
+			label: "Scroll a web page",
+			description: ACT_DESCRIPTIONS.browser_scroll,
+			promptSnippet: "Scroll a pi-desk browser tab's page, or an element into view",
+			parameters: Type.Object({
+				tab,
+				selector: selector("The element to scroll into view, or to scroll in"),
+				...xy,
+				dx: Type.Optional(Type.Number({ description: "CSS px to the right (negative: left)" })),
+				dy: Type.Optional(Type.Number({ description: "CSS px down (negative: up)" })),
+			}),
+			async execute(_id, p, signal) {
+				return act(scrollCommand(p), signal);
+			},
+		});
+
+		pi.registerTool({
+			name: "browser_select",
+			label: "Choose an option in a web page",
+			description: ACT_DESCRIPTIONS.browser_select,
+			promptSnippet: "Choose an option of a <select> in a pi-desk browser tab's page",
+			parameters: Type.Object({
+				tab,
+				selector: Type.String({ description: `The <select>: ${SELECTOR_HELP}` }),
+				label: Type.Optional(Type.String({ description: "The option's text" })),
+				value: Type.Optional(Type.String({ description: "Or the option's value" })),
+			}),
+			async execute(_id, p, signal) {
+				return act(selectCommand(p), signal);
+			},
+		});
+
+		pi.registerTool({
+			name: "browser_hover",
+			label: "Hover in a web page",
+			description: ACT_DESCRIPTIONS.browser_hover,
+			promptSnippet: "Move the pointer over an element in a pi-desk browser tab's page",
+			parameters: Type.Object({ tab, selector: selector("The element"), ...xy }),
+			async execute(_id, p, signal) {
+				return act(hoverCommand(p), signal);
+			},
+		});
+
+		pi.registerTool({
+			name: "browser_upload",
+			label: "Upload files to a web page",
+			description: ACT_DESCRIPTIONS.browser_upload,
+			promptSnippet: "Upload files to a file input in a pi-desk browser tab's page (the user allows it)",
+			parameters: Type.Object({
+				tab,
+				selector: Type.String({ description: `The file input: ${SELECTOR_HELP}` }),
+				paths: Type.Array(Type.String(), { description: "Absolute paths of the files" }),
+			}),
+			async execute(_id, p, signal) {
+				return act(uploadCommand(p), signal);
+			},
+		});
+	}
+
 	pi.on("session_start", (_e, c) => {
 		if (c.mode !== "tui" || !inDesk()) return;
 		register();
+		registerActs();
 	});
 }

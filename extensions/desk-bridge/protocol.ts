@@ -220,8 +220,14 @@ export const CONTROL_EVENT = "kit:desk:control:command";
 /** desk (Home) says whether its control connection is up: true / false. */
 export const CONTROL_READY = "kit:desk:control";
 export type CommandOutcome = { result: Record<string, any> } | { error: string };
-/** The commands extensions/desk-browser sends: the only ones either route forwards. */
-export const BROWSER_COMMANDS: ReadonlySet<string> = new Set(["browser_tabs", "browser_open", "browser_navigate", "browser_read", "browser_screenshot", "browser_wait", "browser_console", "browser_network", "browser_comments"]);
+/**
+ * The commands extensions/desk-browser sends: the only ones either route forwards. Never the
+ * user-only ones (browser_upload_answer, browser_agent_take_over, browser_agent_stop).
+ */
+export const BROWSER_COMMANDS: ReadonlySet<string> = new Set([
+	"browser_tabs", "browser_open", "browser_navigate", "browser_read", "browser_screenshot", "browser_wait", "browser_console", "browser_network", "browser_comments",
+	"browser_click", "browser_type", "browser_press", "browser_scroll", "browser_select", "browser_hover", "browser_upload",
+]);
 /** Why a command may not go over kit:desk:command / kit:desk:control:command, or undefined. */
 export function browserRefusal(cmd: unknown): string | undefined {
 	const type = (cmd as Record<string, unknown> | undefined)?.type;
@@ -233,10 +239,40 @@ export function browserRefusal(cmd: unknown): string | undefined {
  * or, when pending, the `finished` event with its request_id (pi-desk sends that to the requester
  * even without a subscription). A finished event seen before its result line is kept (a few).
  */
+/** The line that asks pi-desk to stop a long-running command of this connection (`request_id`: its id). */
+export const cancelLine = (id: string, rid: number) => line({ id, type: "cancel", request_id: rid });
+
 export class CommandCalls {
 	private byId = new Map<string, { done: (o: CommandOutcome) => void; rid?: number }>();
 	private byRid = new Map<number, string>();
 	private early = new Map<number, Record<string, any>>();
+	private cancelledIds = new Set<string>(); // cancelled before pi-desk's pending reply (its request id) came
+	private cancelledRids = new Set<number>(); // cancelled in pi-desk: their late finished is dropped
+	private sendCancel: (rid: number) => void;
+	/** `sendCancel`: ask pi-desk to stop request `rid` (fire and forget). */
+	constructor(sendCancel: (rid: number) => void = () => {}) {
+		this.sendCancel = sendCancel;
+	}
+	private cancelRid(rid: number) {
+		this.cancelledRids.add(rid);
+		if (this.cancelledRids.size > 32) this.cancelledRids.delete(this.cancelledRids.values().next().value!);
+		this.early.delete(rid);
+		this.sendCancel(rid);
+	}
+	/**
+	 * We gave up on it (the caller cancelled, or it timed out): end it here at once with `o`, and stop
+	 * it in pi-desk (now, or once its request id comes).
+	 */
+	cancel(id: string, o: CommandOutcome = { error: "cancelled" }) {
+		const call = this.byId.get(id);
+		if (!call) return;
+		if (call.rid !== undefined) this.cancelRid(call.rid);
+		else {
+			this.cancelledIds.add(id);
+			if (this.cancelledIds.size > 32) this.cancelledIds.delete(this.cancelledIds.values().next().value!);
+		}
+		this.end(id, o);
+	}
 	/** Waits for line `id`'s outcome. */
 	start(id: string, done: (o: CommandOutcome) => void) {
 		this.byId.set(id, { done, rid: undefined });
@@ -244,7 +280,11 @@ export class CommandCalls {
 	/** A `result` line: true if it was one of ours. */
 	onResult(m: Record<string, any>): boolean {
 		const call = this.byId.get(m.id);
-		if (!call) return false;
+		if (!call) {
+			if (!this.cancelledIds.delete(m.id)) return false;
+			if (m.result?.pending && typeof m.request_id === "number") this.cancelRid(m.request_id);
+			return true;
+		}
 		const result = m.result ?? { ok: false, error: "no result" };
 		if (result.pending && typeof m.request_id === "number") {
 			if (this.early.has(m.request_id)) {
@@ -263,6 +303,7 @@ export class CommandCalls {
 	/** A `finished` event: true if it ended one of ours. */
 	onFinished(m: Record<string, any>): boolean {
 		if (typeof m.request_id !== "number") return false;
+		if (this.cancelledRids.delete(m.request_id)) return true; // ended here already
 		const id = this.byRid.get(m.request_id);
 		if (id === undefined) {
 			this.early.set(m.request_id, m.result ?? {});
@@ -284,6 +325,8 @@ export class CommandCalls {
 	failAll(error: string) {
 		for (const id of [...this.byId.keys()]) this.end(id, { error });
 		this.early.clear();
+		this.cancelledIds.clear();
+		this.cancelledRids.clear();
 	}
 	get size() {
 		return this.byId.size;

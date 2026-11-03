@@ -29,7 +29,8 @@
  *   browserRefusal): `kit:desk:command`
  *   {requestId, command, timeoutMs?} on pi.events, answered on `kit:desk:command:reply:<requestId>`
  *   with {result} (a long command's `finished` result) or {error}; `kit:desk:command:cancel`
- *   {requestId} stops waiting. Not connected: an error at once.
+ *   {requestId} stops waiting and sends pi-desk a `cancel` line for a long command's request id
+ *   (once that id is known), as does a call's timeout; its late `finished` is dropped. Not connected: an error at once.
  *
  * Never throws into pi: socket and protocol errors end the connection, which is retried.
  */
@@ -38,7 +39,7 @@ import { randomUUID } from "node:crypto";
 import net from "node:net";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Panel, type Run, type ShellRow, SUBAGENT_EVENTS } from "../sidebar/rows.ts";
-import { Attacher, backoff, browserRefusal, busyReasons, COMMAND_EVENT, CommandCalls, type CommandOutcome, deskToken, keepReconnectToken, line, parse, parseAttach, promptContent, promptRefusal, reply, runOutcome, status, wireImages } from "./protocol.ts";
+import { Attacher, backoff, browserRefusal, busyReasons, cancelLine, COMMAND_EVENT, CommandCalls, type CommandOutcome, deskToken, keepReconnectToken, line, parse, parseAttach, promptContent, promptRefusal, reply, runOutcome, status, wireImages } from "./protocol.ts";
 
 export { inDesk } from "./protocol.ts";
 
@@ -75,7 +76,10 @@ export default function (pi: ExtensionAPI) {
 	const waiters = new Map<unknown, NodeJS.Timeout | undefined>(); // pi.wait_idle id -> its timeout
 	const attach = new Attacher(); // pi-desk's pending comments (pi.attach), for the next typed message
 	const acks: (string | number)[] = []; // pi.attached not sent yet (no connection when the message started)
-	const calls = new CommandCalls(); // kit:desk:command calls in flight on this connection
+	// kit:desk:command calls in flight on this connection; a cancelled one is stopped in pi-desk too
+	const calls = new CommandCalls((rid) => {
+		if (sock && ready && !sock.destroyed && !closed) sock.write(cancelLine(`b${++seq}`, rid));
+	});
 	const callIds = new Map<string, string>(); // requestId -> our line id
 
 	const send = (msg: Record<string, unknown>) => {
@@ -268,7 +272,7 @@ export default function (pi: ExtensionAPI) {
 		if (!sock || !ready || sock.destroyed || closed) return answer({ error: "Not connected to pi-desk (it reconnects on its own; try again shortly)." });
 		const id = `b${++seq}`;
 		const ms = Number(req.timeoutMs) > 0 ? Number(req.timeoutMs) : COMMAND_TIMEOUT_MS;
-		const timer = setTimeout(() => calls.end(id, { error: `pi-desk did not answer within ${Math.round(ms / 1000)}s` }), ms);
+		const timer = setTimeout(() => calls.cancel(id, { error: `pi-desk did not answer within ${Math.round(ms / 1000)}s` }), ms);
 		callIds.set(requestId, id);
 		calls.start(id, (o) => {
 			clearTimeout(timer);
@@ -279,7 +283,7 @@ export default function (pi: ExtensionAPI) {
 	});
 	pi.events.on(`${COMMAND_EVENT}:cancel`, (req: any) => {
 		const id = callIds.get(String(req?.requestId ?? ""));
-		if (id) calls.end(id, { error: "cancelled" });
+		if (id) calls.cancel(id);
 	});
 
 	pi.registerCommand(RELOAD_COMMAND, {
