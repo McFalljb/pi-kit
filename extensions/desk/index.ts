@@ -43,7 +43,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { backoff, browserRefusal, CONTROL_EVENT, CONTROL_READY, envToken, keepToken, line, parse } from "../desk-bridge/protocol.ts";
 import { appCallCommand, appEventsText, appInputEvents, appReplyText, shotFile, shotText } from "./app.ts";
 import { type Cmd, COMMANDS, confirmedBy, parkedFor, parseCommands, runDescription } from "./commands.ts";
-import { agentTabOf, agentTarget, type AgentKind, alreadyTrue, eventsText, exited, filterState, findTab, fires, idleCommand, type Notice, noticeFor, type On, promptCommand, promptSent, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
+import { agentTabOf, agentTarget, type AgentKind, alreadyTrue, eventsText, exited, filterState, findTab, fires, idleCommand, idleText, type Notice, noticeFor, type On, promptCommand, promptSent, refusal, type Seen, seenFrom, seenOf, stateText, tabLabel, tabLine, WATCH_ON, watchHits, watchText } from "./state.ts";
 
 const ENV = "PI_DESK_CONTROL_TOKEN";
 const HELLO_TIMEOUT_MS = 5000;
@@ -320,12 +320,13 @@ export default function (pi: ExtensionAPI) {
 		}
 	}
 	/** Wait until `tab` is idle; a watch on it for a finished run ends then (the result says so already). */
-	async function waitIdle(tab: number, kind: AgentKind, sec: number, signal?: AbortSignal): Promise<string> {
+	async function waitIdle(tab: number, kind: AgentKind, sec: number, signal?: AbortSignal, promptId?: number): Promise<string> {
 		waitedOn.set(tab, (waitedOn.get(tab) ?? 0) + 1);
 		try {
-			const { result } = await run(idleCommand(kind, tab, sec * 1000), sec * 1000 + 5000, signal);
+			// cancel: an aborted or timed-out wait stops in pi-desk too (its waits are capped per connection)
+			const { result } = await run(idleCommand(kind, tab, sec * 1000, promptId), sec * 1000 + 5000, signal, true);
 			const ended = endedInWait.delete(tab) || (result.ok && watches.get(tab)?.on.includes("finished") && watches.delete(tab));
-			return `${result.ok ? `Tab ${tab} is idle.` : `Tab ${tab} is not idle: ${result.error ?? "unknown"}.`}${ended ? " Its watch ended." : ""}\n${await tabStatus(tab)}`;
+			return `${idleText(tab, result)}${ended ? " Its watch ended." : ""}\n${await tabStatus(tab)}`;
 		} finally {
 			const n = (waitedOn.get(tab) ?? 1) - 1;
 			if (n > 0) waitedOn.set(tab, n);
@@ -409,7 +410,8 @@ export default function (pi: ExtensionAPI) {
 					const { result } = await run(promptCommand(kind, tab, p.text), 60_000, signal);
 					if (!result.ok) throw new Error(`pi-desk did not deliver the prompt to tab ${tab}: ${result.error ?? "unknown"}`);
 					const sent = promptSent(kind, tab, result);
-					return p.wait ? `${sent} ${await waitIdle(tab, kind, seconds(p.timeout_s), signal)}` : `${sent} ${await tabStatus(tab)}`;
+					const promptId = kind === "claude" ? Number(result.data?.id) || undefined : undefined;
+					return p.wait ? `${sent} ${await waitIdle(tab, kind, seconds(p.timeout_s), signal, promptId)}` : `${sent} ${await tabStatus(tab)}`;
 				};
 				return text(await go());
 			},

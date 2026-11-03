@@ -1723,3 +1723,108 @@ test("desk-browser: a pi tab's app tools go over the bridge route (its session's
 	assert.equal(app.appTabsText(own), 'Your session\'s app tabs:\n- tab 13 "fake"\n- tab 14 "game" · exited');
 	assert.equal(app.appTabsText({ open_sessions: [{ id: 3, tabs: [{ id: 2, kind: "pi" }] }] }), "Your session has no app tabs.");
 });
+
+// ---- the desk extension against a fake pi-desk (no pi, no model): typebox stubbed ----
+
+/** Loads extensions/desk/index.ts with a fake pi and connects it to a fake pi-desk over a unix socket. */
+async function deskHarness(answer: (cmd: any, reply: (m: any) => void) => void) {
+	const mod: any = await import("node:module");
+	if (!(globalThis as any).__kitTypeboxStub) {
+		(globalThis as any).__kitTypeboxStub = true;
+		const stub = "data:text/javascript," + encodeURIComponent("export const Type = new Proxy({}, { get: () => (...a) => ({}) });");
+		mod.registerHooks({ resolve: (spec: string, ctx: any, next: any) => (spec === "typebox" ? { url: stub, shortCircuit: true } : next(spec, ctx)) });
+	}
+	const net = await import("node:net");
+	const dir = mkdtempSync(path.join(os.tmpdir(), "kd-"));
+	const sockPath = path.join(dir, "s");
+	const got: any[] = [];
+	const server = net.createServer((c) => {
+		let buf = "";
+		c.setEncoding("utf8");
+		c.on("data", (d: string) => {
+			buf += d;
+			let nl: number;
+			while ((nl = buf.indexOf("\n")) >= 0) {
+				const m = JSON.parse(buf.slice(0, nl));
+				buf = buf.slice(nl + 1);
+				got.push(m);
+				const reply = (o: any) => c.write(JSON.stringify({ v: 1, ...o }) + "\n");
+				if (m.type === "hello") reply({ type: "result", id: m.id, result: { ok: true, data: { tab_id: 1, reconnect_token: "r" } } });
+				else if (m.type === "subscribe" || m.type === "cancel") reply({ type: "result", id: m.id, result: { ok: true } });
+				else if (m.type === "command" && m.command.type === "get_state") reply({ type: "result", id: m.id, result: { ok: true, data: claudeState } });
+				else if (m.type === "command" && m.command.type === "list_commands") reply({ type: "result", id: m.id, result: { ok: false, error: "no" } });
+				else if (m.type === "command") answer(m.command, (o) => reply({ id: m.id, ...o }));
+			}
+		});
+	});
+	await new Promise<void>((r) => server.listen(sockPath, r));
+	const tools = new Map<string, any>();
+	const handlers = new Map<string, any[]>();
+	const listeners = new Map<string, ((x: any) => void)[]>();
+	const pi: any = {
+		registerTool: (t: any) => tools.set(t.name, t),
+		on: (e: string, f: any) => handlers.set(e, [...(handlers.get(e) ?? []), f]),
+		events: { on: (e: string, f: any) => (listeners.set(e, [...(listeners.get(e) ?? []), f]), () => {}), emit: (e: string, x: any) => listeners.get(e)?.forEach((f) => f(x)) },
+		sendMessage: () => {},
+	};
+	const saved = { s: process.env.PI_DESK_SOCKET, t: process.env.PI_DESK_CONTROL_TOKEN };
+	process.env.PI_DESK_SOCKET = sockPath;
+	process.env.PI_DESK_CONTROL_TOKEN = "ctl";
+	const { default: desk } = await import("../extensions/desk/index.ts");
+	desk(pi);
+	for (const f of handlers.get("session_start") ?? []) f({}, { mode: "tui" });
+	let up = false;
+	pi.events.on("kit:desk:control", (v: boolean) => (up = v));
+	for (let i = 0; i < 100 && !up; i++) await new Promise((r) => setTimeout(r, 20));
+	assert.ok(up, "connected to the fake pi-desk");
+	await new Promise((r) => setTimeout(r, 100)); // its setup (subscribe, state, list_commands)
+	const close = () => {
+		for (const f of handlers.get("session_shutdown") ?? []) f({}, {});
+		server.close();
+		(globalThis as any)[Symbol.for("pi-kit.desk.token.PI_DESK_CONTROL_TOKEN")] = undefined;
+		if (saved.s === undefined) delete process.env.PI_DESK_SOCKET;
+		else process.env.PI_DESK_SOCKET = saved.s;
+		if (saved.t !== undefined) process.env.PI_DESK_CONTROL_TOKEN = saved.t;
+		rmSync(dir, { recursive: true, force: true });
+	};
+	return { tools, got, close };
+}
+
+test("desk: an aborted desk_wait on a Claude tab cancels claude_wait_idle in pi-desk", async () => {
+	const h = await deskHarness((cmd, reply) => {
+		if (cmd.type === "claude_wait_idle") reply({ type: "result", request_id: 77, result: { ok: true, pending: true } });
+	});
+	try {
+		const ac = new AbortController();
+		const out = h.tools.get("desk_wait").execute("w1", { tab_id: 5, timeout_s: 600 }, ac.signal);
+		for (let i = 0; i < 50 && !h.got.some((m) => m.command?.type === "claude_wait_idle"); i++) await new Promise((r) => setTimeout(r, 20));
+		await new Promise((r) => setTimeout(r, 50));
+		ac.abort();
+		await out;
+		for (let i = 0; i < 25 && !h.got.some((m) => m.type === "cancel"); i++) await new Promise((r) => setTimeout(r, 20));
+		assert.deepEqual(h.got.filter((m) => m.type === "cancel").map((m) => m.request_id), [77], "pi-desk is told to stop the wait");
+	} finally {
+		h.close();
+	}
+});
+
+test("desk: desk_prompt wait on a Claude tab says when the user dropped the held prompt", async () => {
+	let named: unknown;
+	const h = await deskHarness((cmd, reply) => {
+		if (cmd.type === "claude_prompt") reply({ type: "result", result: { ok: true, data: { held: 1, waits: "you are typing a message", id: 9 } } });
+		if (cmd.type === "claude_wait_idle") {
+			named = cmd.prompt_id;
+			reply({ type: "result", request_id: 78, result: { ok: true, pending: true } });
+			setTimeout(() => reply({ type: "event", event: "finished", request_id: 78, result: { ok: false, error: "the user dropped the held text", data: { code: "dropped" } } }), 30);
+		}
+	});
+	try {
+		const r = await h.tools.get("desk_prompt").execute("p1", { tab_id: 5, text: "hi", wait: true, timeout_s: 30 }, undefined);
+		const t = r.content[0].text;
+		assert.equal(named, 9, "the wait names the held prompt");
+		assert.match(t, /dropped/i);
+		assert.doesNotMatch(t, /is idle/);
+	} finally {
+		h.close();
+	}
+});

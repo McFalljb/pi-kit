@@ -188,7 +188,9 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   and `desk_events`. A Claude tab (or a Claude-only session's tab) gets pi-desk's `claude_prompt`,
   which holds the text until Claude is idle and the user types nothing (desk_prompt says
   "held: <why>"), and `claude_wait_idle` (idle per Claude's hooks and its OSC 7501 status, nothing
-  held, nobody typing); its watch reads the `claude.turn` and `program_status` events. Home's own
+  held, nobody typing; it names the held prompt, so a prompt the user dropped is reported as
+  dropped, not idle). An aborted or timed-out wait is cancelled in pi-desk. Its watch reads the
+  `claude.turn` and `program_status` events. Home's own
   tabs (the control hello's `tab_id`, and its bridge's tab) are never targeted, and desk_run
   refuses `send_text` into a pi tab or a tab waiting for the user. desk_state output is marked as
   data, not instructions. Other sessions' status changes are not sent to Home on their own (the

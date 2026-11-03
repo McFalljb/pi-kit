@@ -127,8 +127,20 @@ export function agentTarget(state: any, p: { tab_id?: number; session?: number }
 
 /** pi-desk's prompt command for the tab's kind (a Claude tab's text is held until Claude is idle and the user types nothing). */
 export const promptCommand = (kind: AgentKind, tab: number, text: string) => ({ type: kind === "claude" ? "claude_prompt" : "pi_prompt", tab_id: tab, text });
-/** pi-desk's long-running wait-until-idle command for the tab's kind. */
-export const idleCommand = (kind: AgentKind, tab: number, ms: number) => ({ type: kind === "claude" ? "claude_wait_idle" : "pi_wait_idle", tab_id: tab, timeout_ms: ms });
+/** pi-desk's long-running wait-until-idle command for the tab's kind; a Claude wait may name the held prompt (claude_prompt's data.id). */
+export const idleCommand = (kind: AgentKind, tab: number, ms: number, promptId?: number) => ({
+	type: kind === "claude" ? "claude_wait_idle" : "pi_wait_idle",
+	tab_id: tab,
+	timeout_ms: ms,
+	...(kind === "claude" && promptId ? { prompt_id: promptId } : {}),
+});
+
+/** The first line of desk_wait's result: idle, the prompt dropped by the user (Claude), or not idle and why. */
+export function idleText(tab: number, result: any): string {
+	if (result?.ok) return `Tab ${tab} is idle.`;
+	if (result?.data?.code === "dropped") return `The prompt for tab ${tab} was dropped by the user in pi-desk before it was sent; it did not run.`;
+	return `Tab ${tab} is not idle: ${result?.error ?? "unknown"}.`;
+}
 
 /** desk_prompt's line for a delivered prompt; a Claude tab's says when pi-desk holds the text, and why. */
 export function promptSent(kind: AgentKind, tab: number, result: any): string {
