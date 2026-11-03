@@ -27,14 +27,19 @@ export function filterState(state: any, f: Filter): any {
 	return { ...state, projects, open_sessions: open, ...(ids.has(state.selected_project) ? {} : { sessions: [] }) };
 }
 
-/** One tab as a short line: id, kind, title, process and pi status, panel headers. */
+/** One tab as a short line: id, kind, title, process and agent status (pi; Claude: turn, held texts, typing), panel headers. */
 export function tabLine(t: any): string {
 	const parts = [`tab ${t.id} ${one(t.kind)} "${one(t.title)}"`];
 	if (t.status && t.status !== "running") parts.push(one(t.status));
 	if (t.kind === "app" && t.app_status && t.app_status !== "running" && t.app_status !== t.status) parts.push(one(t.app_status));
-	if (t.kind === "pi") {
-		const agent = t.waiting ? "waiting for the user" : t.agent === "idle" && t.question ? "idle, asked a question" : one(t.agent) || "unknown";
-		parts.push(agent);
+	if (t.kind === "pi" || t.kind === "claude") {
+		const s = seenOf(t);
+		parts.push(s.waiting ? "waiting for the user" : s.agent === "idle" && s.question ? "idle, asked a question" : s.agent || "unknown");
+		if (s.claude) {
+			parts.push(`turn ${s.turn || "unknown"}${s.osc ? `, osc7501 ${s.osc}` : ""}`);
+			if (Number(t.held) > 0) parts.push(`held ${Number(t.held)}${t.held_wait ? `: ${one(t.held_wait)}` : ""}`);
+			if (t.typed) parts.push("the user is typing");
+		}
 		if (arr(t.blockers).length) parts.push(`busy: ${arr(t.blockers).map(one).join("; ")}`);
 		const heads = arr(t.panels).map((p) => one(arr(p.rows).find((r) => r?.head)?.text || p.title || p.panel)).filter(Boolean);
 		if (heads.length) parts.push(`panels: ${heads.join(", ")}`);
@@ -59,7 +64,8 @@ export function summarize(state: any): string {
 	for (const p of projects) {
 		out.push(`- project ${p.id} ${one(p.name) || one(p.label)} (${one(p.cwd)})${p.id === state.selected_project ? " [selected]" : ""}`);
 		for (const s of open.filter((s) => s.project_id === p.id)) {
-			out.push(`  - session ${s.id}${s.id === state.current_session ? " [current]" : ""} pi_session_id ${one(s.pi_session_id) || "?"}`);
+			const id = s.agent === "claude" ? `Claude session ${one(s.claude_session_id) || "?"}` : `pi_session_id ${one(s.pi_session_id) || "?"}`;
+			out.push(`  - session ${s.id}${s.id === state.current_session ? " [current]" : ""} ${id}`);
 			for (const t of arr(s.tabs)) out.push(`    - ${tabLine(t)}${t.id === s.active_tab ? " [active]" : ""}`);
 		}
 	}
@@ -96,6 +102,55 @@ export function piTabOf(state: any, session: number): number | undefined {
 	return arr(arr(state?.open_sessions).find((s) => s.id === session)?.tabs).find((t) => t?.kind === "pi")?.id;
 }
 
+/** An open session's agent tab: its pi tab; a Claude-only session's (agent "claude") Claude tab. */
+export function agentTabOf(state: any, session: number): number | undefined {
+	const s = arr(state?.open_sessions).find((s) => s.id === session);
+	const pi = arr(s?.tabs).find((t) => t?.kind === "pi");
+	const claude = arr(s?.tabs).find((t) => t?.kind === "claude");
+	return (s?.agent === "claude" ? (claude ?? pi) : (pi ?? claude))?.id;
+}
+
+export type AgentKind = "pi" | "claude";
+/** The tab desk_prompt/desk_wait act on: `tab_id` (a pi or Claude tab), or open session `session`'s agent tab. */
+export function agentTarget(state: any, p: { tab_id?: number; session?: number }): { tab: number; kind: AgentKind } | { error: string } {
+	let tab = p.tab_id;
+	if (typeof tab !== "number") {
+		if (typeof p.session !== "number") return { error: "Give tab_id or session." };
+		tab = agentTabOf(state, p.session);
+		if (tab === undefined) return { error: `Open session ${p.session} has no pi or Claude tab (desk_state lists them).` };
+	}
+	const t = findTab(state, tab)?.tab;
+	if (!t) return { error: `Tab ${tab} is not open (desk_state lists the tabs).` };
+	if (t.kind !== "pi" && t.kind !== "claude") return { error: `Tab ${tab} is a ${one(t.kind) || "non-agent"} tab: give a pi or Claude tab.` };
+	return { tab, kind: t.kind };
+}
+
+/** pi-desk's prompt command for the tab's kind (a Claude tab's text is held until Claude is idle and the user types nothing). */
+export const promptCommand = (kind: AgentKind, tab: number, text: string) => ({ type: kind === "claude" ? "claude_prompt" : "pi_prompt", tab_id: tab, text });
+/** pi-desk's long-running wait-until-idle command for the tab's kind; a Claude wait may name the held prompt (claude_prompt's data.id). */
+export const idleCommand = (kind: AgentKind, tab: number, ms: number, promptId?: number) => ({
+	type: kind === "claude" ? "claude_wait_idle" : "pi_wait_idle",
+	tab_id: tab,
+	timeout_ms: ms,
+	...(kind === "claude" && promptId ? { prompt_id: promptId } : {}),
+});
+
+/** The first line of desk_wait's result: idle, the prompt dropped by the user (Claude), or not idle and why. */
+export function idleText(tab: number, result: any): string {
+	if (result?.ok) return `Tab ${tab} is idle.`;
+	if (result?.data?.code === "dropped") return `The prompt for tab ${tab} was dropped by the user in pi-desk before it was sent; it did not run.`;
+	return `Tab ${tab} is not idle: ${result?.error ?? "unknown"}.`;
+}
+
+/** desk_prompt's line for a delivered prompt; a Claude tab's says when pi-desk holds the text, and why. */
+export function promptSent(kind: AgentKind, tab: number, result: any): string {
+	const waits = one(result?.data?.waits);
+	if (kind !== "claude") return `Prompt delivered to tab ${tab}.`;
+	if (!waits) return `Prompt sent to tab ${tab}.`;
+	const n = Number(result?.data?.held) || 1;
+	return `Prompt held for tab ${tab} (held: ${waits}${n > 1 ? `; ${n} texts wait` : ""}); pi-desk sends it once that clears.`;
+}
+
 /** A tab and the open session and project it is in, from the snapshot. */
 export function findTab(state: any, tabId: number): { tab: any; session: any; project: any } | undefined {
 	for (const s of arr(state?.open_sessions)) {
@@ -104,36 +159,60 @@ export function findTab(state: any, tabId: number): { tab: any; session: any; pr
 	}
 }
 
-export type Seen = { agent: string; waiting: boolean; question: boolean };
+export type Seen = { agent: string; waiting: boolean; question: boolean; claude?: boolean; turn?: string; osc?: string };
 export type Kind = "waiting" | "question" | "finished" | "error" | "exited";
 export interface Notice {
 	tab: number;
 	kind: Kind;
 }
 
-export const seenOf = (t: any): Seen => ({ agent: one(t?.agent), waiting: !!t?.waiting, question: !!t?.question });
+/**
+ * A Claude tab's status from its hooks' `turn` (claude.turn: submitted counts as working) and
+ * Claude's own OSC 7501 state: working while either says so, waiting for the user on a dialog
+ * (Notification hook, or OSC 7501 blocked), idle only when the hooks say idle and OSC 7501 is not busy.
+ */
+export function claudeSeen(turn: string, osc: string): Seen {
+	const o = osc === "none" ? "" : osc;
+	const waiting = turn === "waiting" || o === "blocked";
+	const agent = o === "error" ? "error" : waiting || turn === "working" || o === "working" ? "working" : turn === "idle" ? "idle" : "unknown";
+	return { agent, waiting, question: false, claude: true, turn, osc: o };
+}
 
-/** The pi tabs' statuses in a snapshot, to compare later events with. */
+/** A pi tab's (or pi.status's) status; a Claude tab's from its turn and agent_status.osc7501. */
+export const seenOf = (t: any): Seen =>
+	t?.kind === "claude" ? claudeSeen(one(t.turn), one(t.agent_status?.osc7501?.state)) : { agent: one(t?.agent), waiting: !!t?.waiting, question: !!t?.question };
+
+/** The pi and Claude tabs' statuses in a snapshot, to compare later events with. */
 export function seenFrom(state: any): Map<number, Seen> {
 	const m = new Map<number, Seen>();
-	for (const s of arr(state?.open_sessions)) for (const t of arr(s.tabs)) if (t?.kind === "pi") m.set(t.id, seenOf(t));
+	for (const s of arr(state?.open_sessions)) for (const t of arr(s.tabs)) if (t?.kind === "pi" || t?.kind === "claude") m.set(t.id, seenOf(t));
 	return m;
 }
 
+/** `tab`'s status changed to `now` (updates `seen`): a notice if it turned waiting, error, a question, or finished a run (working → idle). */
+function change(tab: number, seen: Map<number, Seen>, now: Seen): Notice | undefined {
+	const was = seen.get(tab);
+	seen.set(tab, now);
+	if (now.waiting) return was?.waiting ? undefined : { tab, kind: "waiting" };
+	if (now.agent === "error") return was?.agent === "error" ? undefined : { tab, kind: "error" };
+	if (now.agent === "idle" && now.question && !(was?.agent === "idle" && was.question)) return { tab, kind: "question" };
+	if (now.agent === "idle" && was?.agent === "working") return { tab, kind: "finished" };
+}
+
 /**
- * What a `command` event says about a pi tab, if anything worth a watch: its status turning
- * waiting (a dialog is open), error, a question, or a finished run (working → idle). Updates `seen`.
+ * What a `command` event says about a pi or Claude tab, if anything worth a watch (see change):
+ * a pi tab's `pi.status`; a Claude tab's `claude.turn` and `program_status` (OSC 7501), for tabs
+ * already seen as Claude tabs. Updates `seen`.
  */
 export function noticeFor(ev: any, seen: Map<number, Seen>): Notice | undefined {
 	const c = ev?.command;
-	if (ev?.event !== "command" || c?.type !== "pi.status" || typeof c.tab_id !== "number" || ev.result?.ok === false) return;
+	if (ev?.event !== "command" || typeof c?.tab_id !== "number" || ev.result?.ok === false) return;
+	if (c.type === "pi.status") return change(c.tab_id, seen, seenOf(c));
+	if (c.type !== "claude.turn" && c.type !== "program_status") return;
 	const was = seen.get(c.tab_id);
-	const now = seenOf(c);
-	seen.set(c.tab_id, now);
-	if (now.waiting) return was?.waiting ? undefined : { tab: c.tab_id, kind: "waiting" };
-	if (now.agent === "error") return was?.agent === "error" ? undefined : { tab: c.tab_id, kind: "error" };
-	if (now.agent === "idle" && now.question && !(was?.agent === "idle" && was.question)) return { tab: c.tab_id, kind: "question" };
-	if (now.agent === "idle" && was?.agent === "working") return { tab: c.tab_id, kind: "finished" };
+	if (!was?.claude) return;
+	const turn = c.type === "claude.turn" ? (c.state === "submitted" ? "working" : one(c.state)) : (was.turn ?? "");
+	return change(c.tab_id, seen, claudeSeen(turn, c.type === "program_status" ? one(c.state) : (was.osc ?? "")));
 }
 
 /** What desk_watch can wait for: a run ending, the user being needed, the tab exiting. */
@@ -166,8 +245,8 @@ export function watchHits(state: any, seen: Map<number, Seen>, watches: Map<numb
 			continue;
 		}
 		const t = findTab(state, tab)!.tab;
-		if (t.kind !== "pi") continue;
-		const n = noticeFor({ event: "command", command: { type: "pi.status", tab_id: tab, agent: t.agent, waiting: t.waiting, question: t.question } }, seen);
+		if (t.kind !== "pi" && t.kind !== "claude") continue;
+		const n = change(tab, seen, seenOf(t));
 		if (n && fires(on, n.kind)) out.push(n);
 	}
 	return out;
@@ -197,10 +276,10 @@ export function watchText(hits: { kind: Kind; label: string }[]): string {
 /**
  * The parts of a watch (`on`) already true for tab `t` when it is set, so desk_watch does not arm
  * them: needs_user while a dialog waits or it asked a question; finished while it is not running
- * (idle or error: there is no run to finish). A shell tab only has exits.
+ * (idle or error: there is no run to finish). pi and Claude tabs; a shell tab only has exits.
  */
 export function alreadyTrue(t: any, on: On[]): On[] {
-	if (t?.kind !== "pi") return [];
+	if (t?.kind !== "pi" && t?.kind !== "claude") return [];
 	const s = seenOf(t);
 	const now: On[] = [];
 	if (s.agent === "idle" || s.agent === "error") now.push("finished");

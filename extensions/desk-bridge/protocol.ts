@@ -222,11 +222,14 @@ export const CONTROL_READY = "kit:desk:control";
 export type CommandOutcome = { result: Record<string, any> } | { error: string };
 /**
  * The commands extensions/desk-browser sends: the only ones either route forwards. Never the
- * user-only ones (browser_upload_answer, browser_agent_take_over, browser_agent_stop).
+ * user-only ones (browser_upload_answer, browser_agent_take_over, browser_agent_stop). A pi tab's
+ * app tools add app_call, app_screenshot, app_input, app_events and get_state (its own session's
+ * view, to list its app tabs); pi-desk keeps a pi tab to its own session.
  */
 export const BROWSER_COMMANDS: ReadonlySet<string> = new Set([
 	"browser_tabs", "browser_open", "browser_navigate", "browser_read", "browser_screenshot", "browser_wait", "browser_console", "browser_network", "browser_comments",
 	"browser_click", "browser_type", "browser_press", "browser_scroll", "browser_select", "browser_hover", "browser_upload",
+	"app_call", "app_screenshot", "app_input", "app_events", "get_state",
 ]);
 /** Why a command may not go over kit:desk:command / kit:desk:control:command, or undefined. */
 export function browserRefusal(cmd: unknown): string | undefined {

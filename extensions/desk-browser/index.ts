@@ -23,14 +23,18 @@
  * - Everything a page wrote is fenced as data (browser.ts), and a screenshot carries the same note;
  *   screenshots are checked before they are attached (desk/app.ts shotFile: <PI_DESK_SHOTS_DIR>/<tab>-<n>.png, a real PNG, ≤ 4 MB).
  *
+ * - App tabs, in a pi tab (not Home: the desk extension has its own): app_tabs, app_call,
+ *   app_screenshot, app_input and app_events over the same route, for its own session's app tabs
+ *   only (pi-desk's rule for caller `panel`). Short descriptions: every pi tab pays for them.
+ *
  * Never throws into pi outside a tool call.
  */
 
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { COMMAND_EVENT, CONTROL_EVENT, CONTROL_READY, type CommandOutcome, inDesk } from "../desk-bridge/protocol.ts";
-import { shotFile } from "../desk/app.ts";
+import { COMMAND_EVENT, CONTROL_EVENT, CONTROL_READY, type CommandOutcome, envToken, inDesk } from "../desk-bridge/protocol.ts";
+import { appCallCommand, appEventsText, appInputEvents, appReplyText, appTabsText, shotFile, shotText } from "../desk/app.ts";
 import {
 	ACT_DESCRIPTIONS, ACT_TIMEOUT_MS, actText, BUTTONS, clickCommand, commentsCommand, commentsText, errorText, hoverCommand, logCommand, logText, MAX_WAIT_S, MODES, MODIFIERS, navigateCommand, openCommand, pressCommand, readCommand, readText,
 	screenshotCommand, screenshotText, scrollCommand, SELECTOR_HELP, selectCommand, tabsCommand, tabsText, typeCommand, UPLOAD_TIMEOUT_MS, uploadCommand, WAIT_FOR, waitCommand, waitText,
@@ -336,9 +340,84 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// ---- app tabs of a pi tab's own session (Home has the desk extension's) ----
+	function registerApps() {
+		const appTab = Type.Number({ description: "The app tab's id (app_tabs)" });
+		pi.registerTool({
+			name: "app_tabs",
+			label: "App tabs",
+			description: "List your pi-desk session's app tabs (programs drawing into a tab, e.g. a game engine).",
+			promptSnippet: "List your pi-desk session's app tabs",
+			parameters: Type.Object({}),
+			async execute(_id, _p, signal) {
+				const r = await call({ type: "get_state" }, 10_000, signal);
+				if (!r.ok) throw new Error(`pi-desk: ${r.error ?? "no state"}`);
+				return text(appTabsText(r.data ?? {}));
+			},
+		});
+		pi.registerTool({
+			name: "app_call",
+			label: "Call an app tab",
+			description: 'Call a method of the program in an app tab. Methods are the app\'s own: call "tab.describe" first and use only what it lists. Errors carry a code (not_supported, timeout, tab_gone).',
+			promptSnippet: "Call a method of the app in a pi-desk app tab (tab.describe first)",
+			parameters: Type.Object({
+				tab: appTab,
+				method: Type.String(),
+				params: Type.Optional(Type.Object({}, { additionalProperties: true })),
+				timeout_s: Type.Optional(Type.Number({ description: "Default 10, max 600" })),
+			}),
+			async execute(_id, p, signal) {
+				const cmd = appCallCommand(p.tab, p.method, p.params as R | undefined, p.timeout_s);
+				return text(appReplyText(p.tab, p.method, await call(cmd, (cmd.timeout_ms ?? 10_000) + 5000, signal)));
+			},
+		});
+		pi.registerTool({
+			name: "app_screenshot",
+			label: "Screenshot an app tab",
+			description: "See the frame an app tab shows now (PNG). rect {x, y, w, h} crops, in the tab's logical px.",
+			promptSnippet: "See the frame a pi-desk app tab shows now",
+			parameters: Type.Object({ tab: appTab, rect: Type.Optional(Type.Object({ x: Type.Number(), y: Type.Number(), w: Type.Number(), h: Type.Number() })) }),
+			async execute(_id, p, signal) {
+				const r = await call({ type: "app_screenshot", tab_id: p.tab, ...(p.rect && { rect: p.rect }) }, 40_000, signal);
+				if (!r.ok) return text(appReplyText(p.tab, "app_screenshot", r));
+				const d = r.data ?? {};
+				const about = shotText(p.tab, d);
+				const shot = shotFile(p.tab, d.path);
+				if ("why" in shot) return text(`${about}\n(Not attached: ${shot.why}.)`);
+				return { content: [{ type: "text" as const, text: about }, { type: "image" as const, data: shot.png.toString("base64"), mimeType: "image/png" }], details: undefined };
+			},
+		});
+		pi.registerTool({
+			name: "app_input",
+			label: "Input to an app tab",
+			description: 'Send input to an app tab, in order: {"event":"key","action":"down"|"up","key":"w"}, {"event":"char","text":"a"}, {"event":"mouse","action":"down"|"up","button":"left","x":1,"y":2}, {"event":"move","x":1,"y":2}, {"event":"scroll","dx":0,"dy":-3,"x":1,"y":2}. Sokol key names, lower case; x, y in logical px.',
+			promptSnippet: "Send keys, text and mouse input to a pi-desk app tab",
+			parameters: Type.Object({ tab: appTab, events: Type.Array(Type.Object({ event: Type.String() }, { additionalProperties: true })) }),
+			async execute(_id, p, signal) {
+				const r = await call({ type: "app_input", tab_id: p.tab, events: appInputEvents(p.events) }, 10_000, signal);
+				if (!r.ok) throw new Error(`pi-desk: ${r.error ?? "input not sent"}`);
+				return text(`Sent ${r.data?.sent ?? p.events.length} input event(s) to tab ${p.tab}.`);
+			},
+		});
+		pi.registerTool({
+			name: "app_events",
+			label: "App tab events",
+			description: "Read an app tab's recent events of one topic (log, or those tab.describe lists), oldest first. Pass the returned next as since.",
+			promptSnippet: "Read a pi-desk app tab's recent events",
+			parameters: Type.Object({ tab: appTab, topic: Type.String(), since: Type.Optional(Type.Number()), limit: Type.Optional(Type.Number()) }),
+			async execute(_id, p, signal) {
+				const cmd = { type: "app_events", tab_id: p.tab, topic: p.topic, ...(p.since !== undefined && { since: p.since }), ...(p.limit !== undefined && { limit: p.limit }) };
+				const r = await call(cmd, 10_000, signal);
+				if (!r.ok) throw new Error(`pi-desk: ${r.error ?? "no events"}`);
+				return text(appEventsText(p.tab, p.topic, r.data));
+			},
+		});
+	}
+
 	pi.on("session_start", (_e, c) => {
 		if (c.mode !== "tui" || !inDesk()) return;
 		register();
 		registerActs();
+		if (!envToken("PI_DESK_CONTROL_TOKEN")) registerApps(); // Home: the desk extension registers them
 	});
 }

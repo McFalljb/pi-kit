@@ -119,3 +119,14 @@ export function appEventsText(tab: number, topic: string, data: R): string {
 	const lines = list.map((e: R) => cap(`${e.seq} ${JSON.stringify(e.event)}`, 2000));
 	return [DATA_NOTE, `Tab ${tab}'s ${topic} events (${list.length}; next: pass since ${data.next}):`, "<<<app events", ...lines, "app events>>>"].join("\n");
 }
+
+/** app_tabs' output (a pi tab's own session view from get_state): its app tabs, with their status when not running. */
+export function appTabsText(state: R): string {
+	const tabs = (Array.isArray(state?.open_sessions) ? state.open_sessions : []).flatMap((s: R) => (Array.isArray(s?.tabs) ? s.tabs : [])).filter((t: R) => t?.kind === "app");
+	if (!tabs.length) return "Your session has no app tabs.";
+	const status = (t: R) => {
+		const st = String(t.app_status ?? t.status ?? "");
+		return st && st !== "running" ? ` · ${st}` : "";
+	};
+	return ["Your session's app tabs:", ...tabs.map((t: R) => `- tab ${t.id} ${JSON.stringify(String(t.title ?? "").replace(/\s+/g, " ").trim())}${status(t)}`)].join("\n");
+}

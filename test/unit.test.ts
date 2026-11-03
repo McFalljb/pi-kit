@@ -1632,3 +1632,215 @@ test("desk-browser round 2: descriptions say what changes a page, which keys nee
 	assert.match(d.browser_upload, /real path/);
 	assert.doesNotMatch(Object.values(d).join(" "), /clipboard_blocked/);
 });
+
+// ---- Atlas drives Claude tabs (pi-desk claude_prompt / claude_wait_idle) ----
+
+const claudeState = {
+	version: 3,
+	projects: [{ id: 1, cwd: "/w/app", label: "~/w/app", name: "App" }],
+	selected_project: 1,
+	open_sessions: [
+		{ id: 3, agent: "pi", pi_session_id: "aaaa", project_id: 1, active_tab: 2, tabs: [
+			{ id: 2, kind: "pi", title: "pi", status: "running", agent: "idle", waiting: false, question: false, blockers: [] },
+			{ id: 4, kind: "shell", title: "shell 1", status: "running" },
+			{ id: 5, kind: "claude", title: "Claude", status: "running", turn: "working", held: 1, held_wait: "Claude is working", typed: false, claude_session_id: "c-5", agent_status: { dot: "working", source: "osc7501", osc7501: { state: "working" } } },
+		] },
+		{ id: 7, agent: "claude", claude_session_id: "c-8", pi_session_id: "c-8", project_id: 1, active_tab: 8, tabs: [
+			{ id: 8, kind: "claude", title: "Claude", status: "running", turn: "idle", held: 0, typed: true, claude_session_id: "c-8", agent_status: { dot: "none", source: "none" } },
+		] },
+	],
+	current_session: 7,
+};
+
+test("desk: desk_prompt / desk_wait route to a pi tab or a Claude tab (by tab or by session)", async () => {
+	const st: Record<string, any> = await import("../extensions/desk/state.ts");
+	assert.deepEqual(st.agentTarget(claudeState, { tab_id: 2 }), { tab: 2, kind: "pi" });
+	assert.deepEqual(st.agentTarget(claudeState, { tab_id: 5 }), { tab: 5, kind: "claude" });
+	assert.deepEqual(st.agentTarget(claudeState, { session: 3 }), { tab: 2, kind: "pi" }, "a pi session: its pi tab, even with a Claude tab in it");
+	assert.deepEqual(st.agentTarget(claudeState, { session: 7 }), { tab: 8, kind: "claude" }, "a Claude-only session: its Claude tab");
+	assert.match(st.agentTarget(claudeState, { tab_id: 4 }).error, /tab 4 is a shell tab.*pi or Claude tab/i);
+	assert.match(st.agentTarget(claudeState, { tab_id: 99 }).error, /not open/);
+	assert.match(st.agentTarget(claudeState, { session: 99 }).error, /no pi or Claude tab/);
+	assert.match(st.agentTarget(claudeState, {}).error, /tab_id or session/);
+	assert.equal(st.agentTabOf(claudeState, 7), 8);
+	assert.deepEqual(st.promptCommand("pi", 2, "hi"), { type: "pi_prompt", tab_id: 2, text: "hi" });
+	assert.deepEqual(st.promptCommand("claude", 5, "hi"), { type: "claude_prompt", tab_id: 5, text: "hi" });
+	assert.deepEqual(st.idleCommand("pi", 2, 3000), { type: "pi_wait_idle", tab_id: 2, timeout_ms: 3000 });
+	assert.deepEqual(st.idleCommand("claude", 5, 3000), { type: "claude_wait_idle", tab_id: 5, timeout_ms: 3000 });
+});
+
+test("desk: desk_prompt says when pi-desk holds the text for a Claude tab, and why", async () => {
+	const st: Record<string, any> = await import("../extensions/desk/state.ts");
+	assert.equal(st.promptSent("claude", 5, { ok: true, data: { held: 1, waits: "you are typing a message" } }), "Prompt held for tab 5 (held: you are typing a message); pi-desk sends it once that clears.");
+	assert.equal(st.promptSent("claude", 5, { ok: true, data: { held: 2, waits: "Claude is working" } }), "Prompt held for tab 5 (held: Claude is working; 2 texts wait); pi-desk sends it once that clears.");
+	assert.equal(st.promptSent("claude", 5, { ok: true, data: { held: 1, waits: "" } }), "Prompt sent to tab 5.");
+	assert.equal(st.promptSent("pi", 2, { ok: true }), "Prompt delivered to tab 2.");
+});
+
+test("desk: tabLine and the summary show a Claude tab's turn, held texts and typing, and a Claude-only session", async () => {
+	const st: Record<string, any> = await import("../extensions/desk/state.ts");
+	assert.equal(st.tabLine(claudeState.open_sessions[0].tabs[2]), 'tab 5 claude "Claude" · working · turn working, osc7501 working · held 1: Claude is working');
+	assert.equal(st.tabLine(claudeState.open_sessions[1].tabs[0]), 'tab 8 claude "Claude" · idle · turn idle · the user is typing');
+	assert.equal(st.tabLine({ id: 9, kind: "claude", title: "Claude", status: "running", turn: "waiting", held: 0 }), 'tab 9 claude "Claude" · waiting for the user · turn waiting');
+	const out = st.summarize(claudeState).split("\n");
+	assert.ok(out.includes("  - session 3 pi_session_id aaaa"), out.join("\n"));
+	assert.ok(out.includes("  - session 7 [current] Claude session c-8"), out.join("\n"));
+});
+
+test("desk: desk_watch on a Claude tab fires from claude.turn and OSC 7501 (program_status) changes", async () => {
+	const st: Record<string, any> = await import("../extensions/desk/state.ts");
+	const seen = st.seenFrom(claudeState); // tab 5: working (turn and OSC), tab 8: idle
+	const ev = (type: string, tab_id: number, state: string) => ({ event: "command", caller: type === "program_status" ? "internal" : "panel", command: { type, tab_id, state }, result: { ok: true } });
+	assert.equal(st.noticeFor(ev("claude.turn", 5, "idle"), seen), undefined, "hooks idle, OSC 7501 still working: not finished");
+	assert.deepEqual(st.noticeFor(ev("program_status", 5, "idle"), seen), { tab: 5, kind: "finished" }, "both idle: finished");
+	assert.equal(st.noticeFor(ev("program_status", 5, "idle"), seen), undefined, "idle again is not news");
+	assert.equal(st.noticeFor(ev("claude.turn", 5, "submitted"), seen), undefined, "a new turn");
+	assert.deepEqual(st.noticeFor(ev("claude.turn", 5, "waiting"), seen), { tab: 5, kind: "waiting" }, "a permission dialog (Notification hook)");
+	assert.deepEqual(st.noticeFor(ev("claude.turn", 5, "idle"), seen), { tab: 5, kind: "finished" }, "the dialog was answered and the turn ended (Stop)");
+	assert.equal(st.noticeFor(ev("claude.turn", 8, "submitted"), seen), undefined);
+	assert.deepEqual(st.noticeFor(ev("program_status", 8, "blocked"), seen), { tab: 8, kind: "waiting" }, "OSC 7501 blocked: needs the user");
+	assert.deepEqual(st.noticeFor(ev("program_status", 8, "error"), seen), { tab: 8, kind: "error" });
+	assert.equal(st.noticeFor(ev("program_status", 2, "working"), seen), undefined, "OSC 7501 on a pi tab: the bridge's pi.status counts there");
+	assert.equal(st.noticeFor(ev("claude.turn", 42, "idle"), seen), undefined, "an unknown tab");
+	assert.equal(st.noticeFor({ ...ev("claude.turn", 5, "idle"), result: { ok: false } }, seen), undefined, "a refused report");
+	// a fresh state after a reconnect: working before, idle by both now
+	const seen2 = st.seenFrom(claudeState);
+	const idle = structuredClone(claudeState);
+	Object.assign(idle.open_sessions[0].tabs[2], { turn: "idle", held: 0, agent_status: { dot: "none", source: "osc7501", osc7501: { state: "idle" } } });
+	assert.deepEqual(st.watchHits(idle, seen2, new Map([[5, { on: ["finished"] }]])), [{ tab: 5, kind: "finished" }]);
+	// already true when set: an idle Claude tab has no run to finish; a waiting one needs the user
+	assert.deepEqual(st.alreadyTrue(claudeState.open_sessions[1].tabs[0], ["finished", "needs_user"]), ["finished"]);
+	assert.deepEqual(st.alreadyTrue({ kind: "claude", turn: "waiting" }, ["finished", "needs_user"]), ["needs_user"]);
+	assert.deepEqual(st.alreadyTrue(claudeState.open_sessions[0].tabs[2], ["finished", "needs_user"]), []);
+});
+
+test("desk-browser: a pi tab's app tools go over the bridge route (its session's app tabs; get_state to list them)", async () => {
+	const proto: Record<string, any> = await import("../extensions/desk-bridge/protocol.ts");
+	for (const type of ["app_call", "app_screenshot", "app_input", "app_events", "get_state"]) assert.equal(proto.browserRefusal({ type, tab_id: 3 }), undefined, type);
+	for (const type of ["app_restart", "new_app_tab", "app_inspect", "claude_prompt", "pi_prompt"]) assert.ok(proto.browserRefusal({ type, tab_id: 3 }), type);
+	const app: Record<string, any> = await import("../extensions/desk/app.ts");
+	const own = { open_sessions: [{ id: 3, tabs: [{ id: 2, kind: "pi", title: "pi" }, { id: 13, kind: "app", title: "fake", status: "running", app_status: "running" }, { id: 14, kind: "app", title: "game", status: "exited", app_status: "exited" }] }] };
+	assert.equal(app.appTabsText(own), 'Your session\'s app tabs:\n- tab 13 "fake"\n- tab 14 "game" · exited');
+	assert.equal(app.appTabsText({ open_sessions: [{ id: 3, tabs: [{ id: 2, kind: "pi" }] }] }), "Your session has no app tabs.");
+});
+
+// ---- the desk extension against a fake pi-desk (no pi, no model): typebox stubbed ----
+
+/** Loads extensions/desk/index.ts with a fake pi and connects it to a fake pi-desk over a unix socket. */
+async function deskHarness(answer: (cmd: any, reply: (m: any) => void) => void) {
+	const mod: any = await import("node:module");
+	if (!(globalThis as any).__kitTypeboxStub) {
+		(globalThis as any).__kitTypeboxStub = true;
+		const stub = "data:text/javascript," + encodeURIComponent("export const Type = new Proxy({}, { get: () => (...a) => ({}) });");
+		mod.registerHooks({ resolve: (spec: string, ctx: any, next: any) => (spec === "typebox" ? { url: stub, shortCircuit: true } : next(spec, ctx)) });
+	}
+	const net = await import("node:net");
+	const dir = mkdtempSync(path.join(os.tmpdir(), "kd-"));
+	const sockPath = path.join(dir, "s");
+	const got: any[] = [];
+	const server = net.createServer((c) => {
+		let buf = "";
+		c.setEncoding("utf8");
+		c.on("data", (d: string) => {
+			buf += d;
+			let nl: number;
+			while ((nl = buf.indexOf("\n")) >= 0) {
+				const m = JSON.parse(buf.slice(0, nl));
+				buf = buf.slice(nl + 1);
+				got.push(m);
+				const reply = (o: any) => c.write(JSON.stringify({ v: 1, ...o }) + "\n");
+				if (m.type === "hello") reply({ type: "result", id: m.id, result: { ok: true, data: { tab_id: 1, reconnect_token: "r" } } });
+				else if (m.type === "subscribe" || m.type === "cancel") reply({ type: "result", id: m.id, result: { ok: true } });
+				else if (m.type === "command" && m.command.type === "get_state") reply({ type: "result", id: m.id, result: { ok: true, data: claudeState } });
+				else if (m.type === "command" && m.command.type === "list_commands") reply({ type: "result", id: m.id, result: { ok: false, error: "no" } });
+				else if (m.type === "command") answer(m.command, (o) => reply({ id: m.id, ...o }));
+			}
+		});
+	});
+	await new Promise<void>((r) => server.listen(sockPath, r));
+	const tools = new Map<string, any>();
+	const handlers = new Map<string, any[]>();
+	const listeners = new Map<string, ((x: any) => void)[]>();
+	const pi: any = {
+		registerTool: (t: any) => tools.set(t.name, t),
+		on: (e: string, f: any) => handlers.set(e, [...(handlers.get(e) ?? []), f]),
+		events: { on: (e: string, f: any) => (listeners.set(e, [...(listeners.get(e) ?? []), f]), () => {}), emit: (e: string, x: any) => listeners.get(e)?.forEach((f) => f(x)) },
+		sendMessage: () => {},
+	};
+	const saved = { s: process.env.PI_DESK_SOCKET, t: process.env.PI_DESK_CONTROL_TOKEN };
+	process.env.PI_DESK_SOCKET = sockPath;
+	process.env.PI_DESK_CONTROL_TOKEN = "ctl";
+	const { default: desk } = await import("../extensions/desk/index.ts");
+	desk(pi);
+	for (const f of handlers.get("session_start") ?? []) f({}, { mode: "tui" });
+	let up = false;
+	pi.events.on("kit:desk:control", (v: boolean) => (up = v));
+	for (let i = 0; i < 100 && !up; i++) await new Promise((r) => setTimeout(r, 20));
+	assert.ok(up, "connected to the fake pi-desk");
+	await new Promise((r) => setTimeout(r, 100)); // its setup (subscribe, state, list_commands)
+	const close = () => {
+		for (const f of handlers.get("session_shutdown") ?? []) f({}, {});
+		server.close();
+		(globalThis as any)[Symbol.for("pi-kit.desk.token.PI_DESK_CONTROL_TOKEN")] = undefined;
+		if (saved.s === undefined) delete process.env.PI_DESK_SOCKET;
+		else process.env.PI_DESK_SOCKET = saved.s;
+		if (saved.t !== undefined) process.env.PI_DESK_CONTROL_TOKEN = saved.t;
+		rmSync(dir, { recursive: true, force: true });
+	};
+	return { tools, got, close };
+}
+
+test("desk: an aborted desk_wait on a Claude tab cancels claude_wait_idle in pi-desk", async () => {
+	const h = await deskHarness((cmd, reply) => {
+		if (cmd.type === "claude_wait_idle") reply({ type: "result", request_id: 77, result: { ok: true, pending: true } });
+	});
+	try {
+		const ac = new AbortController();
+		const out = h.tools.get("desk_wait").execute("w1", { tab_id: 5, timeout_s: 600 }, ac.signal);
+		for (let i = 0; i < 50 && !h.got.some((m) => m.command?.type === "claude_wait_idle"); i++) await new Promise((r) => setTimeout(r, 20));
+		await new Promise((r) => setTimeout(r, 50));
+		ac.abort();
+		await out;
+		for (let i = 0; i < 25 && !h.got.some((m) => m.type === "cancel"); i++) await new Promise((r) => setTimeout(r, 20));
+		assert.deepEqual(h.got.filter((m) => m.type === "cancel").map((m) => m.request_id), [77], "pi-desk is told to stop the wait");
+	} finally {
+		h.close();
+	}
+});
+
+test("desk: desk_prompt wait on a Claude tab says when the user dropped the held prompt", async () => {
+	let named: unknown;
+	const h = await deskHarness((cmd, reply) => {
+		if (cmd.type === "claude_prompt") reply({ type: "result", result: { ok: true, data: { held: 1, waits: "you are typing a message", id: 9 } } });
+		if (cmd.type === "claude_wait_idle") {
+			named = cmd.prompt_id;
+			reply({ type: "result", request_id: 78, result: { ok: true, pending: true } });
+			setTimeout(() => reply({ type: "event", event: "finished", request_id: 78, result: { ok: false, error: "the user dropped the held text", data: { code: "dropped" } } }), 30);
+		}
+	});
+	try {
+		const r = await h.tools.get("desk_prompt").execute("p1", { tab_id: 5, text: "hi", wait: true, timeout_s: 30 }, undefined);
+		const t = r.content[0].text;
+		assert.equal(named, 9, "the wait names the held prompt");
+		assert.match(t, /dropped/i);
+		assert.doesNotMatch(t, /is idle/);
+	} finally {
+		h.close();
+	}
+});
+
+test("desk: Home's own tab is refused before any lookup; a pi prompt with wait keeps its wording", async () => {
+	const h = await deskHarness((cmd, reply) => {
+		if (cmd.type === "pi_prompt") reply({ type: "result", request_id: 80, result: { ok: true, pending: true } }), setTimeout(() => reply({ type: "event", event: "finished", request_id: 80, result: { ok: true } }), 10);
+		if (cmd.type === "pi_wait_idle") reply({ type: "result", request_id: 81, result: { ok: true, pending: true } }), setTimeout(() => reply({ type: "event", event: "finished", request_id: 81, result: { ok: true } }), 10);
+	});
+	try {
+		// tab 1 is Home's own (the hello's tab_id) and not in the state: still "your own tab", not "not open"
+		await assert.rejects(h.tools.get("desk_prompt").execute("p", { tab_id: 1, text: "x" }, undefined), /Tab 1 is your own tab/);
+		await assert.rejects(h.tools.get("desk_wait").execute("w", { tab_id: 1 }, undefined), /Tab 1 is your own tab/);
+		const r = await h.tools.get("desk_prompt").execute("p2", { tab_id: 2, text: "go", wait: true, timeout_s: 10 }, undefined);
+		assert.match(r.content[0].text, /^Prompt delivered\. Tab 2 is idle\./);
+	} finally {
+		h.close();
+	}
+});
