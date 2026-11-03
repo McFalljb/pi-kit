@@ -305,6 +305,9 @@ export default function (pi: ExtensionAPI) {
 
 	/** The pi or Claude tab to prompt or wait for (agentTarget), refusing Home's own tab. */
 	async function agentTab(p: { tab_id?: number; session?: number }): Promise<{ tab: number; kind: AgentKind }> {
+		// Home's own tab first: it may not be in the state at all, and must never read as "not open"
+		const mine = typeof p.tab_id === "number" ? refusal({ tab_id: p.tab_id }, undefined, own()) : undefined;
+		if (mine) throw new Error(mine);
 		const t = agentTarget(await getState(), p);
 		if ("error" in t) throw new Error(t.error);
 		const why = refusal({ tab_id: t.tab }, undefined, own());
@@ -411,7 +414,9 @@ export default function (pi: ExtensionAPI) {
 					if (!result.ok) throw new Error(`pi-desk did not deliver the prompt to tab ${tab}: ${result.error ?? "unknown"}`);
 					const sent = promptSent(kind, tab, result);
 					const promptId = kind === "claude" ? Number(result.data?.id) || undefined : undefined;
-					return p.wait ? `${sent} ${await waitIdle(tab, kind, seconds(p.timeout_s), signal, promptId)}` : `${sent} ${await tabStatus(tab)}`;
+					// a pi prompt has run once delivered: "Prompt delivered." then the wait (as before Claude tabs)
+					const head = kind === "pi" ? "Prompt delivered." : sent;
+					return p.wait ? `${head} ${await waitIdle(tab, kind, seconds(p.timeout_s), signal, promptId)}` : `${sent} ${await tabStatus(tab)}`;
 				};
 				return text(await go());
 			},

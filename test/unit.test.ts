@@ -1828,3 +1828,19 @@ test("desk: desk_prompt wait on a Claude tab says when the user dropped the held
 		h.close();
 	}
 });
+
+test("desk: Home's own tab is refused before any lookup; a pi prompt with wait keeps its wording", async () => {
+	const h = await deskHarness((cmd, reply) => {
+		if (cmd.type === "pi_prompt") reply({ type: "result", request_id: 80, result: { ok: true, pending: true } }), setTimeout(() => reply({ type: "event", event: "finished", request_id: 80, result: { ok: true } }), 10);
+		if (cmd.type === "pi_wait_idle") reply({ type: "result", request_id: 81, result: { ok: true, pending: true } }), setTimeout(() => reply({ type: "event", event: "finished", request_id: 81, result: { ok: true } }), 10);
+	});
+	try {
+		// tab 1 is Home's own (the hello's tab_id) and not in the state: still "your own tab", not "not open"
+		await assert.rejects(h.tools.get("desk_prompt").execute("p", { tab_id: 1, text: "x" }, undefined), /Tab 1 is your own tab/);
+		await assert.rejects(h.tools.get("desk_wait").execute("w", { tab_id: 1 }, undefined), /Tab 1 is your own tab/);
+		const r = await h.tools.get("desk_prompt").execute("p2", { tab_id: 2, text: "go", wait: true, timeout_s: 10 }, undefined);
+		assert.match(r.content[0].text, /^Prompt delivered\. Tab 2 is idle\./);
+	} finally {
+		h.close();
+	}
+});
