@@ -66,6 +66,14 @@ test("commandVerdict: presets ask once enabled, read-only blocks mutation", () =
 	for (const c of ["ssh nuc 'rm -rf /tmp/x'", "ssh nuc 'echo x > /etc/y'"]) assert.match(commandVerdict(c, true).block!, /Read-only/, c);
 });
 
+// test/readonly-vectors.json is a copy of pi-desk's tests/readonly-vectors.json (shared with its
+// Odin port of MUTATING, tools/pi-desk-cli/readonly.odin): keep the two files the same.
+test("read-only guard: the vectors shared with pi-desk", () => {
+	const v = JSON.parse(fs.readFileSync(new URL("./readonly-vectors.json", import.meta.url), "utf8"));
+	for (const c of [...v.deny, ...v.deny_pidesk]) assert.match(commandVerdict(c, true).block ?? "", /Read-only/, `deny: ${c}`);
+	for (const c of [...v.allow, ...v.allow_pidesk]) assert.deepEqual(commandVerdict(c, true), { confirm: [] }, `allow: ${c}`);
+});
+
 test("guardrails presets: every preset by name, and all", () => {
 	const sample: Record<string, string> = {
 		"rm-rf": "rm -rf build", "force-push": "git push --force origin x", "push-main": "git push origin main", "pr-merge": "gh pr merge 5",
