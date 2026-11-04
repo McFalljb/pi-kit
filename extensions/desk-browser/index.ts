@@ -364,13 +364,11 @@ export default function (pi: ExtensionAPI) {
 			pi.registerTool({
 				name: "app_open",
 				label: "Open an app tab",
-				description: "Open an app your project declares in .pi-desk/apps.json (app_tabs lists them), by name, in a new app tab of your session behind the user's view. The first time, the user is asked to allow it. Returns the tab id.",
+				description: "Open an app your project declares in .pi-desk/apps.json (app_tabs lists them), by name, in a new app tab of your session behind the user's view. Returns the tab id.",
 				promptSnippet: "Open a declared app in a pi-desk app tab",
 				parameters: Type.Object({ name: Type.String() }),
 				async execute(_id, p, signal) {
 					const r = await call({ type: "new_app_tab", name: p.name }, 10_000, signal);
-					// the first open of an entry (or a changed one): the user allows it in pi-desk
-					if (r.error === "needs_confirmation") return text(`pi-desk asks the user to allow ${JSON.stringify(p.name)} (it shows them its argv and cwd). Tell the user; once they allow it the tab opens behind their view and app_tabs lists it. Do not call app_open again meanwhile.`);
 					if (!r.ok) throw new Error(`pi-desk: ${r.error ?? "not opened"}`);
 					const started = r.data?.started !== false;
 					return text(started ? `Opened app tab ${r.created_id} (${JSON.stringify(p.name)}) behind the user's view. app_call tab.describe lists its methods.` : `Opened app tab ${r.created_id}, but its program could not start: app_events ${r.created_id} log says why.`);

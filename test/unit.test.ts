@@ -1936,15 +1936,14 @@ test("desk-browser: a read-only pi tab (PI_KIT_READONLY=1) gets no app_open, app
 	}
 });
 
-test("desk-browser: app_open says when pi-desk asks the user first", async () => {
-	const h = await deskBrowserHarness((cmd) =>
-		cmd.type === "new_app_tab" ? { ok: false, error: "needs_confirmation", needs_confirmation: { summary: 'pi in proj asks: run the app "fake" from .pi-desk/apps.json: argv ["build/fake-app"] in /p', by: "user" } } : { ok: false },
-	);
+test("desk-browser: app_open opens at once; pi-desk asks nothing (the agent's own authority)", async () => {
+	const h = await deskBrowserHarness((cmd) => (cmd.type === "new_app_tab" ? { ok: true, created_id: 12 } : { ok: false }));
 	try {
-		const r = await h.tools.get("app_open").execute("o", { name: "fake" }, undefined);
+		const tool = h.tools.get("app_open");
+		assert.doesNotMatch(tool.description, /allow|asked|ask/i);
+		const r = await tool.execute("o", { name: "fake" }, undefined);
 		const t = r.content.map((c: any) => c.text).join("\n");
-		assert.match(t, /asks the user/);
-		assert.match(t, /app_tabs/);
+		assert.match(t, /Opened app tab 12/);
 	} finally {
 		h.restore();
 	}
