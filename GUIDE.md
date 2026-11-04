@@ -219,8 +219,9 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   A pi tab gets the same four (shorter descriptions) plus `app_tabs` from `extensions/desk-browser`,
   over its bridge, for its own session's app tabs only, and `app_open {name}` (an app its
   project declares in `.pi-desk/apps.json`, which `app_tabs` lists; pi-desk's `new_app_tab` by
-  name, in its own session, behind the user's view; never an argv), `app_restart {tab}` and
-  `app_close {tab}`.
+  name, in its own session, behind the user's view; never an argv; the first open of an entry
+  waits for the user's Allow in pi-desk, which shows its argv and cwd), `app_restart {tab}` and
+  `app_close {tab}`. A read-only pi (`PI_KIT_READONLY=1`) gets none of those three.
   pi-desk itself
   never sends a caller its own events. After a `dropped` event stream the extension subscribes
   again and re-checks pending confirmations and watches.

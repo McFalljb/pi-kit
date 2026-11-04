@@ -1848,7 +1848,7 @@ test("desk: Home's own tab is refused before any lookup; a pi prompt with wait k
 // ---- a pi tab opens its project's declared apps (pi-desk new_app_tab by name, its own session) ----
 
 /** Loads extensions/desk-browser/index.ts as in a pi tab (bridge token, no control token); its commands answered by `answer`. */
-async function deskBrowserHarness(answer: (cmd: any) => any) {
+async function deskBrowserHarness(answer: (cmd: any) => any, env: Record<string, string> = {}) {
 	const mod: any = await import("node:module");
 	if (!(globalThis as any).__kitTypeboxStub) {
 		(globalThis as any).__kitTypeboxStub = true;
@@ -1874,15 +1874,17 @@ async function deskBrowserHarness(answer: (cmd: any) => any) {
 			},
 		},
 	};
-	const saved = { s: process.env.PI_DESK_SOCKET, t: process.env.PI_DESK_TOKEN, c: process.env.PI_DESK_CONTROL_TOKEN };
+	const saved = { s: process.env.PI_DESK_SOCKET, t: process.env.PI_DESK_TOKEN, c: process.env.PI_DESK_CONTROL_TOKEN, r: process.env.PI_KIT_READONLY };
 	process.env.PI_DESK_SOCKET = "/nonexistent/pi-desk.sock";
 	process.env.PI_DESK_TOKEN = "bridge";
 	delete process.env.PI_DESK_CONTROL_TOKEN;
+	delete process.env.PI_KIT_READONLY;
+	Object.assign(process.env, env);
 	const { default: deskBrowser } = await import("../extensions/desk-browser/index.ts");
 	deskBrowser(pi);
 	for (const f of handlers.get("session_start") ?? []) f({}, { mode: "tui" });
 	const restore = () => {
-		for (const [k, v] of [["PI_DESK_SOCKET", saved.s], ["PI_DESK_TOKEN", saved.t], ["PI_DESK_CONTROL_TOKEN", saved.c]] as const)
+		for (const [k, v] of [["PI_DESK_SOCKET", saved.s], ["PI_DESK_TOKEN", saved.t], ["PI_DESK_CONTROL_TOKEN", saved.c], ["PI_KIT_READONLY", saved.r]] as const)
 			if (v === undefined) delete process.env[k];
 			else process.env[k] = v;
 	};
@@ -1922,4 +1924,44 @@ test("desk-browser: a pi tab opens its project's declared app by name, in its ow
 	} finally {
 		h.restore();
 	}
+});
+
+test("desk-browser: a read-only pi tab (PI_KIT_READONLY=1) gets no app_open, app_restart or app_close", async () => {
+	const h = await deskBrowserHarness(() => ({ ok: true }), { PI_KIT_READONLY: "1" });
+	try {
+		for (const name of ["app_open", "app_restart", "app_close"]) assert.ok(!h.tools.has(name), `no ${name}`);
+		for (const name of ["app_tabs", "app_call", "app_screenshot", "app_events"]) assert.ok(h.tools.has(name), `still ${name}`);
+	} finally {
+		h.restore();
+	}
+});
+
+test("desk-browser: app_open says when pi-desk asks the user first", async () => {
+	const h = await deskBrowserHarness((cmd) =>
+		cmd.type === "new_app_tab" ? { ok: false, error: "needs_confirmation", needs_confirmation: { summary: 'pi in proj asks: run the app "fake" from .pi-desk/apps.json: argv ["build/fake-app"] in /p', by: "user" } } : { ok: false },
+	);
+	try {
+		const r = await h.tools.get("app_open").execute("o", { name: "fake" }, undefined);
+		const t = r.content.map((c: any) => c.text).join("\n");
+		assert.match(t, /asks the user/);
+		assert.match(t, /app_tabs/);
+	} finally {
+		h.restore();
+	}
+});
+
+test("desk apps: declaredText shows each name exactly, quoted and escaped", async () => {
+	const app: Record<string, any> = await import("../extensions/desk/app.ts");
+	const long = "x".repeat(120);
+	const t = app.declaredText({ apps: [{ name: "two  spaces" }, { name: 'say "hi"\n' }, { name: long }] });
+	assert.ok(t.includes('"two  spaces"'), t);
+	assert.ok(t.includes('"say \\"hi\\"\\n"'), t);
+	assert.ok(t.includes(JSON.stringify(long)), "not cut");
+});
+
+test("desk (Home): the command list knows new_app_tab's name, app_close and app_declared", () => {
+	const nat = COMMANDS.find((c) => c.type === "new_app_tab");
+	assert.match(nat?.args ?? "", /name/);
+	assert.ok(COMMANDS.some((c) => c.type === "app_close"));
+	assert.ok(COMMANDS.some((c) => c.type === "app_declared"));
 });
