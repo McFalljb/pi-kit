@@ -299,6 +299,113 @@ const MUTATING: RegExp[] = [
 	/\bsed\s+[^|;&]*-i\b/,
 ];
 
+// More programs that write, matched only as the command word of a segment or as git's subcommand,
+// so `cat ln.txt`, `grep -rn unlink src` and `git log -- add.md` run. Kept in step with pi-desk's
+// port (tools/pi-desk-cli/readonly.odin) through test/readonly-vectors.json.
+const WRAPPERS = new Set(["sudo", "doas", "xargs", "env", "command", "builtin", "exec", "nohup", "time", "nice", "ionice", "timeout", "stdbuf", "caffeinate", "chroot", "!", "if", "then", "else", "elif", "do", "while", "until"]);
+// Each wrapper's options that take the next word as their value (sudo's -E takes none).
+const WRAPPER_VALUED: Record<string, string[]> = {
+	sudo: ["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T", "--user", "--group", "--chdir", "--prompt", "--role", "--type", "--host", "--other-user", "--close-from", "--command-timeout"],
+	doas: ["-u", "-C"],
+	xargs: ["-I", "-L", "-n", "-P", "-s", "-E", "-d", "-a", "--max-args", "--max-procs", "--max-lines", "--max-chars", "--arg-file", "--delimiter", "--eof"],
+	env: ["-u", "-C", "--unset", "--chdir"],
+	timeout: ["-s", "-k", "--signal", "--kill-after"],
+	nice: ["-n", "--adjustment"],
+	ionice: ["-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"],
+	stdbuf: ["-i", "-o", "-e", "--input", "--output", "--error"],
+	caffeinate: ["-t", "-w"],
+	time: ["-f", "-o", "--format", "--output"],
+	exec: ["-a"],
+	chroot: ["--userspec", "--groups"],
+};
+const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
+const GIT_GLOBAL_VALUED = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix", "--exec-path"]);
+const GIT_WRITES = new Set(["clean", "restore", "pull", "add", "init", "update-ref"]);
+
+/**
+ * The commands in `cmd`, each as [program, ...args]: one per segment (split at | ; & ( ) { } `
+ * and newlines, so `$(…)` and `if …; then …` count), quotes dropped, the program as its basename,
+ * after variable assignments, shell keywords and wrappers with their options; plus what a shell
+ * runs with -c, or eval.
+ */
+function commandsOf(cmd: string): string[][] {
+	const out: string[][] = [];
+	for (const seg of cmd.split(/[|;&(){}`\n]/)) commandOf(seg.split(/\s+/).map((w) => w.replace(/['"\\]/g, "")), out);
+	return out;
+}
+
+function commandOf(words: string[], out: string[][]): void {
+	for (let k = 0; k < words.length; ) {
+		const w = words[k];
+		if (w === "" || /^[^-/=][^/=]*=/.test(w)) {
+			k++; // empty, or X=1
+			continue;
+		}
+		const name = w.slice(w.lastIndexOf("/") + 1);
+		if (WRAPPERS.has(name)) {
+			// its options and their values, a timeout's duration and chroot's new root, up to the command
+			let rooted = false;
+			for (k++; k < words.length; k++) {
+				const o = words[k];
+				if (o === "--") {
+					k++;
+					break;
+				}
+				if (o.startsWith("-")) {
+					if (WRAPPER_VALUED[name]?.includes(o)) k++;
+				} else if (name === "chroot" && !rooted) rooted = true;
+				else if (name !== "timeout" || !/^\d/.test(o)) break;
+			}
+			continue;
+		}
+		const args = words.slice(k + 1);
+		out.push([name, ...args]);
+		if (name === "eval") commandOf(args, out);
+		else if (SHELLS.has(name)) {
+			const c = args.findIndex((a) => /^-(?!-).*c/.test(a));
+			if (c >= 0) commandOf(args.slice(c + 1), out);
+		}
+		return;
+	}
+}
+
+/** Whether `git config <args>` only reads (--get, --get-all, ..., --list, -l, or the get/list subcommand) and has no write option and no write option. */
+function gitConfigReads(args: string[]): boolean {
+	const first = args.find((a) => !a.startsWith("-"));
+	const reads = first === "get" || first === "list" || args.some((a) => /^(?:--get(?:-all|-regexp|-urlmatch|-color|-colorbool)?|--list|-l)$/.test(a));
+	return reads && !args.some((a) => /^(?:--add|--unset|--unset-all|--replace-all|--rename-section|--remove-section|--edit|-e)$/.test(a));
+}
+
+/** Whether one command from commandsOf writes: see the cases below. */
+function writes([name, ...args]: string[]): boolean {
+	switch (name) {
+		case "git": {
+			// its subcommand, after git's global options (-C dir, -c k=v, --git-dir x, ...)
+			let k = 0;
+			while (k < args.length && args[k].startsWith("-")) k += GIT_GLOBAL_VALUED.has(args[k]) ? 2 : 1;
+			const sub = args[k];
+			return sub === "config" ? !gitConfigReads(args.slice(k + 1)) : GIT_WRITES.has(sub);
+		}
+		case "rmdir":
+		case "unlink":
+		case "ln":
+		case "truncate":
+		case "wget":
+			return true;
+		case "dd":
+			return args.some((a) => a.startsWith("of="));
+		case "find":
+			return args.includes("-delete");
+		case "perl": // -i in a switch cluster (-i, -pi, -0777i), not inside -M's module or -e's code
+			return args.some((a) => /^-(?!-)(?:0x|[^MmIeEdDCxVFi])*i/.test(a));
+		case "curl": // writes a file: -o, -O, -c (cookie jar), -D (headers), in a cluster too
+			return args.some((a) => /^-(?!-)[^=:.]*[oOcD]|^--(?:output|remote-name|cookie-jar|dump-header)/.test(a));
+		case "tar": // creates, extracts or changes an archive (old style too: tar xzf)
+			return args.some((a, i) => /^-(?!-)[^=:.]*[xcruA]|^--(?:extract|get|create|append|update|delete|concatenate)/.test(a) || (i === 0 && !a.startsWith("-") && /[xcruA]/.test(a)));
+	}
+	return false;
+}
+
 /** Whether `p` (relative to `cwd`) is a background shell output file (extensions/shell). */
 export function isShellLog(p: string, cwd: string): boolean {
 	const rel = path.relative(os.tmpdir(), path.resolve(cwd, p));
@@ -336,7 +443,7 @@ export const MAX_TESTED = 64 * 1024;
  * needs confirmation. Read-only sessions block mutating commands whatever the rules say.
  */
 export function commandVerdict(cmd: string, readonly: boolean, rules: Rule[] = []): { block?: string; confirm: string[] } {
-	if (readonly && MUTATING.some((r) => r.test(cmd))) {
+	if (readonly && (MUTATING.some((r) => r.test(cmd)) || commandsOf(cmd).some(writes))) {
 		return { block: "Read-only session: mutating commands are not allowed.", confirm: [] };
 	}
 	// User regexes see at most the first MAX_TESTED chars, so a slow pattern cannot stall on a huge command.
