@@ -28,7 +28,7 @@ instructions for an agent, including what to ask you and what never to touch.
   background shells, monitors and timers sit in a column on the right instead of in panels under
   the transcript. Narrower, or in regular `tuiMode`, a one-line footer summary stands in.
   `/sidebar` shows or hides it (or opens it as an overlay). Completed todos drop off at your next
-  message, like rpiv-todo's own panel. In a pi-desk tab that draws panels, the same sections show there instead.
+  message, like rpiv-todo's own panel. In a [Deckhand](https://github.com/McFalljb/pi-desk) pi tab that draws panels, the same sections show there instead.
 - **Workers and a reviewer.** `kit.worker` does delegated work in its own git worktree;
   `kit.reviewer` reviews read-only, ideally on another provider. The parent session plans and
   talks to you (`AGENTS.md`, skills `delegate` and `adversarial-review`).
@@ -44,6 +44,11 @@ instructions for an agent, including what to ask you and what never to touch.
   gpt-6.1-sol, set thinking to `medium` (OpenAI's Codex ships it at `low`).
 - **Pinned versions.** pi and the recommended packages are pinned and tested together; pi warns
   once at startup if yours are older or unpinned.
+
+For a desktop app around pi (sessions, tabs, panels, browser and app tabs, the Atlas assistant), see
+[Deckhand](https://github.com/McFalljb/pi-desk). It bundles its own pi integration (bridge, desk
+tools, browser tools, panels), so pi-kit no longer ships one; pi-kit's sidebar hands its sections
+over to Deckhand's panels when it runs in a Deckhand tab.
 
 ## Keeping it up to date
 
@@ -87,14 +92,11 @@ removes the kit entirely.
 | `extensions/guardrails` | Opt-in command rules (presets or your own regex; ask or block), `/guardrails`; redacts secret-shaped output; read-only mode |
 | `extensions/shell` | `bash_bg`, `monitor`, `shell_stop`, `shell_list`, `wake_later`, `/shells` |
 | `extensions/sidebar` | Right-hand column with background subagents, todos and shells instead of widgets under the transcript; `/sidebar` |
-| `extensions/desk-bridge` | In a pi-desk tab: reports session, status (idle/working, waiting on a dialog, question, blockers) and the sidebar's sections as panels; answers prompt, reload and wait-idle requests; sends other extensions' pi-desk commands on its connection (`kit:desk:command`); `inDesk()` |
-| `extensions/desk-browser` | In a pi-desk pi tab: the session's browser tabs (web pages) with `browser_tabs`, `browser_open`, `browser_navigate`, `browser_read` (text, outline with refs, HTML; form values never), `browser_screenshot`, `browser_wait`, `browser_console` and `browser_network` (recorded only once asked), `browser_comments`; and act with `browser_click`, `browser_type`, `browser_press`, `browser_scroll`, `browser_select`, `browser_hover`, `browser_upload` (no JavaScript evaluation; text goes only into plain text fields of the top document, inserted at once, and password, card and one-time-code fields are refused, so the user enters them after Take over; keys go one chord at a time and stop if the page loads a new document; uploads wait for the user's Allow on a bar showing each file's real path, and protected folders such as `~/.ssh` or browser profiles, symlinks out and hard links are refused; a page changing the clipboard during an action is reported, not refused; downloads wait for the user's Allow; the user's Take over or Stop ends the agent's use of the tab; an interrupted or timed-out call cancels the action in pi-desk; typed text never echoed); page content is fenced as data. Through the pi tab's bridge (its own session only), or in Home through the control connection (any session). A pi tab also gets `app_tabs`, `app_call`, `app_screenshot`, `app_input`, `app_events`, `app_open` (an app its project's `.pi-desk/apps.json` declares, by name), `app_restart` and `app_close` for its own session's app tabs |
-| `extensions/desk` | In pi-desk's Home session (`PI_DESK_CONTROL_TOKEN`): `desk_state`, `desk_run` (any pi-desk command), `desk_prompt`, `desk_wait`, `desk_watch` (pi and Claude Code tabs; told once when a session the user asked about finishes, needs them or exits) and `desk_events` (pi-desk's recent notifications); for app tabs `app_call` (any method of the app's own; `tab.describe` first), `app_screenshot`, `app_input`, `app_events`; no automatic notices |
 | `extensions/notes` | Once the context is 75% full, reminds the session to update its session note before compaction |
 | `extensions/model-rules` | On OpenAI GPT models only, adds `rules/gpt.md` (less testing, exploring and reporting) to the system prompt; `<agent-dir>/rules/gpt.md` overrides it |
 | `extensions/versions` | At the start of an interactive session, warns once if pi or a recommended package is older than its pin or unpinned |
 | `config/` | Compact panel defaults for pi-subagents and rpiv-todo; `install.sh` copies them only where no config exists |
-| `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff`, `desk` |
+| `skills/` | `delegate`, `adversarial-review`, `worktree-discipline`, `session-notes`, `handoff`, `desk` (for Deckhand's Atlas, which drives Deckhand with its bundled desk tools) |
 | `prompts/` | `/delegate`, `/review` |
 | `AGENTS.md` | Global rules, labelled by role (everyone / parent / child) because workers load it too |
 | `packages.json` | Recommended, optional and excluded third-party packages, with reasons; pins for the optional ones |
