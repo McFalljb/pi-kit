@@ -37,8 +37,10 @@ export const COMMANDS: Cmd[] = [
 	{ type: "pi_reload", args: "tab_id", does: "reload a pi tab once it is idle", confirm_class: "session_restart", long_running: true },
 	{ type: "set_theme", args: "name", does: "graphite, warm or ghostty" },
 	{ type: "set_reduce_motion", args: "on", does: "no fades or pulsing dots" },
-	{ type: "new_app_tab", args: "session?, argv? | command?, cwd?, title?", does: "open an app tab (a program drawing into the tab, e.g. a game engine) in an open session; created_id = tab id; then use app_call, app_screenshot, app_input, app_events" },
+	{ type: "new_app_tab", args: "session?, name? | argv? | command?, cwd?, title?", does: "open an app tab (a program drawing into the tab, e.g. a game engine) in an open session: name = an app its .pi-desk/apps.json declares (app_declared), or argv / a command line; created_id = tab id; then use app_call, app_screenshot, app_input, app_events" },
 	{ type: "app_restart", args: "tab_id", does: "restart an app tab's program (the same argv; a hung one is killed first)" },
+	{ type: "app_close", args: "tab_id, comments?", does: "close an app tab (the app gets tab.quit, then SIGTERM)", confirm_class: "tab_close" },
+	{ type: "app_declared", args: "session?", does: "the apps a session's .pi-desk/apps.json declares: data {session, apps [{name, argv, cwd?}]}" },
 	{ type: "app_inspect", args: "tab_id, on", does: "show the app's boxes (its entities, panels…) over an app tab for the user (the tab's Inspect button)" },
 ];
 

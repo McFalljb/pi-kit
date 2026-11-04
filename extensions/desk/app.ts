@@ -120,6 +120,12 @@ export function appEventsText(tab: number, topic: string, data: R): string {
 	return [DATA_NOTE, `Tab ${tab}'s ${topic} events (${list.length}; next: pass since ${data.next}):`, "<<<app events", ...lines, "app events>>>"].join("\n");
 }
 
+/** The apps a session's .pi-desk/apps.json declares (pi-desk app_declared's data): each name exactly as app_open takes it, as a JSON string. */
+export function declaredText(data: R): string {
+	const names = (Array.isArray(data?.apps) ? data.apps : []).map((a: R) => JSON.stringify(String(a?.name ?? "")));
+	return names.length ? `Apps your project declares (app_open): ${names.join(", ")}` : "Your project declares no apps (.pi-desk/apps.json), so app_open has none to open.";
+}
+
 /** app_tabs' output (a pi tab's own session view from get_state): its app tabs, with their status when not running. */
 export function appTabsText(state: R): string {
 	const tabs = (Array.isArray(state?.open_sessions) ? state.open_sessions : []).flatMap((s: R) => (Array.isArray(s?.tabs) ? s.tabs : [])).filter((t: R) => t?.kind === "app");
