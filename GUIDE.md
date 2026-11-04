@@ -217,7 +217,10 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
   is for older pi-desk builds that do not set it), `app_input {tab, events}` and `app_events {tab, topic,
   since?, limit?}`; `new_app_tab` and `app_restart` go through `desk_run` (`extensions/desk/app.ts`).
   A pi tab gets the same four (shorter descriptions) plus `app_tabs` from `extensions/desk-browser`,
-  over its bridge, for its own session's app tabs only.
+  over its bridge, for its own session's app tabs only, and `app_open {name}` (an app its
+  project declares in `.pi-desk/apps.json`, which `app_tabs` lists; pi-desk's `new_app_tab` by
+  name, in its own session, behind the user's view; never an argv), `app_restart {tab}` and
+  `app_close {tab}`.
   pi-desk itself
   never sends a caller its own events. After a `dropped` event stream the extension subscribes
   again and re-checks pending confirmations and watches.

@@ -25,7 +25,10 @@
  *
  * - App tabs, in a pi tab (not Home: the desk extension has its own): app_tabs, app_call,
  *   app_screenshot, app_input and app_events over the same route, for its own session's app tabs
- *   only (pi-desk's rule for caller `panel`). Short descriptions: every pi tab pays for them.
+ *   only (pi-desk's rule for caller `panel`); app_open opens an app its project declares in
+ *   .pi-desk/apps.json, by name, in its own session, behind the user's view (pi-desk refuses argv
+ *   and other sessions for a pi tab); app_restart and app_close. Short descriptions: every pi tab
+ *   pays for them.
  *
  * Never throws into pi outside a tool call.
  */
@@ -34,7 +37,7 @@ import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { COMMAND_EVENT, CONTROL_EVENT, CONTROL_READY, type CommandOutcome, envToken, inDesk } from "../desk-bridge/protocol.ts";
-import { appCallCommand, appEventsText, appInputEvents, appReplyText, appTabsText, shotFile, shotText } from "../desk/app.ts";
+import { appCallCommand, appEventsText, appInputEvents, appReplyText, appTabsText, declaredText, shotFile, shotText } from "../desk/app.ts";
 import {
 	ACT_DESCRIPTIONS, ACT_TIMEOUT_MS, actText, BUTTONS, clickCommand, commentsCommand, commentsText, errorText, hoverCommand, logCommand, logText, MAX_WAIT_S, MODES, MODIFIERS, navigateCommand, openCommand, pressCommand, readCommand, readText,
 	screenshotCommand, screenshotText, scrollCommand, SELECTOR_HELP, selectCommand, tabsCommand, tabsText, typeCommand, UPLOAD_TIMEOUT_MS, uploadCommand, WAIT_FOR, waitCommand, waitText,
@@ -346,15 +349,43 @@ export default function (pi: ExtensionAPI) {
 		pi.registerTool({
 			name: "app_tabs",
 			label: "App tabs",
-			description: "List your pi-desk session's app tabs (programs drawing into a tab, e.g. a game engine).",
+			description: "List your pi-desk session's app tabs (programs drawing into a tab, e.g. a game engine) and the apps app_open can open.",
 			promptSnippet: "List your pi-desk session's app tabs",
 			parameters: Type.Object({}),
 			async execute(_id, _p, signal) {
 				const r = await call({ type: "get_state" }, 10_000, signal);
 				if (!r.ok) throw new Error(`pi-desk: ${r.error ?? "no state"}`);
-				return text(appTabsText(r.data ?? {}));
+				const d = await call({ type: "app_declared" }, 10_000, signal).catch(() => ({ ok: false }) as R);
+				return text([appTabsText(r.data ?? {}), ...(d.ok ? [declaredText(d.data ?? {})] : [])].join("\n"));
 			},
 		});
+		pi.registerTool({
+			name: "app_open",
+			label: "Open an app tab",
+			description: "Open an app your project declares in .pi-desk/apps.json (app_tabs lists them), by name, in a new app tab of your session behind the user's view. Returns the tab id.",
+			promptSnippet: "Open a declared app in a pi-desk app tab",
+			parameters: Type.Object({ name: Type.String() }),
+			async execute(_id, p, signal) {
+				const r = await call({ type: "new_app_tab", name: p.name }, 10_000, signal);
+				if (!r.ok) throw new Error(`pi-desk: ${r.error ?? "not opened"}`);
+				const started = r.data?.started !== false;
+				return text(started ? `Opened app tab ${r.created_id} (${JSON.stringify(p.name)}) behind the user's view. app_call tab.describe lists its methods.` : `Opened app tab ${r.created_id}, but its program could not start: app_events ${r.created_id} log says why.`);
+			},
+		});
+		for (const [name, type, label, done] of [["app_restart", "app_restart", "Restart an app tab", "Restarted the program in"], ["app_close", "app_close", "Close an app tab", "Closed"]] as const) {
+			pi.registerTool({
+				name,
+				label,
+				description: `${label} of your session.`,
+				promptSnippet: `${label} of your pi-desk session`,
+				parameters: Type.Object({ tab: appTab }),
+				async execute(_id, p, signal) {
+					const r = await call({ type, tab_id: p.tab }, 10_000, signal);
+					if (!r.ok) throw new Error(`pi-desk: ${r.error ?? "refused"}`);
+					return text(`${done} app tab ${p.tab}.`);
+				},
+			});
+		}
 		pi.registerTool({
 			name: "app_call",
 			label: "Call an app tab",

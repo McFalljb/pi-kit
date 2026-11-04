@@ -121,6 +121,12 @@ export function appEventsText(tab: number, topic: string, data: R): string {
 }
 
 /** app_tabs' output (a pi tab's own session view from get_state): its app tabs, with their status when not running. */
+/** The apps a session's .pi-desk/apps.json declares (pi-desk app_declared's data): their names, for app_open. */
+export function declaredText(data: R): string {
+	const names = (Array.isArray(data?.apps) ? data.apps : []).map((a: R) => JSON.stringify(String(a?.name ?? "").replace(/\s+/g, " ").trim().slice(0, 80)));
+	return names.length ? `Apps your project declares (app_open): ${names.join(", ")}` : "Your project declares no apps (.pi-desk/apps.json), so app_open has none to open.";
+}
+
 export function appTabsText(state: R): string {
 	const tabs = (Array.isArray(state?.open_sessions) ? state.open_sessions : []).flatMap((s: R) => (Array.isArray(s?.tabs) ? s.tabs : [])).filter((t: R) => t?.kind === "app");
 	if (!tabs.length) return "Your session has no app tabs.";

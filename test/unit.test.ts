@@ -1716,8 +1716,8 @@ test("desk: desk_watch on a Claude tab fires from claude.turn and OSC 7501 (prog
 
 test("desk-browser: a pi tab's app tools go over the bridge route (its session's app tabs; get_state to list them)", async () => {
 	const proto: Record<string, any> = await import("../extensions/desk-bridge/protocol.ts");
-	for (const type of ["app_call", "app_screenshot", "app_input", "app_events", "get_state"]) assert.equal(proto.browserRefusal({ type, tab_id: 3 }), undefined, type);
-	for (const type of ["app_restart", "new_app_tab", "app_inspect", "claude_prompt", "pi_prompt"]) assert.ok(proto.browserRefusal({ type, tab_id: 3 }), type);
+	for (const type of ["app_call", "app_screenshot", "app_input", "app_events", "get_state", "new_app_tab", "app_restart", "app_close", "app_declared"]) assert.equal(proto.browserRefusal({ type, tab_id: 3 }), undefined, type);
+	for (const type of ["app_inspect", "close_tab", "claude_prompt", "pi_prompt"]) assert.ok(proto.browserRefusal({ type, tab_id: 3 }), type);
 	const app: Record<string, any> = await import("../extensions/desk/app.ts");
 	const own = { open_sessions: [{ id: 3, tabs: [{ id: 2, kind: "pi", title: "pi" }, { id: 13, kind: "app", title: "fake", status: "running", app_status: "running" }, { id: 14, kind: "app", title: "game", status: "exited", app_status: "exited" }] }] };
 	assert.equal(app.appTabsText(own), 'Your session\'s app tabs:\n- tab 13 "fake"\n- tab 14 "game" · exited');
@@ -1842,5 +1842,84 @@ test("desk: Home's own tab is refused before any lookup; a pi prompt with wait k
 		assert.match(r.content[0].text, /^Prompt delivered\. Tab 2 is idle\./);
 	} finally {
 		h.close();
+	}
+});
+
+// ---- a pi tab opens its project's declared apps (pi-desk new_app_tab by name, its own session) ----
+
+/** Loads extensions/desk-browser/index.ts as in a pi tab (bridge token, no control token); its commands answered by `answer`. */
+async function deskBrowserHarness(answer: (cmd: any) => any) {
+	const mod: any = await import("node:module");
+	if (!(globalThis as any).__kitTypeboxStub) {
+		(globalThis as any).__kitTypeboxStub = true;
+		const stub = "data:text/javascript," + encodeURIComponent("export const Type = new Proxy({}, { get: () => (...a) => ({}) });");
+		mod.registerHooks({ resolve: (spec: string, ctx: any, next: any) => (spec === "typebox" ? { url: stub, shortCircuit: true } : next(spec, ctx)) });
+	}
+	const sent: any[] = [];
+	const tools = new Map<string, any>();
+	const handlers = new Map<string, any[]>();
+	const listeners = new Map<string, ((x: any) => void)[]>();
+	const pi: any = {
+		registerTool: (t: any) => tools.set(t.name, t),
+		on: (e: string, f: any) => handlers.set(e, [...(handlers.get(e) ?? []), f]),
+		events: {
+			on: (e: string, f: any) => (listeners.set(e, [...(listeners.get(e) ?? []), f]), () => listeners.set(e, (listeners.get(e) ?? []).filter((g) => g !== f))),
+			emit: (e: string, x: any) => {
+				if (e === "kit:desk:command") {
+					sent.push(x.command);
+					const result = answer(x.command);
+					return setTimeout(() => listeners.get(`kit:desk:command:reply:${x.requestId}`)?.forEach((f) => f({ result })), 0);
+				}
+				listeners.get(e)?.forEach((f) => f(x));
+			},
+		},
+	};
+	const saved = { s: process.env.PI_DESK_SOCKET, t: process.env.PI_DESK_TOKEN, c: process.env.PI_DESK_CONTROL_TOKEN };
+	process.env.PI_DESK_SOCKET = "/nonexistent/pi-desk.sock";
+	process.env.PI_DESK_TOKEN = "bridge";
+	delete process.env.PI_DESK_CONTROL_TOKEN;
+	const { default: deskBrowser } = await import("../extensions/desk-browser/index.ts");
+	deskBrowser(pi);
+	for (const f of handlers.get("session_start") ?? []) f({}, { mode: "tui" });
+	const restore = () => {
+		for (const [k, v] of [["PI_DESK_SOCKET", saved.s], ["PI_DESK_TOKEN", saved.t], ["PI_DESK_CONTROL_TOKEN", saved.c]] as const)
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+	};
+	return { tools, sent, restore };
+}
+
+test("desk-browser: a pi tab opens its project's declared app by name, in its own session, behind the user's view", async () => {
+	const state = { open_sessions: [{ id: 3, tabs: [{ id: 2, kind: "pi", title: "pi" }, { id: 13, kind: "app", title: "fake", status: "running", app_status: "running" }] }] };
+	const h = await deskBrowserHarness((cmd) => {
+		if (cmd.type === "new_app_tab") return cmd.name === "fake" ? { ok: true, created_id: 21 } : { ok: false, error: 'no app "nope" in the session\'s .pi-desk/apps.json (declared: "fake")' };
+		if (cmd.type === "app_declared") return { ok: true, data: { session: 3, apps: [{ name: "fake", argv: ["build/fake-app"] }] } };
+		if (cmd.type === "get_state") return { ok: true, data: state };
+		if (cmd.type === "app_restart" || cmd.type === "app_close") return cmd.tab_id === 13 ? { ok: true } : { ok: false, error: "a pi or Claude tab reaches only its own session's app tabs" };
+		return { ok: false, error: "unexpected" };
+	});
+	try {
+		for (const name of ["app_open", "app_restart", "app_close"]) assert.ok(h.tools.has(name), `registers ${name}`);
+		const textOf = (r: any) => r.content.map((c: any) => c.text).join("\n");
+		// by name only: the command carries neither a session nor a program, whatever the call adds
+		const r = await h.tools.get("app_open").execute("o1", { name: "fake", session: 9, argv: ["/bin/sh"] } as any, undefined);
+		assert.deepEqual(h.sent.at(-1), { type: "new_app_tab", name: "fake" });
+		assert.match(textOf(r), /tab 21/);
+		assert.match(textOf(r), /behind/);
+		// an undeclared name: pi-desk's refusal, with the declared names
+		await assert.rejects(h.tools.get("app_open").execute("o2", { name: "nope" }, undefined), /declared: "fake"/);
+		// app_tabs lists the session's app tabs and what app_open may open
+		const t = textOf(await h.tools.get("app_tabs").execute("t1", {}, undefined));
+		assert.match(t, /tab 13 "fake"/);
+		assert.match(t, /\(app_open\): "fake"/);
+		assert.ok(h.sent.some((c) => c.type === "app_declared" && !("session" in c)), "app_declared for its own session");
+		// restart and close: its own session's tabs; another's refused by pi-desk
+		assert.match(textOf(await h.tools.get("app_restart").execute("r1", { tab: 13 }, undefined)), /Restarted/);
+		assert.deepEqual(h.sent.at(-1), { type: "app_restart", tab_id: 13 });
+		assert.match(textOf(await h.tools.get("app_close").execute("c1", { tab: 13 }, undefined)), /Closed/);
+		assert.deepEqual(h.sent.at(-1), { type: "app_close", tab_id: 13 });
+		await assert.rejects(h.tools.get("app_close").execute("c2", { tab: 40 }, undefined), /own session/);
+	} finally {
+		h.restore();
 	}
 });
