@@ -7,10 +7,13 @@
  * - Regular tuiMode, or a narrower terminal: a one-line footer summary, and `/sidebar` opens the
  *   same rows as an overlay on the right (it does not take keyboard focus).
  * - `/sidebar` shows or hides the column (wide fullscreen) or the overlay (otherwise).
- * - In a pi-desk tab that draws panels (the desk bridge's `kit:desk:mode` event says so after its
- *   handshake): no column, footer or overlay; the same sections go to pi-desk as panels through the
- *   bridge (`kit:desk:panels` event). In a pi-desk tab nothing is drawn until the bridge answers
- *   (at most DESK_WAIT_MS), so a tab with panels never shows the column.
+ * - In a Deckhand pi tab: Deckhand's bundled pi integration (its integrations/pi) asks at session
+ *   start which panels another extension provides (`deckhand:capabilities?`); the sidebar claims
+ *   todos and subagents (`deckhand:capabilities`), so Deckhand's own copies of them step back. Once
+ *   Deckhand's bridge says it draws panels (`kit:desk:mode` true, after its handshake) there is no
+ *   column, footer or overlay: the same sections (subagents, shells, todos) go to Deckhand as
+ *   panels (`kit:desk:panels`). Until the bridge answers (at most DESK_WAIT_MS) nothing is drawn,
+ *   so a tab with panels never shows the column; `kit:desk:mode` false or no answer: the column.
  *
  * One sidebar per process: a second copy (e.g. a checkout loaded with -e next to the installed kit)
  * stays inert, since two would keep wrapping each other's layout root.
@@ -23,12 +26,16 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Component, HStack, isViewportTUI, ScrollView, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { inDesk } from "../desk-bridge/protocol.ts";
 import { type Data, deskPanels, hideCompleted, type Line, nextHide, type Run, SUBAGENT_EVENTS, sidebarLines, subagentTask, summary, type TodoState, todosFromBranch, todoView, trackFinished, trackTodos } from "./rows.ts";
 
 const WIDTH = 34; // columns, border included
 const MIN_COLUMNS = 120; // narrower terminals get the footer summary instead of the column
-const DESK_WAIT_MS = 3000; // in a pi-desk tab, how long to wait for the bridge before drawing the sidebar
+const DESK_WAIT_MS = 3000; // in a Deckhand tab, how long to wait for its bridge before drawing the sidebar
+// Deckhand's claims handshake (its integrations/pi/lib/claims.ts): the query its panel producer
+// emits at session start, and the claim that makes it leave a panel to us.
+const CAPS_QUERY = "deckhand:capabilities?";
+const CAPS_CLAIM = "deckhand:capabilities";
+const CLAIMS = ["panels:todos", "panels:subagents"]; // the sidebar publishes both (and shells, which Deckhand has no copy of)
 const arr = (v: unknown) => (Array.isArray(v) ? v : []);
 const OWNER = Symbol.for("pi-kit.sidebar.owner"); // the sidebar instance drawing in this process
 const owners = globalThis as { [OWNER]?: object };
@@ -47,8 +54,10 @@ export default function (pi: ExtensionAPI) {
 	let root: HStack | undefined; // ours: pi's root plus the column
 	let shown = ""; // the layout state last seen, so a render can notice a mode or width change
 	let closed = false;
-	let desk = false; // pi-desk draws panels: they replace the column
-	let deskWait: NodeJS.Timeout | undefined; // in a pi-desk tab, until the bridge says whether it draws panels
+	let desk = false; // Deckhand draws panels: they replace the column
+	let deskWait: NodeJS.Timeout | undefined; // in a Deckhand tab, until its bridge says whether it draws panels
+	let deckhand: unknown; // Deckhand's capabilities query, once seen (this pi runs in a Deckhand tab)
+	let claimed = false;
 	let subTimer: NodeJS.Timeout | undefined;
 	let later: NodeJS.Timeout | undefined;
 	let stopRead: (() => void) | undefined; // set while a status read is in flight; ends it
@@ -215,10 +224,24 @@ export default function (pi: ExtensionAPI) {
 	}
 	pi.events.on("kit:desk:mode", (panels) => !closed && ui && setDesk(panels === true));
 
+	/** In a Deckhand tab: claim the panels the sidebar publishes, and wait for the bridge before drawing. */
+	function enterDeckhand() {
+		if (claimed || closed || !ui || deckhand === undefined) return;
+		claimed = true;
+		const asked = (deckhand as { capabilities?: unknown })?.capabilities;
+		for (const capability of CLAIMS) if (!Array.isArray(asked) || asked.includes(capability)) pi.events.emit(CAPS_CLAIM, { capability, owner: "pi-kit sidebar", version: "1" });
+		if (!desk && !deskWait) deskWait = setTimeout(() => setDesk(false), DESK_WAIT_MS); // no bridge answer: the sidebar as usual
+	}
+	// Listened for at load: Deckhand's extensions load first (pi -e), so its query may come before our session_start.
+	pi.events.on(CAPS_QUERY, (q) => {
+		deckhand = q ?? {};
+		enterDeckhand();
+	});
+
 	pi.registerCommand("sidebar", {
 		description: "Show or hide the sidebar: subagents, todos, background shells",
 		handler: async (_args, ctx) => {
-			if (desk) return ctx.ui.notify("The sidebar is shown in pi-desk's panels.", "info");
+			if (desk) return ctx.ui.notify("The sidebar is shown in Deckhand's panels.", "info");
 			if (!tui) return ctx.ui.notify("The sidebar needs the interactive TUI.", "warning");
 			if (fullscreen() && wide()) column = !column;
 			else if (closeOverlay) closeOverlay();
@@ -241,7 +264,7 @@ export default function (pi: ExtensionAPI) {
 		owners[OWNER] = me;
 		ui = ctx.ui;
 		setTodos(todosFromBranch(ctx.sessionManager.getBranch()), true);
-		if (inDesk()) deskWait = setTimeout(() => setDesk(false), DESK_WAIT_MS); // no bridge answer: the sidebar as usual
+		enterDeckhand(); // Deckhand asked already: claim its panels, wait for its bridge
 		// A widget with no rows: its factory hands over the TUI, its render watches the layout.
 		ui.setWidget("kit-sidebar", (t) => {
 			tui = t;

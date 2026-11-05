@@ -156,75 +156,14 @@ alone and with the recommended set loaded. Setup steps are in [SETUP.md](SETUP.m
     more per frame to measure it, which a very long transcript may feel. Only one sidebar draws per pi
     process: a second copy (a checkout loaded with `-e` next to the installed kit) stays inert;
     kit versions before this rule wrap each other's layout and fill the screen with columns.
-  - In a pi-desk tab (`PI_DESK_SOCKET` and `PI_DESK_TOKEN` set) whose pi-desk advertises the
-    `panels` capability, there is no column, footer summary or overlay: the desk bridge
-    publishes the same sections as pi-desk panels, and `/sidebar` says so. Without that
-    capability, or if the bridge cannot connect within 3 s, the sidebar draws as usual.
-- **pi-desk bridge** (`extensions/desk-bridge`): when pi runs in a pi-desk tab (both variables
-  set, interactive TUI), it is the tab's control plane over pi-desk's socket (pi-desk's
-  `docs/PROTOCOL.md` §4–5). It reports the session (id, file, cwd) and a status: `agent`
-  `working` while pi's `isIdle()` is false (a run, retry, compaction or queued continuation;
-  `agent_end` alone is not idle), else `error` if the last run ended in a provider error, else
-  `idle`; `waiting` while a dialog is open (`ui_prompt_start`/`end`, e.g. ask_user or a
-  guardrail confirm); `question` when pi is idle after a final answer ending in `?`; `blockers` are the
-  kit's background shells and timers and running background subagents. It answers
-  `pi.prompt` (a follow-up if a run is going; refused while a dialog is open or a manual `/compact` runs, since pi would drop it), `pi.wait_idle`
-  (idle for 250 ms with no dialog open, nothing queued and no blockers) and `pi.reload` (refused with the
-  reasons unless that idle holds, since a reload kills background shells; it runs the
-  `/desk-reload` command and answers after the reload). pi-desk's env token is single-use: the first
-  `hello` revokes it and returns a reconnect token, which the bridge keeps in memory for every
-  later `hello` (reconnects with backoff, reloads, session switches). Children of pi can still see
-  the revoked env token in pi's initial environment, but it no longer opens a connection. Other extensions can call `inDesk()` from
-  `extensions/desk-bridge/protocol.ts`. Panel actions (`panel.action`) are not handled yet.
-- **pi-desk Home** (`extensions/desk`, skill `desk`): when pi-desk starts pi as its Home agent with
-  `PI_DESK_SOCKET` and `PI_DESK_CONTROL_TOKEN` (interactive TUI), it connects as caller `control`
-  (pi-desk's `docs/PROTOCOL.md` §2–3; single-use env token swapped for a reconnect token like the
-  bridge's, and removed from `process.env`) and registers `desk_state` (a compact summary, or
-  `full: true`; filters `project`, `session`), `desk_run` (any command `{type, ...}`; its
-  description is generated from pi-desk's `list_commands`, or from a built-in list in
-  `extensions/desk/commands.ts` while pi-desk has none; it waits for long-running commands, and for
-  the user's answer when a command needs confirmation, never resending it), `desk_prompt` (a
-  user message in another pi or Claude Code tab, optionally waiting until it is idle), `desk_wait`, `desk_watch`
-  and `desk_events`. A Claude tab (or a Claude-only session's tab) gets pi-desk's `claude_prompt`,
-  which holds the text until Claude is idle and the user types nothing (desk_prompt says
-  "held: <why>"), and `claude_wait_idle` (idle per Claude's hooks and its OSC 7501 status, nothing
-  held, nobody typing; it names the held prompt, so a prompt the user dropped is reported as
-  dropped, not idle). An aborted or timed-out wait is cancelled in pi-desk. Its watch reads the
-  `claude.turn` and `program_status` events. Home's own
-  tabs (the control hello's `tab_id`, and its bridge's tab) are never targeted, and desk_run
-  refuses `send_text` into a pi tab or a tab waiting for the user. desk_state output is marked as
-  data, not instructions. Other sessions' status changes are not sent to Home on their own (the
-  user sees them in pi-desk's notification bell). `desk_watch` (only when the user asks) arms a
-  one-shot watch on one tab, at most 5: its first `finished` (run ended: idle, question or error),
-  `needs_user` (dialog or question) or `exited` change (default all; an error or exit always fires;
-  a shell tab only has `exited`) ends the watch and sends a `pi-desk:` message that starts a turn
-  (watches fired together share one message). A part already true when the watch is set (idle:
-  nothing to finish; already waiting for the user) is not armed, and the tool result says so.
-  A desk_wait or desk_prompt wait that sees the tab idle ends its watch instead of a second turn.
-  `cancel: true` ends one or all, no target lists them; watches do not survive a reload, and
-  `desk_watch` is refused until Home's own tab is known. Exits and changes missed while
-  disconnected are found by comparing a fresh state (fetched after the watch was set).
-  `desk_events` reads pi-desk's `notifications_list` when `list_commands` lists it (else says it
-  is unavailable): `{notifications: [{id, time, kind, title, ...}]}` as one line each, at most
-  300 characters, the latest 20 (`limit`), fenced and marked as data; another shape as at most
-  4 KB of JSON. App tabs (a program such as a game engine drawing into a tab, pi-desk's
-  `docs/ENGINE-BRIDGE.md`) get four general tools, no per-feature ones: `app_call {tab, method,
-  params?, timeout_s?}` passes any method of the app's own through pi-desk's `app_call` (the
-  description sends the agent to `tab.describe` first; the reply is fenced data, an error says its
-  code with a hint), `app_screenshot {tab, rect?}` (pi-desk writes a PNG of the frame it shows; the
-  tool attaches it as an image up to 4 MB, only from directly in `PI_DESK_SHOTS_DIR`, which pi-desk
-  sets for the pi sessions it starts; the shape-only fallback, any `.../apps/shots/<tab>-<n>.png`,
-  is for older pi-desk builds that do not set it), `app_input {tab, events}` and `app_events {tab, topic,
-  since?, limit?}`; `new_app_tab` and `app_restart` go through `desk_run` (`extensions/desk/app.ts`).
-  A pi tab gets the same four (shorter descriptions) plus `app_tabs` from `extensions/desk-browser`,
-  over its bridge, for its own session's app tabs only, and `app_open {name}` (an app its
-  project declares in `.pi-desk/apps.json`, which `app_tabs` lists; pi-desk's `new_app_tab` by
-  name, in its own session, behind the user's view; never an argv; pi-desk asks nothing first,
-  since apps.json runs with the agent's own authority), `app_restart {tab}` and
-  `app_close {tab}`. A read-only pi (`PI_KIT_READONLY=1`) gets none of those three.
-  pi-desk itself
-  never sends a caller its own events. After a `dropped` event stream the extension subscribes
-  again and re-checks pending confirmations and watches.
+  - In a [Deckhand](https://github.com/McFalljb/pi-desk) pi tab (Deckhand's bundled pi
+    integration asks `deckhand:capabilities?` at session start), the sidebar claims the
+    `panels:todos` and `panels:subagents` capabilities, so Deckhand's own copies of those panels
+    step back. If Deckhand's bridge then says it draws panels (`kit:desk:mode` true), there is no
+    column, footer summary or overlay: the sidebar publishes the same sections (subagents,
+    shells, todos) on `kit:desk:panels`, and `/sidebar` says so. If it says no, or does not
+    answer within 3 s, the sidebar draws as usual. Deckhand's other pi features (its bridge,
+    Atlas's desk tools, browser and app tools) come with Deckhand, not with the kit.
 - **Process lives in skills**, loaded on demand: `delegate`, `adversarial-review`,
   `worktree-discipline`, `session-notes` and `handoff`. Prompts `/delegate` and `/review` start
   the first two.

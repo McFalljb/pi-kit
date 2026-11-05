@@ -164,7 +164,7 @@ export interface Panel {
 	title: string;
 	rows: Line[]; // empty: the section has nothing to show
 }
-/** The same sections as pi-desk panels (its PROTOCOL.md §5), for the desk bridge to publish. */
+/** The same sections as Deckhand panels (its docs/PROTOCOL.md §5), published on `kit:desk:panels` in a Deckhand tab. */
 export function deskPanels(d: Data, now: number): Panel[] {
 	return [
 		{ panel: "subagents", title: "Subagents", rows: section("subagents", () => runLines(d, now)) },
